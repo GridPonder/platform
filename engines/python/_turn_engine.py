@@ -1,0 +1,355 @@
+"""
+TurnEngine — orchestrates the 7-phase turn pipeline.
+
+Mirrors Dart's TurnEngine + PhaseRunner.
+"""
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Optional, Any
+
+from ._models import GameState
+from ._game_def import GameDef
+from ._rules_engine import RulesEngine
+from ._goal import evaluate_goals, evaluate_lose
+from ._systems import instantiate_systems
+from . import _events as ev
+
+
+@dataclass
+class TurnResult:
+    accepted: bool
+    events: list[dict]
+    is_won: bool
+    is_lost: bool
+    lose_reason: Optional[str] = None
+    goal_progress: Optional[dict[str, float]] = None
+
+    #: The board the action produced, set only by :meth:`TurnEngine.preview_turn`.
+    #: After a real turn the caller reads ``engine.state``, but a preview rolls
+    #: that back, so the previewed board would otherwise be unreachable — the
+    #: one question a dry run exists to answer. Dart's TurnResult carries the
+    #: equivalent ``newState`` on every result; here it stays optional so no
+    #: existing call site changes.
+    new_state: Optional[GameState] = None
+
+
+class TurnEngine:
+    """
+    Stateful turn engine for one level.
+
+    Usage::
+
+        engine = TurnEngine(game_def, level_def)
+        result = engine.execute_turn('move', {'direction': 'right'})
+        if engine.is_won:
+            ...
+        engine.undo()
+        engine.reset()
+    """
+
+    def __init__(self, game_def: GameDef, level_def: dict):
+        """
+        Parameters
+        ----------
+        game_def : GameDef
+            Parsed game.json.
+        level_def : dict
+            Parsed level JSON (as returned by LevelDef or a raw dict).
+        """
+        self._game = game_def
+        self._level = level_def  # raw dict with goals, rules, systemOverrides, solution, etc.
+        self._initial_state = self._make_initial_state()
+        self._apply_load_cascade(self._initial_state)
+        self._apply_load_settle(self._initial_state)
+        self._state = self._initial_state.copy()
+        self._history: list[GameState] = []  # undo stack
+
+    def _make_initial_state(self) -> GameState:
+        from ._models import Board, GameState
+        layer_defs = self._game.layers
+        board_json = self._level.get("board", {})
+        board = Board.from_json(board_json, layer_defs)
+        state_json = self._level.get("state", {})
+        return GameState.from_json(state_json, board, self._game.defaults)
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
+    @property
+    def state(self) -> GameState:
+        return self._state
+
+    @property
+    def is_won(self) -> bool:
+        return self._state.is_won
+
+    @property
+    def is_lost(self) -> bool:
+        return self._state.is_lost
+
+    @property
+    def undo_depth(self) -> int:
+        return len(self._history)
+
+    def execute_turn(
+        self,
+        action_id: str,
+        params: Optional[dict] = None,
+        save_history: bool = True,
+    ) -> TurnResult:
+        """Execute one turn transactionally and return its result.
+
+        Systems mutate a working state in place. The live state is replaced
+        only after the action is accepted, so vetoed actions have no effects.
+
+        Parameters
+        ----------
+        save_history : bool
+            If False, skip the undo snapshot (useful for solvers that never
+            call undo()).  Default True preserves normal behaviour.
+        """
+        params = params or {}
+        action = {"actionId": action_id, "params": params}
+
+        # A finished level takes no further actions. Checked before the action
+        # itself so a won or lost board cannot keep advancing its turn counter,
+        # mirroring the same guard at the head of the Dart TurnEngine.
+        if self._state.is_won or self._state.is_lost:
+            return TurnResult(accepted=False, events=[], is_won=False, is_lost=False)
+
+        # Phase 1: input validation
+        if not self._game.is_valid_action(action_id):
+            return TurnResult(accepted=False, events=[], is_won=False, is_lost=False)
+
+        # Save undo snapshot (skip for performance-critical callers like the solver)
+        if save_history:
+            self._history.append(self._state.copy())
+
+        # Systems mutate state in place. Run the turn on a working copy so a
+        # later veto cannot leak earlier system effects into the live state.
+        state = self._state.copy()
+        effective_game = self._game.with_system_overrides(self._level.get("systemOverrides"))
+        systems = instantiate_systems(effective_game)
+        all_events: list[dict] = []
+
+        # Phase 2: Action resolution
+        for sys in systems:
+            events = sys.execute_action_resolution(action, state, effective_game)
+
+            # A veto rejects the whole transaction. Only the vetoing system's
+            # events describe that rejection; earlier events describe changes
+            # to the working state that will be discarded.
+            if any(e["type"] == "action_vetoed" for e in events):
+                if save_history:
+                    self._history.pop()
+                return TurnResult(
+                    accepted=False,
+                    events=events,
+                    is_won=False,
+                    is_lost=False,
+                )
+
+            all_events.extend(events)
+
+        # Phase 3: Movement resolution
+        for sys in systems:
+            events = sys.execute_movement_resolution(state, effective_game)
+            all_events.extend(events)
+
+        # Phase 4: Interaction resolution (no-op in v0)
+
+        # Phase 5: Cascade resolution
+        level_rules = self._level.get("rules", []) or []
+        # Normalise level rules to same format as game rules
+        norm_level_rules = [
+            {
+                "id": r.get("id", ""),
+                "on": r["on"],
+                "where": r.get("where"),
+                "if": r.get("if"),
+                "then": r.get("then", []),
+                "priority": r.get("priority", 0),
+                "once": r.get("once", False),
+            }
+            for r in level_rules
+        ]
+        rules_engine = RulesEngine(self._game.rules, norm_level_rules)
+        max_depth = self._game.defaults.get("maxCascadeDepth", 3)
+        cascade_events = rules_engine.evaluate(all_events, state, effective_game, max_depth, systems)
+        all_events.extend(cascade_events)
+
+        # Phase 6: NPC resolution
+        npc_events: list[dict] = []
+        for sys in systems:
+            npc_events.extend(sys.execute_npc_resolution(state, effective_game))
+        all_events.extend(npc_events)
+
+        # Rules get a pass over the NPC events too. Without this, `npc_moved`
+        # and `avatar_caught` are documented as rule-triggerable events that no
+        # rule can ever see, because the cascade above runs before this phase.
+        if npc_events:
+            all_events.extend(rules_engine.evaluate(
+                npc_events, state, effective_game, max_depth, systems,
+            ))
+
+        # Derived state: variables that are pure functions of the board the
+        # turn has just finished with (readouts such as a pan's weight). Last,
+        # so nothing after it can make them stale.
+        for sys in systems:
+            sys.execute_derive_state(state, effective_game)
+
+        # Phase 7: Goal evaluation
+        #
+        # A turn that only *selects* an actor changes no board state, so it is
+        # not a move: it must not be charged against `max_actions`, nor shown
+        # as one in the UI, which reads this counter. Games that tap to switch
+        # between actors would otherwise pay for the tap as well as the step.
+        # `turn_count` still advances — it is the pipeline's tick, not a move.
+        #
+        # This counts every event from every phase, including NPC resolution
+        # — deliberately not excluded wholesale, since a system whose NPC
+        # resolution has a genuine, gameplay-relevant effect every turn (e.g.
+        # `turn_cycle` advancing a signal) must still cost the action even
+        # when the action itself was just a selection. What keeps a system
+        # like `beam`, which also runs unconditionally every turn, from
+        # wrongly disqualifying a free selection is its own responsibility:
+        # it must only emit events when its retrace actually changed
+        # something, not on every turn regardless — see `beam`'s own docs.
+        selection_only = bool(all_events) and all(
+            e["type"] == "actor_selected" for e in all_events)
+        if not selection_only:
+            state.action_count += 1
+        state.turn_count += 1
+
+        goals = self._level.get("goals", []) or []
+        lose_conditions = self._level.get("loseConditions", []) or []
+
+        is_won, goal_progress, goal_satisfied = evaluate_goals(goals, state, effective_game, all_events)
+        if is_won:
+            state.is_won = True
+
+        is_lost = False
+        lose_reason = None
+        if not state.is_won:
+            is_lost, lose_reason = evaluate_lose(
+                lose_conditions, state, goals, effective_game, goal_satisfied)
+            if is_lost:
+                state.is_lost = True
+
+        all_events.append(ev.turn_ended(state.turn_count))
+        self._state = state
+
+        return TurnResult(
+            accepted=True,
+            events=all_events,
+            is_won=state.is_won,
+            is_lost=is_lost,
+            lose_reason=lose_reason,
+            goal_progress=goal_progress,
+        )
+
+    def preview_turn(
+        self, action_id: str, params: Optional[dict] = None
+    ) -> TurnResult:
+        """Dry-run an action without committing it.
+
+        Returns the TurnResult the action *would* produce, leaving this
+        engine's state, history and win/loss flags untouched, so a UI can
+        answer "what would this do?" — which cells a destructive verb would
+        remove, what would move and where it would come to rest — before the
+        player commits.  Generic: any pack whose actions have consequences
+        that cannot be read off a static board can offer the same preview.
+
+        The previewed board is returned as ``result.new_state``: execute_turn
+        leaves it on the engine, so it is handed to the caller before being
+        rolled back.  A refused action changes nothing, so its ``new_state`` is
+        the live board — matching Dart's ``TurnResult.rejected(state)``.
+        """
+        saved = self._state
+        try:
+            result = self.execute_turn(action_id, params, save_history=False)
+            result.new_state = self._state
+            return result
+        finally:
+            self._state = saved
+
+    def undo(self) -> bool:
+        """Restore previous state. Returns False if nothing to undo."""
+        if not self._history:
+            return False
+        self._state = self._history.pop()
+        return True
+
+    def reset(self) -> None:
+        """Restore to initial state, clear undo stack."""
+        self._state = self._initial_state.copy()
+        self._history.clear()
+
+    def _apply_load_settle(self, state: GameState) -> None:
+        """Let systems settle derived board state before the first turn.
+
+        Mirrors Dart's `_applySystemLoadSettle`. Runs after the load cascade so
+        a system settles the board the rules have already finished with.
+        """
+        effective_game = self._game.with_system_overrides(self._level.get("systemOverrides"))
+        systems = instantiate_systems(effective_game)
+        for sys in systems:
+            sys.execute_load_settle(state, effective_game)
+        # Derived variables read the fully settled opening board, so they run
+        # only once every system has settled.
+        for sys in systems:
+            sys.execute_derive_state(state, effective_game)
+
+    def _apply_load_cascade(self, state: GameState) -> None:
+        """Fire ``object_placed`` events for every object on a non-ground layer
+        at level load, then run the rules engine cascade. Mirrors the Dart
+        engine so always-on rules like ``crate_floats_on_water`` apply
+        uniformly to objects placed during play and to objects already on the
+        board at start.
+        """
+        initial_events: list[dict] = []
+        for layer_def in self._game.layers:
+            if layer_def.get("occupancy") != "zero_or_one":
+                continue
+            layer = state.board.layers.get(layer_def["id"])
+            if layer is None:
+                continue
+            for pos, entity in layer.entries():
+                initial_events.append(
+                    ev.object_placed(pos, entity.kind, dict(entity.params))
+                )
+        if not initial_events:
+            return
+        effective_game = self._game.with_system_overrides(self._level.get("systemOverrides"))
+        systems = instantiate_systems(effective_game)
+        level_rules = self._level.get("rules", []) or []
+        norm_level_rules = [
+            {
+                "id": r.get("id", ""),
+                "on": r["on"],
+                "where": r.get("where"),
+                "if": r.get("if"),
+                "then": r.get("then", []),
+                "priority": r.get("priority", 0),
+                "once": r.get("once", False),
+            }
+            for r in level_rules
+        ]
+        rules_engine = RulesEngine(self._game.rules, norm_level_rules)
+        max_depth = self._game.defaults.get("maxCascadeDepth", 3)
+        rules_engine.evaluate(initial_events, state, effective_game, max_depth, systems)
+
+    def turn_count_matters(self) -> bool:
+        """True when an enabled system's behaviour in the current state reads
+        the turn counter, which ``state_key`` leaves out (see
+        ``GameSystem.depends_on_turn_count``)."""
+        effective_game = self._game.with_system_overrides(self._level.get("systemOverrides"))
+        return any(
+            sys.depends_on_turn_count(self._state, effective_game)
+            for sys in instantiate_systems(effective_game)
+        )
+
+    def state_key(self) -> tuple:
+        """Hashable state snapshot for BFS/A* deduplication."""
+        return self._state.to_key()

@@ -1,0 +1,95 @@
+---
+import Base from '../../layouts/Base.astro';
+import fs from 'node:fs';
+import path from 'node:path';
+
+// process.cwd() is the website/ directory when running npm run build / npm run dev
+const dslDir = path.resolve(process.cwd(), '../docs/dsl');
+const dslVersion = fs.readFileSync(path.join(dslDir, 'VERSION'), 'utf-8').trim();
+
+const sections = fs.readdirSync(dslDir)
+  .filter(f => f.endsWith('.md') && /^\d/.test(f))
+  .sort()
+  .map((file, idx) => {
+    const slug = file.replace('.md', '');
+    const content = fs.readFileSync(path.join(dslDir, file), 'utf-8');
+    const fullTitle = (content.split('\n').find(l => l.startsWith('# ')) ?? '').replace(/^#+\s*/, '');
+    // Strip "Gridponder DSL [vX.Y —] — " prefix for display
+    const title = fullTitle.replace(/^Gridponder DSL(?:\s+v[\d.]+)?\s*[—–-]\s*/i, '').trim();
+    // First non-empty, non-heading paragraph after the H1
+    const lines = content.split('\n');
+    const h1Idx = lines.findIndex(l => l.startsWith('# '));
+    const body = lines.slice(h1Idx + 1).filter(l => l.trim() && !l.startsWith('#'));
+    const excerpt = body[0]?.replace(/[`*_>]/g, '').slice(0, 160) ?? '';
+    const num = String(idx + 1).padStart(2, '0');
+    return { slug, title, excerpt, num };
+  });
+---
+<Base
+  title="DSL Reference"
+  description={`The GridPonder DSL v${dslVersion} — a declarative JSON spec for designing grid puzzle games.`}
+>
+  <div class="max-w-3xl mx-auto px-4 sm:px-6 py-16">
+    <!-- Header -->
+    <div class="mb-12">
+      <div class="inline-flex items-center gap-2 bg-brand-50 text-brand-700 font-mono text-xs font-semibold px-3 py-1.5 rounded-full border border-brand-100 mb-5">
+        <span>⊞</span>
+        <span>GridPonder DSL v{dslVersion}</span>
+      </div>
+      <h1 class="text-4xl sm:text-5xl font-black text-gray-900 mb-5 leading-tight">
+        Domain-Specific Language
+      </h1>
+      <p class="text-lg text-gray-600 leading-relaxed mb-3">
+        A declarative JSON format for defining deterministic, discrete, single-player, turn-based 2D grid puzzle games.
+      </p>
+      <p class="text-base text-gray-500 leading-relaxed">
+        Games are defined as structured data — entities, boards, systems, and rules — and interpreted by a fixed engine.
+        Packs contain only data and assets, never executable code.
+        The spec is designed to be readable by both humans and AI assistants.
+      </p>
+    </div>
+
+    <!-- Quick facts -->
+    <div class="grid grid-cols-3 gap-4 mb-12">
+      {[
+        { label: 'Format', value: 'JSON' },
+        { label: 'Entry point', value: 'manifest.json' },
+        { label: 'Game definition', value: 'game.json' },
+      ].map(({ label, value }) => (
+        <div class="bg-gray-50 rounded-xl p-4 border border-gray-100">
+          <div class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1">{label}</div>
+          <div class="font-mono font-bold text-brand-700 text-sm">{value}</div>
+        </div>
+      ))}
+    </div>
+
+    <!-- Section list -->
+    <div class="mb-12">
+      <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-4">Specification</h2>
+      <div class="divide-y divide-gray-100 border border-gray-200 rounded-xl overflow-hidden">
+        {sections.map(({ slug, title, excerpt, num }) => (
+          <a href={`/dsl/${slug}`}
+             class="group flex items-start gap-4 px-5 py-4 bg-white hover:bg-brand-50 transition-colors">
+            <span class="flex-shrink-0 font-mono text-xs text-gray-300 pt-0.5 w-5 text-right">{num}</span>
+            <div class="flex-1 min-w-0">
+              <div class="font-semibold text-gray-900 group-hover:text-brand-700 transition-colors">{title}</div>
+              {excerpt && <div class="text-sm text-gray-500 mt-0.5 leading-relaxed">{excerpt}</div>}
+            </div>
+            <span class="flex-shrink-0 text-gray-300 group-hover:text-brand-500 transition-colors pt-0.5">→</span>
+          </a>
+        ))}
+      </div>
+    </div>
+
+    <!-- CTA -->
+    <div class="p-6 bg-gray-50 rounded-xl border border-gray-200">
+      <p class="font-semibold text-gray-900 mb-1">Ready to create a game?</p>
+      <p class="text-gray-500 text-sm mb-4">
+        The DSL is designed to be used with AI tooling. Clone the repo and start a Claude Code session.
+      </p>
+      <a href="/play#create" class="inline-flex items-center gap-2 bg-brand-600 hover:bg-brand-700 text-white font-semibold px-4 py-2 rounded-lg transition-colors text-sm">
+        See the creator guide →
+      </a>
+    </div>
+  </div>
+</Base>

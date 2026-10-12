@@ -1,0 +1,292 @@
+{
+  "layers": [
+    {
+      "id": "ground",
+      "occupancy": "exactly_one",
+      "default": "empty"
+    },
+    {
+      "id": "objects",
+      "occupancy": "zero_or_one"
+    }
+  ],
+  "entityKinds": {
+    "empty": {
+      "layer": "ground",
+      "tags": [
+        "walkable"
+      ],
+      "sprite": null,
+      "symbol": "."
+    },
+    "void": {
+      "layer": "ground",
+      "tags": [],
+      "sprite": null,
+      "symbol": "#"
+    },
+    "num_1": {
+      "layer": "objects",
+      "tags": [],
+      "sprite": null,
+      "symbol": "1",
+      "display": {
+        "type": "label",
+        "color": "@hue:@kind_suffix:num_",
+        "label": "@kind_suffix:num_"
+      }
+    },
+    "num_2": {
+      "layer": "objects",
+      "tags": [],
+      "sprite": null,
+      "symbol": "2",
+      "display": {
+        "type": "label",
+        "color": "@hue:@kind_suffix:num_",
+        "label": "@kind_suffix:num_"
+      }
+    },
+    "num_3": {
+      "layer": "objects",
+      "tags": [],
+      "sprite": null,
+      "symbol": "3",
+      "display": {
+        "type": "label",
+        "color": "@hue:@kind_suffix:num_",
+        "label": "@kind_suffix:num_"
+      }
+    },
+    "num_4": {
+      "layer": "objects",
+      "tags": [],
+      "sprite": null,
+      "symbol": "4",
+      "display": {
+        "type": "label",
+        "color": "@hue:@kind_suffix:num_",
+        "label": "@kind_suffix:num_"
+      }
+    },
+    "num_5": {
+      "layer": "objects",
+      "tags": [],
+      "sprite": null,
+      "symbol": "5",
+      "display": {
+        "type": "label",
+        "color": "@hue:@kind_suffix:num_",
+        "label": "@kind_suffix:num_"
+      }
+    },
+    "num_6": {
+      "layer": "objects",
+      "tags": [],
+      "sprite": null,
+      "symbol": "6",
+      "display": {
+        "type": "label",
+        "color": "@hue:@kind_suffix:num_",
+        "label": "@kind_suffix:num_"
+      }
+    },
+    "num_7": {
+      "layer": "objects",
+      "tags": [],
+      "sprite": null,
+      "symbol": "7",
+      "display": {
+        "type": "label",
+        "color": "@hue:@kind_suffix:num_",
+        "label": "@kind_suffix:num_"
+      }
+    },
+    "num_8": {
+      "layer": "objects",
+      "tags": [],
+      "sprite": null,
+      "symbol": "8",
+      "display": {
+        "type": "label",
+        "color": "@hue:@kind_suffix:num_",
+        "label": "@kind_suffix:num_"
+      }
+    },
+    "num_9": {
+      "layer": "objects",
+      "tags": [],
+      "sprite": null,
+      "symbol": "9",
+      "display": {
+        "type": "label",
+        "color": "@hue:@kind_suffix:num_",
+        "label": "@kind_suffix:num_"
+      }
+    }
+  },
+  "actions": [
+    {
+      "id": "move",
+      "params": {
+        "direction": {
+          "type": "direction",
+          "values": [
+            "up",
+            "down",
+            "left",
+            "right"
+          ]
+        }
+      }
+    },
+    {
+      "id": "diagonal_swap",
+      "params": {
+        "direction": {
+          "type": "direction",
+          "values": [
+            "up_left",
+            "up_right"
+          ]
+        }
+      }
+    }
+  ],
+  "systems": [
+    {
+      "id": "avatar_nav",
+      "type": "avatar_navigation",
+      "config": {
+        "moveAction": "move",
+        "solidHandling": "block"
+      }
+    },
+    {
+      "id": "overlay_cursor",
+      "type": "overlay_cursor",
+      "config": {
+        "moveAction": "move",
+        "size": [
+          2,
+          2
+        ],
+        "anchorToAvatar": false
+      }
+    },
+    {
+      "id": "region_transform",
+      "type": "region_transform",
+      "config": {
+        "affectedLayers": [
+          "objects"
+        ],
+        "operations": {
+          "diag_swap": {
+            "action": "diagonal_swap",
+            "type": "diagonal_swap"
+          }
+        }
+      }
+    }
+  ],
+  "rules": [],
+  "defaults": {
+    "avatar": {
+      "enabled": true,
+      "facing": "right"
+    },
+    "maxCascadeDepth": 1
+  },
+  "ui": {
+    "showGoal": true
+  },
+  "levelSequence": [
+    {
+      "type": "story",
+      "title": "The Diagonal Dilemma",
+      "text": "Pip's number tiles have got themselves into a terrible muddle. They refuse to slide left or right like sensible tiles \u2014 instead they only swap diagonally, two at a time.\n\nMove Pip around the grid to position the 2\u00d72 swap cursor, then swipe diagonally to swap the corner tiles. Reach the target arrangement before you run out of moves!\n\nSome puzzles ask you to match a pattern. Others ask you to balance row sums. Either way, think before you swipe \u2014 each swap changes four tiles at once.",
+      "image": "assets/rabbit_diagonal_swipes.png"
+    },
+    {
+      "type": "level",
+      "ref": "ds_001"
+    },
+    {
+      "type": "level",
+      "ref": "ds_002"
+    },
+    {
+      "type": "level",
+      "ref": "ds_003"
+    },
+    {
+      "type": "level",
+      "ref": "ds_004"
+    },
+    {
+      "type": "level",
+      "ref": "ds_005"
+    },
+    {
+      "type": "level",
+      "ref": "ds_006"
+    },
+    {
+      "type": "level",
+      "ref": "ds_007"
+    },
+    {
+      "type": "level",
+      "ref": "ds_008"
+    },
+    {
+      "type": "level",
+      "ref": "ds_009"
+    },
+    {
+      "type": "level",
+      "ref": "ds_010"
+    },
+    {
+      "type": "level",
+      "ref": "ds_011"
+    },
+    {
+      "type": "level",
+      "ref": "ds_012"
+    },
+    {
+      "type": "level",
+      "ref": "ds_013"
+    },
+    {
+      "type": "level",
+      "ref": "ds_014"
+    },
+    {
+      "type": "level",
+      "ref": "ds_015"
+    },
+    {
+      "type": "level",
+      "ref": "ds_016"
+    },
+    {
+      "type": "level",
+      "ref": "ds_017"
+    },
+    {
+      "type": "level",
+      "ref": "ds_018"
+    },
+    {
+      "type": "level",
+      "ref": "ds_019"
+    },
+    {
+      "type": "level",
+      "ref": "ds_020"
+    }
+  ]
+}

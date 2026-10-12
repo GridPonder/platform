@@ -1,0 +1,289 @@
+"""
+GameDef: parsed game.json.
+
+Mirrors Dart's GameDefinition, LayerDef, EntityKindDef, ActionDef, SystemDef,
+RuleDef — but as plain Python dicts/dataclasses for simplicity.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any, Optional
+
+
+def _parse_condition(j: dict | None):
+    """Lazy import to avoid circular — conditions are parsed at rule-match time."""
+    return j  # store raw dict; condition.py evaluates it
+
+
+def _parse_effect(j: dict):
+    return j  # store raw dict; effect.py executes it
+
+
+def _observation_kind_table(entity_kinds: dict[str, dict]) -> dict[str, str]:
+    """Map each kind sharing a public observation symbol to its group's
+    first-declared kind. Kinds with ``symbolParam`` render their value and
+    never join a group."""
+    shared = {
+        kind["observationSymbol"]
+        for kind in entity_kinds.values()
+        if kind.get("observationSymbol") and kind.get("symbolParam") is None
+    }
+    first_by_symbol: dict[str, str] = {}
+    table: dict[str, str] = {}
+    for kind_id, kind in entity_kinds.items():
+        if kind.get("symbolParam") is not None:
+            continue
+        symbol = kind.get("observationSymbol") or kind["symbol"]
+        if symbol not in shared:
+            continue
+        table[kind_id] = first_by_symbol.setdefault(symbol, kind_id)
+    return table
+
+
+# ---------------------------------------------------------------------------
+# GameDef
+# ---------------------------------------------------------------------------
+
+class GameDef:
+    """
+    Parsed game.json.  All fields match the DSL schema in docs/dsl/02_game.md.
+    """
+
+    def __init__(self, data: dict, id: str = "", title: str = "", description: str = ""):
+        self.id = id
+        self.title = title
+        self.description = description
+
+        # Layers: list of {id, occupancy, isExactlyOne, defaultKind}
+        self.layers: list[dict] = [
+            {
+                "id": ld["id"],
+                "occupancy": ld.get("occupancy", "zero_or_one"),
+                "isExactlyOne": ld.get("occupancy") == "exactly_one",
+                "defaultKind": ld.get("default"),
+            }
+            for ld in data.get("layers", [])
+        ]
+
+        # Entity kinds: {kind_id: {id, layer, tags, params, animations, symbol, ...}}
+        raw_kinds = data.get("entityKinds", {})
+        self.entity_kinds: dict[str, dict] = {
+            k: self._parse_kind(k, v) for k, v in raw_kinds.items()
+        }
+
+        # Actions: list of {id, params: {name: {type, values}}, entityKind?, color?}
+        # entityKind accepts a single kind or a list of kinds — normalized to
+        # a list (or None) here so every consumer sees one shape.
+        def _entity_kinds(raw):
+            if raw is None:
+                return None
+            if isinstance(raw, str):
+                return [raw]
+            if isinstance(raw, list):
+                return raw
+            return None
+
+        self.actions: list[dict] = [
+            {
+                "id": a["id"],
+                "params": a.get("params", {}),
+                "entityKind": _entity_kinds(a.get("entityKind")),
+                "color": a.get("color"),
+            }
+            for a in data.get("actions", [])
+        ]
+
+        # Systems: list of {id, type, config, enabled}
+        self.systems: list[dict] = [
+            {
+                "id": s["id"],
+                "type": s["type"],
+                "config": s.get("config", {}),
+                "enabled": s.get("enabled", True),
+            }
+            for s in data.get("systems", [])
+        ]
+
+        # Rules: list of rule dicts (raw — evaluated lazily)
+        self.rules: list[dict] = [
+            {
+                "id": r["id"],
+                "on": r["on"],
+                "where": r.get("where"),
+                "if": r.get("if"),
+                "then": r.get("then", []),
+                "priority": r.get("priority", 0),
+                "once": r.get("once", False),
+            }
+            for r in data.get("rules", [])
+        ]
+
+        # Defaults
+        raw_defaults = data.get("defaults", {})
+        raw_avatar = raw_defaults.get("avatar", {})
+        self.defaults = {
+            "avatarEnabled": raw_avatar.get("enabled", True),
+            "avatarFacing": raw_avatar.get("facing", "right"),
+            "maxCascadeDepth": raw_defaults.get("maxCascadeDepth", 3),
+        }
+
+        # Per-game goal-text overrides, keyed by goal id. Lets a pack supply
+        # a precise mechanical description ("Push every seed basket onto a
+        # garden plot — both disappear when paired") instead of relying on
+        # the renderer's generic auto-generated text ("Clear all garden
+        # plots from the board"). Empty dict by default.
+        self.goal_descriptions: dict[str, str] = data.get("goalDescriptions", {}) or {}
+
+        # `ui.readouts`: live `state.variables` values the pack surfaces during
+        # play, in declaration order. Mirrors Dart's GameUiConfig.readouts —
+        # non-object entries and entries without a variable are dropped.
+        self.ui_readouts: list[dict] = self._parse_readouts(data.get("ui"))
+
+    @staticmethod
+    def _parse_readouts(raw_ui) -> list[dict]:
+        if not isinstance(raw_ui, dict):
+            return []
+        raw = raw_ui.get("readouts")
+        if not isinstance(raw, list):
+            return []
+        readouts: list[dict] = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            variable = entry.get("variable")
+            if not isinstance(variable, str) or not variable:
+                continue
+            label = entry.get("label")
+            blank = entry.get("blankWhen")
+            if isinstance(blank, bool) or not isinstance(blank, (int, float)):
+                blank = None
+            readouts.append({
+                "variable": variable,
+                "label": label if isinstance(label, str) else "",
+                "color": entry.get("color") if isinstance(entry.get("color"), str) else None,
+                "blankWhen": int(blank) if blank is not None else None,
+            })
+        return readouts
+
+    @staticmethod
+    def _parse_kind(kind_id: str, j: dict) -> dict:
+        observation_symbol = j.get("observationSymbol")
+        if observation_symbol is not None:
+            if not isinstance(observation_symbol, str):
+                raise ValueError(
+                    f'Entity kind "{kind_id}": observationSymbol must be a string'
+                )
+            if observation_symbol == "":
+                raise ValueError(
+                    f'Entity kind "{kind_id}": observationSymbol must not be empty'
+                )
+            if observation_symbol == "@":
+                raise ValueError(
+                    f'Entity kind "{kind_id}": observationSymbol "@" is '
+                    "reserved for the avatar"
+                )
+        return {
+            "id": kind_id,
+            "layer": j.get("layer", "objects"),
+            "tags": j.get("tags", []),
+            "params": j.get("params", {}),
+            "animations": j.get("animations", {}),
+            "symbol": j.get("symbol", "?"),
+            "observationSymbol": observation_symbol,
+            "symbolParam": j.get("symbolParam"),
+            "sprite": j.get("sprite"),
+            "spriteParam": j.get("spriteParam"),
+            "uiName": j.get("uiName"),
+            "description": j.get("description"),
+            "motion": j.get("motion", {}),
+            "outline": j.get("outline"),
+            "display": j.get("display"),
+        }
+
+    def has_tag(self, kind_name: str, tag: str) -> bool:
+        kind = self.entity_kinds.get(kind_name)
+        return tag in (kind.get("tags", []) if kind else [])
+
+    def public_symbol(self, kind_id: str) -> str | None:
+        """The symbol text observations show for ``kind_id``.
+
+        ``observationSymbol`` when declared, else the unique authoring
+        ``symbol``. None for an unknown kind.
+        """
+        kind = self.entity_kinds.get(kind_id)
+        if kind is None:
+            return None
+        return kind.get("observationSymbol") or kind["symbol"]
+
+    def observation_kind(self, kind_id: str) -> str:
+        """The kind whose name and description represent ``kind_id`` publicly.
+
+        Kinds that show the same public symbol, where at least one of them
+        declares ``observationSymbol``, must stay indistinguishable in every
+        observation. They all present the first-declared kind (entityKinds
+        order) with that public symbol, so the printed name never depends on
+        which member happens to be on the board. Every other kind represents
+        itself.
+        """
+        table = self.__dict__.get("_observation_kind_table")
+        if table is None:
+            table = _observation_kind_table(self.entity_kinds)
+            self.__dict__["_observation_kind_table"] = table
+        return table.get(kind_id, kind_id)
+
+    def observation_name(self, kind_id: str) -> str:
+        """Public display name for ``kind_id`` (see observation_kind)."""
+        rep = self.observation_kind(kind_id)
+        kind = self.entity_kinds.get(rep)
+        return (kind.get("uiName") if kind else None) or rep.replace("_", " ")
+
+    def observation_description(self, kind_id: str) -> str | None:
+        """Public description for ``kind_id`` (see observation_kind)."""
+        kind = self.entity_kinds.get(self.observation_kind(kind_id))
+        return kind.get("description") if kind else None
+
+    def system_config(self, system_id: str, overrides: Optional[dict] = None) -> dict:
+        for s in self.systems:
+            if s["id"] == system_id:
+                base = s.get("config", {})
+                if overrides and system_id in overrides:
+                    return {**base, **overrides[system_id]}
+                return base
+        return {}
+
+    def with_system_overrides(self, overrides: Optional[dict]) -> "GameDef":
+        if not overrides:
+            return self
+
+        effective = object.__new__(GameDef)
+        effective.__dict__ = self.__dict__.copy()
+        systems = []
+        for system in self.systems:
+            override = overrides.get(system["id"], {}) or {}
+            config_override = {k: v for k, v in override.items() if k != "enabled"}
+            systems.append({
+                **system,
+                "config": {**system.get("config", {}), **config_override},
+                "enabled": override.get("enabled", system.get("enabled", True)),
+            })
+        effective.systems = systems
+        return effective
+
+    def get_system_by_type(self, sys_type: str) -> Optional[dict]:
+        for s in self.systems:
+            if s["type"] == sys_type:
+                return s
+        return None
+
+    def is_valid_action(self, action_id: str) -> bool:
+        return any(a["id"] == action_id for a in self.actions)
+
+    @classmethod
+    def from_file(cls, game_json_path: str, id: str = "", title: str = "", description: str = "") -> "GameDef":
+        data = json.loads(Path(game_json_path).read_text())
+        return cls(data, id=id, title=title, description=description)
+
+    @classmethod
+    def from_dict(cls, data: dict, id: str = "", title: str = "", description: str = "") -> "GameDef":
+        return cls(data, id=id, title=title, description=description)

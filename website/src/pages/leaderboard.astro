@@ -1,0 +1,1118 @@
+---
+import { readFileSync, existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+import Base from '../layouts/Base.astro';
+
+const leaderboardPath = resolve(
+  process.cwd(),
+  '../tools/benchmark/leaderboard.json',
+);
+let models: any[] = [];
+let levelResultsCols: string[] = [];
+let levelResults: any[][] = [];
+let generated: string | null = null;
+
+if (existsSync(leaderboardPath)) {
+    const leaderboard = JSON.parse(readFileSync(leaderboardPath, 'utf-8'));
+    models = leaderboard.models ?? [];
+    levelResultsCols = leaderboard.level_results_columns ?? [];
+    levelResults = leaderboard.level_results ?? [];
+    generated = leaderboard.generated
+      ? new Date(leaderboard.generated).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+      : null;
+}
+
+// All pack IDs across all entries (union, for table columns)
+const allPacks = [...new Set(models.flatMap((m: any) => Object.keys(m.by_pack ?? {})))].sort() as string[];
+
+const modelsJson = JSON.stringify(models);
+const allPacksJson = JSON.stringify(allPacks);
+const levelResultsJson = JSON.stringify({ columns: levelResultsCols, rows: levelResults });
+const reportTitle = 'AI Leaderboard';
+const reportDescription = 'Results on public example games across interaction modes and input modalities.';
+const reportNotice = '';
+const reportModelDescription = 'Models included in this report are listed in the rankings below.';
+---
+<Base
+  title={reportTitle}
+  description={reportDescription}
+>
+  <div class="max-w-6xl mx-auto px-4 sm:px-6 py-16">
+    <!-- Header -->
+    <div class="mb-12">
+      <div class="flex items-center gap-2 text-amber-600 font-mono text-sm mb-4">
+        <span>🏆</span>
+        <span>AI Benchmarks</span>
+      </div>
+      <h1 class="text-4xl sm:text-5xl font-black text-gray-900 mb-5 leading-tight">
+        {reportTitle}
+      </h1>
+      <p class="text-lg text-gray-600 leading-relaxed">
+        {reportDescription}
+      </p>
+      {reportNotice && (
+        <div class="mt-5 border-l-4 border-amber-500 bg-amber-50 px-4 py-3 text-sm text-gray-700">
+          {reportNotice}
+        </div>
+      )}
+    </div>
+
+    <!-- How it works -->
+    <div class="grid sm:grid-cols-3 gap-6 mb-10">
+      <div class="bg-gray-50 rounded-2xl p-6 border border-gray-100">
+        <div class="text-3xl mb-3">🧩</div>
+        <h2 class="font-bold text-gray-900 mb-2">What is measured</h2>
+        <p class="text-sm text-gray-500 leading-relaxed">
+          Each turn the model sees the goal, the last action taken, the full list of valid actions,
+          and the current board — as a <strong class="text-gray-700">text grid</strong>, a
+          <strong class="text-gray-700">rendered image</strong>, or both, depending on the selected
+          modality. It can maintain a <strong class="text-gray-700">persistent memory</strong> string
+          across turns — its only way to carry information forward between steps.
+        </p>
+      </div>
+      <div class="bg-gray-50 rounded-2xl p-6 border border-gray-100">
+        <div class="text-3xl mb-3">📊</div>
+        <h2 class="font-bold text-gray-900 mb-2">How scores work</h2>
+        <p class="text-sm text-gray-500 leading-relaxed">
+          The headline <strong class="text-gray-700">Score</strong> is a 50/50 blend of solve-rate
+          and path efficiency. Detailed column definitions live under each table below.
+          Per attempt the action budget is 2× the gold-path length; total across attempts is 3×.
+        </p>
+      </div>
+      <div class="bg-gray-50 rounded-2xl p-6 border border-gray-100">
+        <div class="text-3xl mb-3">🤖</div>
+        <h2 class="font-bold text-gray-900 mb-2">Which models</h2>
+        <p class="text-sm text-gray-500 leading-relaxed">
+          {reportModelDescription}
+        </p>
+      </div>
+    </div>
+
+    <!-- Selector: tabs (input modality) + pill row (inference mode) -->
+    <div class="mb-8">
+      <div id="view-tabs" class="inline-flex flex-wrap items-center gap-1.5 mb-3"></div>
+      <div id="mode-pills-wrapper" class="flex items-center gap-3 min-h-[44px]">
+        <div id="mode-pills" class="inline-flex items-center gap-1 bg-gray-100 rounded-xl p-1.5"></div>
+      </div>
+      <p id="combo-description" class="mt-3 text-sm text-gray-500 max-w-2xl leading-relaxed"></p>
+    </div>
+
+    <!-- Overall leaderboard table -->
+    <div class="rounded-2xl border border-gray-200 overflow-hidden mb-12">
+      <div class="bg-gray-50 border-b border-gray-200 px-6 py-4 flex items-center justify-between flex-wrap gap-3">
+        <h2 class="font-bold text-gray-900">Overall Rankings</h2>
+        <div class="flex items-center gap-3">
+          <div id="metric-toggle" class="hidden inline-flex items-center gap-0.5 bg-gray-100 rounded-lg p-0.5 text-xs">
+            <button data-metric="absolute" class="metric-btn px-2.5 py-1 rounded-md font-medium transition-colors">Absolute</button>
+            <button data-metric="relative" class="metric-btn px-2.5 py-1 rounded-md font-medium transition-colors">vs. text</button>
+          </div>
+          {generated
+            ? <span class="text-xs text-gray-400 bg-white border border-gray-200 px-3 py-1 rounded-full">Updated {generated}</span>
+            : <span class="text-xs text-gray-400 bg-white border border-gray-200 px-3 py-1 rounded-full">No data yet</span>
+          }
+        </div>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50 border-b border-gray-200">
+            <tr>
+              {['#', 'Model', 'Type', 'Score', 'Accuracy', 'Efficiency', 'Cost', 'Score / $'].map(col => (
+                <th class="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">{col}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody id="overall-tbody" class="divide-y divide-gray-100"></tbody>
+        </table>
+      </div>
+    </div>
+    <p class="mt-3 text-xs text-gray-400 leading-relaxed">
+      <strong class="text-gray-500">Score</strong> — 0.5 × accuracy + 0.5 × efficiency per level (failed levels contribute 0); used for ranking. &ensp;·&ensp;
+      <strong class="text-gray-500">Accuracy</strong> — fraction of levels solved within the action budget. &ensp;·&ensp;
+      <strong class="text-gray-500">Efficiency</strong> — gold path length ÷ actions used, on solved levels only (1.0 = optimal). &ensp;·&ensp;
+      <strong class="text-gray-500">Cost</strong> — average USD per level (API models). &ensp;·&ensp;
+      <strong class="text-gray-500">Score / $</strong> — aggregate score divided by cost per level; higher = better value (API models only).
+      <span id="levels-footnote"></span>
+    </p>
+
+    <!-- Pareto chart -->
+    <div class="rounded-2xl border border-gray-200 overflow-hidden mb-6 mt-10">
+      <div class="bg-gray-50 border-b border-gray-200 px-6 py-4">
+        <h2 class="font-bold text-gray-900">Cost vs. Score — API Models</h2>
+        <p class="text-xs text-gray-500 mt-0.5">Blue = standard, purple = thinking/reasoning. Log scale on x-axis. Hover any dot for details.</p>
+      </div>
+      <div class="px-2 py-2" id="pareto-chart" style="height:380px"></div>
+    </div>
+
+    <!-- Difficulty curve chart -->
+    <div class="rounded-2xl border border-gray-200 overflow-hidden mb-6 mt-10">
+      <div class="bg-gray-50 border-b border-gray-200 px-6 py-4 flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 class="font-bold text-gray-900">Difficulty Curve</h2>
+          <p class="text-xs text-gray-500 mt-0.5">Accuracy by gold-path length. Buckets are 2 steps wide below 10 and 5 steps wide from 10 onward. Shaded band is a 95% Wilson confidence interval on the average. Hover any point for sample size.</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <label class="text-xs text-gray-500" for="diff-pack">Pack:</label>
+          <select id="diff-pack" class="text-xs border border-gray-300 rounded-lg px-2 py-1 bg-white"></select>
+        </div>
+      </div>
+      <div class="px-2 py-2" id="diff-chart" style="height:360px"></div>
+      <div class="px-6 pb-4 pt-3 border-t border-gray-100">
+        <p class="text-xs text-gray-500 mb-2">Click models to overlay individual curves:</p>
+        <div id="diff-model-picker" class="flex flex-wrap gap-1.5"></div>
+      </div>
+    </div>
+
+    <!-- Grid-size curve chart -->
+    <div class="rounded-2xl border border-gray-200 overflow-hidden mb-6 mt-10">
+      <div class="bg-gray-50 border-b border-gray-200 px-6 py-4 flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 class="font-bold text-gray-900">Grid Size vs Accuracy</h2>
+          <p class="text-xs text-gray-500 mt-0.5">Accuracy by playable-cell count (excludes void cells). Buckets are 5 wide below 30 and 20 wide from 30 onward. Shaded band is a 95% Wilson confidence interval on the average.</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <label class="text-xs text-gray-500" for="cells-pack">Pack:</label>
+          <select id="cells-pack" class="text-xs border border-gray-300 rounded-lg px-2 py-1 bg-white"></select>
+        </div>
+      </div>
+      <div class="px-2 py-2" id="cells-chart" style="height:360px"></div>
+      <div class="px-6 pb-4 pt-3 border-t border-gray-100">
+        <p class="text-xs text-gray-500 mb-2">Click models to overlay individual curves:</p>
+        <div id="cells-model-picker" class="flex flex-wrap gap-1.5"></div>
+      </div>
+    </div>
+
+    <!-- Game Analysis (behavioural metrics) -->
+    <div class="rounded-2xl border border-gray-200 overflow-hidden mb-12 mt-10">
+      <div class="bg-gray-50 border-b border-gray-200 px-6 py-4">
+        <h2 class="font-bold text-gray-900">Game Analysis</h2>
+        <p class="text-xs text-gray-500 mt-0.5">How models cope, recover, and use memory. Reflects the inference mode selected above. Column definitions below the table.</p>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50 border-b border-gray-200">
+            <tr id="behaviour-thead"></tr>
+          </thead>
+          <tbody id="behaviour-tbody" class="divide-y divide-gray-100"></tbody>
+        </table>
+      </div>
+      <div class="px-6 py-4 text-xs text-gray-500 border-t border-gray-100 leading-relaxed space-y-1.5">
+        <p><strong class="text-gray-700">Recovery</strong> — fraction of levels in which the model failed at least one attempt and then went on to succeed.</p>
+        <p><strong class="text-gray-700">Rejection</strong> — fraction of LLM calls returning an action the engine refused (wrong shape, illegal target, etc.).</p>
+        <p><strong class="text-gray-700">Resets/lvl</strong> — average number of resets per level, counting both auto-resets (per-attempt action limit hit) and voluntary give-ups.</p>
+        <p><strong class="text-gray-700">Gave up</strong> — fraction of levels where the model used the <code class="bg-gray-100 px-1 rounded">give_up</code> action at least once.</p>
+        <p><strong class="text-gray-700">Mem write rate</strong> — fraction of LLM calls in which the model wrote a non-empty memory string. The final winning call on solved levels is excluded (its memory update is irrelevant — the game is over).</p>
+        <p><strong class="text-gray-700">Mem chars</strong> — median character length of non-empty memory strings written.</p>
+        <p><strong class="text-gray-700">State loops</strong> — fraction of turns whose resulting (board, inventory) hash had been seen earlier in the same attempt — i.e. the model cycled.</p>
+        <p class="text-gray-400 pt-1">A dash (—) means the metric isn't yet available — it requires a benchmark re-run with the latest runner instrumentation.</p>
+      </div>
+    </div>
+
+    <!-- Per-pack breakdown -->
+    <div id="pack-section" class="mb-12">
+      <h2 class="font-bold text-gray-900 text-lg mb-4">Breakdown by Pack</h2>
+      <div class="rounded-2xl border border-gray-200 overflow-hidden overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50 border-b border-gray-200">
+            <tr>
+              <th class="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide sticky left-0 bg-gray-50 whitespace-nowrap">Model</th>
+              {allPacks.map((pack: string) => (
+                <th class="text-center px-3 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">{pack.replace(/_/g, ' ')}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody id="pack-tbody" class="divide-y divide-gray-100"></tbody>
+        </table>
+      </div>
+      <p class="mt-2 text-xs text-gray-400">Values show accuracy (% levels solved). ✦ = thinking/reasoning enabled.</p>
+    </div>
+
+    <!-- Report scope -->
+    <div class="mt-4 p-8 bg-amber-50 rounded-2xl border border-amber-100">
+      <h2 class="font-bold text-gray-900 text-lg mb-2">Report scope</h2>
+      <p class="text-gray-600 text-sm leading-relaxed">
+        This is a static internal snapshot generated from a single benchmark scope. Use the modality
+        tabs and planning-mode controls above to compare configurations. See the accompanying
+        challenge-analysis report for per-level discrimination and game-design findings.
+      </p>
+    </div>
+  </div>
+
+  <script define:vars={{ modelsJson, allPacksJson, levelResultsJson }}>
+    const ALL_MODELS = JSON.parse(modelsJson);
+    const ALL_PACKS  = JSON.parse(allPacksJson);
+    const _lr = JSON.parse(levelResultsJson);
+    const LEVEL_ROWS = (_lr.rows ?? []).map(r => Object.fromEntries((_lr.columns ?? []).map((c, i) => [c, r[i]])));
+
+    // Descriptions keyed by `${mode}|${anon}|${input}` (anon is bool, input is text/image/text+image).
+    // Aggregate gets a single key 'aggregate|false|text' — input is ignored in aggregate.
+    const COMBO_DESCRIPTIONS = {
+      'aggregate|false|text': 'Average of score, accuracy, and efficiency across every inference mode and input modality the model has been evaluated on. Each (mode, input) combo contributes equally if data is available.',
+      // text input (existing)
+      'single|false|text':       'One action per LLM call. The model sees the text-rendered board and picks exactly one move. The baseline interaction mode.',
+      'flex-n|false|text':       'The model chooses 1–5 actions per call from the text-rendered board. Extra steps beyond the first are penalised (−0.5 per extra step), rewarding confident multi-step planning.',
+      'full|false|text':         'All actions in a single call from the text-rendered board — no intermediate feedback. The model must plan the complete solution upfront.',
+      'single|true|text':        'Single-step with anonymised labels: entity kinds and action IDs are replaced with arbitrary codes. Tests whether performance depends on domain-familiar language rather than spatial reasoning.',
+      'flex-n|true|text':        'Flex-n with anonymised labels: multi-step planning where all entity and action names carry no semantic meaning.',
+      // image input
+      'single|false|image':      'Single-step on a rendered board image (no text grid). Tests purely visual perception of the board state.',
+      'flex-n|false|image':      'Flex-n with the board provided only as an image. Multi-step planning from visual input.',
+      'full|false|image':        'Full one-shot solve from a single board image, no text grid.',
+      // text + image
+      'single|false|text+image': 'Single-step with both the text grid and the rendered image attached. Most expensive variant — tests whether visual context boosts spatial reasoning.',
+      'flex-n|false|text+image': 'Flex-n with both text and image. Multi-step planning with redundant representations.',
+      'full|false|text+image':   'Full one-shot solve with both text and image. The most information-dense variant.',
+    };
+
+    // Top-level views (tabs). Each carries the (anon, input) it implies and the
+    // list of inference modes it offers as pills. Aggregate has no pill row.
+    const VIEWS = [
+      { id: 'aggregate',  label: 'Aggregate',  anon: false, input: 'text',       modes: [] },
+      { id: 'text',       label: 'Text',       anon: false, input: 'text',       modes: ['single', 'flex-n', 'full'] },
+      { id: 'image',      label: 'Image',      anon: false, input: 'image',      modes: ['single', 'flex-n', 'full'] },
+      { id: 'text+image', label: 'Text+Image', anon: false, input: 'text+image', modes: ['single', 'flex-n', 'full'] },
+      { id: 'anon',       label: 'Anon',       anon: true,  input: 'text',       modes: ['single', 'flex-n'] },
+    ];
+    const MODE_LABELS = { 'single': 'Single', 'flex-n': 'Flex-n', 'full': 'Full' };
+
+    let currentView = 'aggregate';
+    let currentMode = 'aggregate';   // 'aggregate' | one of the inference modes
+    let currentAnon = false;
+    let currentInput = 'text';
+    let currentMetric = 'absolute';  // 'absolute' | 'relative' (vs. text baseline)
+
+    function strip_provider(name) {
+      return name.replace(/\s*\([^)]+\)$/, '');
+    }
+
+    function fmt_pct(v) {
+      if (v == null) return '—';
+      return (v * 100).toFixed(0) + '%';
+    }
+    function fmt_eff(v) {
+      if (v == null) return '—';
+      return v.toFixed(2);
+    }
+    // TODO: local model table — show p50_latency_ms here once local benchmark data exists.
+    // fmt_lat is kept for that future use.
+    function fmt_lat(v) {
+      if (v == null) return '—';
+      return v < 1000 ? `${v.toFixed(0)} ms` : `${(v / 1000).toFixed(1)} s`;
+    }
+    function fmt_cost(v) {
+      if (v == null) return '—';
+      if (v < 0.001) return '<$0.001';
+      return `$${v.toFixed(3)}`;
+    }
+    function fmt_spd(score, cost) {
+      if (score == null || cost == null || cost === 0) return '—';
+      const v = score / cost;
+      return v < 1 ? v.toFixed(2) : v.toFixed(1);
+    }
+
+    // ── Relative-to-text-baseline plumbing ──────────────────────────────────
+    // For a given model entry the text baseline is the same model id with the
+    // same inference mode, anon=false, input=text. For aggregate-view rows the
+    // baseline is the average of every text-named entry for that model.
+    function getTextBaseline(model) {
+      if (!model) return null;
+      if (model.inference_mode === 'aggregate') {
+        const entries = ALL_MODELS.filter(m =>
+          m.id === model.id && (m.input_mode ?? 'text') === 'text' && !m.anon
+        );
+        if (!entries.length) return null;
+        const mean = arr => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+        const avg = field => mean(entries.map(e => e.overall?.[field]).filter(v => v != null));
+        return { overall: {
+          avg_aggregate_score: avg('avg_aggregate_score'),
+          success_rate:        avg('success_rate'),
+          avg_efficiency:      avg('avg_efficiency'),
+          avg_cost_usd:        avg('avg_cost_usd'),
+        } };
+      }
+      return ALL_MODELS.find(m =>
+        m.id === model.id &&
+        m.inference_mode === model.inference_mode &&
+        !m.anon &&
+        (m.input_mode ?? 'text') === 'text'
+      ) ?? null;
+    }
+
+    // Signed % delta vs baseline. lowerIsBetter flips the colour scale (used for cost).
+    function fmt_delta(value, baseline, { lowerIsBetter = false } = {}) {
+      if (value == null || baseline == null || baseline === 0) return '<span class="text-gray-300">—</span>';
+      const pct = (value / baseline - 1) * 100;
+      const sign = pct > 0 ? '+' : (pct < 0 ? '−' : '');
+      const txt = `${sign}${Math.abs(pct).toFixed(0)}%`;
+      let cls;
+      if (Math.abs(pct) < 0.5) {
+        cls = 'text-gray-500';
+      } else {
+        const isImprovement = lowerIsBetter ? pct < 0 : pct > 0;
+        cls = isImprovement ? 'text-green-700 font-semibold' : 'text-red-600 font-semibold';
+      }
+      return `<span class="${cls}">${txt}</span>`;
+    }
+
+    function computeAggregate() {
+      const byId = {};
+      for (const m of ALL_MODELS) {
+        if (!byId[m.id]) byId[m.id] = { id: m.id, display_name: m.display_name, local: m.local, reasoning: m.reasoning, entries: [] };
+        byId[m.id].entries.push(m);
+      }
+      const mean = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+      const BEH_KEYS = ['recovery_rate', 'rejection_rate', 'mean_resets_per_level', 'voluntary_giveup_rate', 'memory_use_rate', 'median_memory_chars', 'repeated_state_rate'];
+      return Object.values(byId).map(g => {
+        const avg = field => mean(g.entries.map(e => e.overall?.[field]).filter(v => v != null));
+        const bavg = key => mean(g.entries.map(e => e.overall?.behaviour?.[key]).filter(v => v != null));
+        const packKeys = [...new Set(g.entries.flatMap(e => Object.keys(e.by_pack ?? {})))];
+        const by_pack = {};
+        for (const pack of packKeys) {
+          const ps = g.entries.map(e => e.by_pack?.[pack]).filter(Boolean);
+          const pavg = field => mean(ps.map(p => p[field]).filter(v => v != null));
+          by_pack[pack] = { success_rate: pavg('success_rate'), avg_aggregate_score: pavg('avg_aggregate_score') };
+        }
+        return {
+          id: g.id, display_name: g.display_name, local: g.local, reasoning: g.reasoning,
+          inference_mode: 'aggregate', anon: false, input_mode: 'aggregate',
+          overall: {
+            avg_aggregate_score: avg('avg_aggregate_score'),
+            success_rate:        avg('success_rate'),
+            avg_efficiency:      avg('avg_efficiency'),
+            p50_latency_ms:      avg('p50_latency_ms'),
+            avg_cost_usd:        avg('avg_cost_usd'),
+            levels_run:          g.entries.reduce((s, e) => s + (e.overall?.levels_run ?? 0), 0),
+            behaviour:           Object.fromEntries(BEH_KEYS.map(k => [k, bavg(k)])),
+          },
+          by_pack,
+        };
+      }).sort((a, b) => (b.overall.avg_aggregate_score ?? 0) - (a.overall.avg_aggregate_score ?? 0));
+    }
+
+    function getModels() {
+      if (currentMode === 'aggregate') return computeAggregate();
+      return ALL_MODELS.filter(m =>
+        m.inference_mode === currentMode &&
+        (m.anon ?? false) === currentAnon &&
+        (m.input_mode ?? 'text') === currentInput
+      );
+    }
+
+    function renderOverall(models) {
+      const tbody = document.getElementById('overall-tbody');
+      if (!models.length) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="8" class="px-6 py-20 text-center">
+              <div class="flex flex-col items-center gap-4 text-gray-400">
+                <span class="text-5xl">🤖</span>
+                <div>
+                  <p class="font-semibold text-gray-500 mb-1">No results yet for this configuration</p>
+                  <p class="text-sm">Run <code class="bg-gray-100 px-1 rounded">bench.py --mode ${currentMode}${currentAnon ? ' --anon' : ''}${currentInput !== 'text' ? ' --input ' + currentInput : ''}</code> to generate data.</p>
+                </div>
+              </div>
+            </td>
+          </tr>`;
+        return;
+      }
+      tbody.innerHTML = models.map((m, i) => `
+        <tr class="hover:bg-gray-50 transition-colors">
+          <td class="px-4 py-3 text-gray-400 font-mono">${i + 1}</td>
+          <td class="px-4 py-3">
+            <span class="font-semibold text-gray-900">${strip_provider(m.display_name)}</span>
+            ${m.reasoning ? '<span class="ml-2 text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded font-medium">thinking</span>' : ''}
+          </td>
+          <td class="px-4 py-3">
+            ${m.local
+              ? '<span class="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-medium">local</span>'
+              : '<span class="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-medium">API</span>'
+            }
+          </td>
+          ${(() => {
+            const o = m.overall ?? {};
+            const score = o.avg_aggregate_score, acc = o.success_rate, eff = o.avg_efficiency, cost = o.avg_cost_usd;
+            const spd = (score != null && cost) ? score / cost : null;
+            if (currentMetric === 'relative') {
+              const b = getTextBaseline(m)?.overall ?? {};
+              const bScore = b.avg_aggregate_score, bAcc = b.success_rate, bEff = b.avg_efficiency, bCost = b.avg_cost_usd;
+              const bSpd = (bScore != null && bCost) ? bScore / bCost : null;
+              return `
+          <td class="px-4 py-3 font-mono font-semibold">${fmt_delta(score, bScore)}</td>
+          <td class="px-4 py-3 font-mono">${fmt_delta(acc, bAcc)}</td>
+          <td class="px-4 py-3 font-mono">${fmt_delta(eff, bEff)}</td>
+          <td class="px-4 py-3 font-mono">${m.local ? '<span class="text-gray-300">—</span>' : fmt_delta(cost, bCost, { lowerIsBetter: true })}</td>
+          <td class="px-4 py-3 font-mono">${m.local ? '<span class="text-gray-300">—</span>' : fmt_delta(spd, bSpd)}</td>`;
+            }
+            return `
+          <td class="px-4 py-3 font-mono font-semibold text-gray-900">${fmt_eff(score)}</td>
+          <td class="px-4 py-3 font-mono text-gray-700">${fmt_pct(acc)}</td>
+          <td class="px-4 py-3 font-mono text-gray-700">${fmt_eff(eff)}</td>
+          <td class="px-4 py-3 font-mono text-gray-500">${m.local ? '—' : fmt_cost(cost)}</td>
+          <td class="px-4 py-3 font-mono text-gray-500">${m.local ? '—' : fmt_spd(score, cost)}</td>`;
+          })()}
+        </tr>`
+      ).join('');
+    }
+
+    function renderPacks(models) {
+      const section = document.getElementById('pack-section');
+      const tbody   = document.getElementById('pack-tbody');
+      if (!models.length || !ALL_PACKS.length) {
+        section.style.display = 'none';
+        return;
+      }
+      section.style.display = '';
+      tbody.innerHTML = models.map(m => `
+        <tr class="hover:bg-gray-50 transition-colors">
+          <td class="px-4 py-3 sticky left-0 bg-white font-semibold text-gray-800 whitespace-nowrap">
+            ${strip_provider(m.display_name)}
+            ${m.reasoning ? '<span class="ml-1 text-xs text-purple-500">✦</span>' : ''}
+          </td>
+          ${ALL_PACKS.map(pack => {
+            const ps = m.by_pack?.[pack];
+            if (!ps) return '<td class="px-3 py-3 text-center"><span class="text-gray-300">—</span></td>';
+            const sr = ps.success_rate ?? 0;
+            const cls = sr >= 0.8 ? 'text-green-700 font-semibold' : sr >= 0.5 ? 'text-amber-700' : 'text-red-600';
+            return `<td class="px-3 py-3 text-center"><span class="font-mono text-xs ${cls}">${fmt_pct(ps.success_rate)}</span></td>`;
+          }).join('')}
+        </tr>`
+      ).join('');
+    }
+
+    // Brand colour palette per view tab — lets each modality "glow" distinctly.
+    const VIEW_COLORS = {
+      'aggregate':   { active: 'bg-gray-900 text-white shadow',           hover: 'hover:bg-gray-200' },
+      'text':        { active: 'bg-indigo-600 text-white shadow',         hover: 'hover:bg-indigo-50' },
+      'image':       { active: 'bg-emerald-600 text-white shadow',        hover: 'hover:bg-emerald-50' },
+      'text+image':  { active: 'bg-purple-600 text-white shadow',         hover: 'hover:bg-purple-50' },
+      'anon':        { active: 'bg-amber-600 text-white shadow',          hover: 'hover:bg-amber-50' },
+    };
+
+    const TAB_BASE = 'px-4 py-1.5 rounded-xl text-sm font-medium transition-all border';
+    const TAB_INACTIVE = 'border-gray-200 text-gray-600 bg-white';
+    const PILL_BASE = 'px-4 py-1.5 rounded-lg text-sm font-medium transition-colors';
+    const PILL_ACTIVE = 'bg-white text-gray-900 shadow-sm';
+    const PILL_INACTIVE = 'text-gray-500 hover:text-gray-700';
+
+    function updateSelectors() {
+      const tabsEl = document.getElementById('view-tabs');
+      const pillsEl = document.getElementById('mode-pills');
+      const wrapperEl = document.getElementById('mode-pills-wrapper');
+
+      // ── Tabs ──────────────────────────────────────────────────────────
+      tabsEl.innerHTML = VIEWS.map(v => {
+        const colors = VIEW_COLORS[v.id];
+        const cls = currentView === v.id
+          ? `${TAB_BASE} ${colors.active} border-transparent`
+          : `${TAB_BASE} ${TAB_INACTIVE} ${colors.hover}`;
+        return `<button data-view="${v.id}" class="view-tab ${cls}">${v.label}</button>`;
+      }).join('');
+      tabsEl.querySelectorAll('.view-tab').forEach(btn => {
+        btn.addEventListener('click', () => selectView(btn.dataset.view));
+      });
+
+      // ── Pills (inference mode) ────────────────────────────────────────
+      const view = VIEWS.find(v => v.id === currentView);
+      if (!view.modes.length) {
+        wrapperEl.classList.add('invisible'); // keep height for layout stability
+        pillsEl.innerHTML = '';
+      } else {
+        wrapperEl.classList.remove('invisible');
+        pillsEl.innerHTML = view.modes.map(m => {
+          const active = m === currentMode;
+          const cls = active ? PILL_ACTIVE : PILL_INACTIVE;
+          return `<button data-mode="${m}" class="mode-pill ${PILL_BASE} ${cls}">${MODE_LABELS[m]}</button>`;
+        }).join('');
+        pillsEl.querySelectorAll('.mode-pill').forEach(btn => {
+          btn.addEventListener('click', () => selectMode(btn.dataset.mode));
+        });
+      }
+
+      // ── Description ───────────────────────────────────────────────────
+      const key = currentView === 'aggregate'
+        ? 'aggregate|false|text'
+        : `${currentMode}|${currentAnon}|${currentInput}`;
+      document.getElementById('combo-description').textContent = COMBO_DESCRIPTIONS[key] ?? '';
+
+      // ── Metric toggle (visible everywhere except plain text view) ─────
+      const toggle = document.getElementById('metric-toggle');
+      if (toggle) {
+        const showToggle = currentView !== 'text';
+        toggle.classList.toggle('hidden', !showToggle);
+        if (!showToggle) currentMetric = 'absolute';
+        toggle.querySelectorAll('.metric-btn').forEach(btn => {
+          const active = btn.dataset.metric === currentMetric;
+          btn.className = 'metric-btn px-2.5 py-1 rounded-md font-medium transition-colors '
+            + (active ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700');
+        });
+      }
+    }
+
+    function selectView(viewId) {
+      const view = VIEWS.find(v => v.id === viewId);
+      if (!view) return;
+      currentView = view.id;
+      currentAnon = view.anon;
+      currentInput = view.input;
+      if (view.modes.length === 0) {
+        currentMode = 'aggregate';
+      } else if (!view.modes.includes(currentMode)) {
+        // Switching tabs: keep the current mode if available; otherwise default
+        // to the first (Single).
+        currentMode = view.modes[0];
+      }
+      // Relative metrics aren't meaningful in pure-text view (would all be 0%).
+      if (currentView === 'text') currentMetric = 'absolute';
+      render();
+    }
+
+    function selectMode(mode) {
+      currentMode = mode;
+      render();
+    }
+
+    // Lazy-load ECharts from CDN the first time the chart is needed.
+    let _ec = null;
+    function getECharts() {
+      if (_ec) return Promise.resolve(_ec);
+      if (window.echarts) return Promise.resolve((_ec = window.echarts));
+      return new Promise(resolve => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js';
+        s.onload = () => resolve((_ec = window.echarts));
+        document.head.appendChild(s);
+      });
+    }
+
+    let _paretoChart = null;
+
+    async function renderPareto(models) {
+      const el = document.getElementById('pareto-chart');
+      if (!el) return;
+
+      const pts = models.filter(m =>
+        !m.local &&
+        (m.overall?.avg_cost_usd ?? 0) > 0 &&
+        m.overall?.avg_aggregate_score != null
+      );
+
+      if (!pts.length) {
+        if (_paretoChart) { _paretoChart.clear(); }
+        el.innerHTML = '<p class="py-12 text-center text-sm text-gray-400">No API model data for this mode.</p>';
+        return;
+      }
+
+      const echarts = await getECharts();
+      if (!_paretoChart) {
+        el.innerHTML = '';
+        _paretoChart = echarts.init(el);
+        new ResizeObserver(() => _paretoChart?.resize()).observe(el);
+      }
+
+      const fmtCost = v => v < 0.1 ? `$${v.toFixed(2)}` : `$${v.toFixed(1)}`;
+
+      _paretoChart.setOption({
+        grid: { top: 20, right: 160, bottom: 52, left: 52 },
+        xAxis: {
+          type: 'log', logBase: 10,
+          name: 'avg. cost per level (USD, log scale)',
+          nameLocation: 'center', nameGap: 36,
+          axisLine: { lineStyle: { color: '#d1d5db' } },
+          axisTick: { lineStyle: { color: '#d1d5db' } },
+          splitLine: { lineStyle: { color: '#f3f4f6' } },
+          axisLabel: { color: '#9ca3af', fontSize: 11, formatter: fmtCost },
+        },
+        yAxis: {
+          type: 'value', name: 'score',
+          nameLocation: 'center', nameGap: 36,
+          min: 0, max: 1,
+          axisLine: { show: true, lineStyle: { color: '#d1d5db' } },
+          axisTick: { lineStyle: { color: '#d1d5db' } },
+          splitLine: { lineStyle: { color: '#f3f4f6' } },
+          axisLabel: { color: '#9ca3af', fontSize: 11 },
+        },
+        tooltip: {
+          trigger: 'item',
+          formatter: p => `${p.name}<br/>Score: ${p.value[1].toFixed(3)}<br/>Cost: $${p.value[0].toFixed(3)}/lvl`,
+        },
+        // Single series so moveOverlap deduplicates across all labels at once.
+        series: [{
+          type: 'scatter',
+          data: pts.map(m => ({
+            name: strip_provider(m.display_name) + (m.reasoning ? ' ✦' : ''),
+            value: [m.overall.avg_cost_usd, m.overall.avg_aggregate_score],
+            itemStyle: { color: m.reasoning ? '#7c3aed' : '#3b82f6', borderColor: 'white', borderWidth: 1.5 },
+          })),
+          symbolSize: 9,
+          label: { show: true, formatter: p => p.name, position: 'right', color: '#374151', fontSize: 11 },
+          labelLayout: { hideOverlap: true },
+        }],
+      }, true);
+    }
+
+    // ── Difficulty curve ──────────────────────────────────────────────────
+    let _diffChart = null;
+    let _diffPack = 'all';
+    // Pre-select all thinking/reasoning models so the chart isn't empty by default.
+    const _diffSelected = new Set(ALL_MODELS.filter(m => m.reasoning).map(m => m.id));
+    const DIFF_COLORS = ['#3b82f6', '#7c3aed', '#10b981', '#f59e0b', '#ef4444', '#06b6d4', '#ec4899', '#84cc16'];
+
+    // 95% Wilson score interval for a Bernoulli proportion.
+    function wilson(p, n, z = 1.96) {
+      if (n <= 0) return [0, 1];
+      const d = 1 + z * z / n;
+      const c = (p + z * z / (2 * n)) / d;
+      const h = z * Math.sqrt((p * (1 - p) + z * z / (4 * n)) / n) / d;
+      return [Math.max(0, c - h), Math.min(1, c + h)];
+    }
+
+    // Adaptive buckets: width 2 below 10, width 5 from 10 onward.
+    function bucketLow(len)    { return len < 10 ? Math.floor(len / 2) * 2 : Math.floor((len - 10) / 5) * 5 + 10; }
+    function bucketWidth(low)  { return low < 10 ? 2 : 5; }
+    function bucketCenter(low) { return low + (bucketWidth(low) - 1) / 2; }
+    function bucketLabel(low)  { return `${low}–${low + bucketWidth(low) - 1}`; }
+
+    function diffFilteredRows() {
+      return LEVEL_ROWS.filter(r => {
+        if (r.gold_path_length < 2) return false;  // exclude trivial / 0-step levels
+        if (currentMode !== 'aggregate') {
+          if (r.inference_mode !== currentMode) return false;
+          if (Boolean(r.anon) !== currentAnon) return false;
+          if ((r.input_mode ?? 'text') !== currentInput) return false;
+        }
+        if (_diffPack !== 'all' && r.pack_id !== _diffPack) return false;
+        return true;
+      });
+    }
+
+    function diffModelCurve(rows, modelId) {
+      const buckets = {};
+      for (const r of rows) {
+        if (modelId && r.model_id !== modelId) continue;
+        const low = bucketLow(r.gold_path_length);
+        if (!buckets[low]) buckets[low] = { hits: 0, total: 0 };
+        buckets[low].total++;
+        if (r.success) buckets[low].hits++;
+      }
+      return Object.entries(buckets)
+        .map(([low, v]) => ({
+          x: bucketCenter(+low), acc: v.hits / v.total, n: v.total, label: bucketLabel(+low),
+        }))
+        .sort((a, b) => a.x - b.x);
+    }
+
+    function diffAverageCurve(rows, modelIds) {
+      const curves = modelIds.map(id => diffModelCurve(rows, id));
+      const byX = {};
+      for (const c of curves) for (const p of c) {
+        if (!byX[p.x]) byX[p.x] = { accs: [], totalN: 0, label: p.label };
+        byX[p.x].accs.push(p.acc);
+        byX[p.x].totalN += p.n;
+      }
+      return Object.entries(byX)
+        .map(([x, v]) => ({
+          x: +x,
+          acc: v.accs.reduce((a, b) => a + b, 0) / v.accs.length,
+          n: v.totalN,
+          label: v.label,
+        }))
+        .sort((a, b) => a.x - b.x);
+    }
+
+    function modelLabel(id) {
+      const m = ALL_MODELS.find(x => x.id === id);
+      return m ? strip_provider(m.display_name) + (m.reasoning ? ' ✦' : '') : id;
+    }
+
+    async function renderDiffChart() {
+      const el = document.getElementById('diff-chart');
+      if (!el) return;
+      const rows = diffFilteredRows();
+      if (!rows.length) {
+        if (_diffChart) _diffChart.clear();
+        el.innerHTML = '<p class="py-12 text-center text-sm text-gray-400">No data for this filter.</p>';
+        return;
+      }
+
+      const echarts = await getECharts();
+      if (!_diffChart) {
+        el.innerHTML = '';
+        _diffChart = echarts.init(el);
+        new ResizeObserver(() => _diffChart?.resize()).observe(el);
+      }
+
+      const allModelIds = [...new Set(rows.map(r => r.model_id))];
+      const toSeriesData = curve => curve.map(p => ({ value: [p.x, p.acc], n: p.n, label: p.label }));
+
+      // Average curve + Wilson 95% CI band (computed on aggregated obs per bucket)
+      const avgCurve = diffAverageCurve(rows, allModelIds);
+      const ciPts = avgCurve.map(p => {
+        const [lo, hi] = wilson(p.acc, p.n);
+        return { x: p.x, lo, hi };
+      });
+
+      const series = [
+        {
+          // CI band — closed polygon under the Average line.
+          name: '95% CI', type: 'custom', silent: true, z: 1, legendHoverLink: false,
+          renderItem: (params, api) => {
+            if (ciPts.length < 2) return null;
+            const upper = ciPts.map(p => api.coord([p.x, p.hi]));
+            const lower = ciPts.slice().reverse().map(p => api.coord([p.x, p.lo]));
+            return { type: 'polygon', shape: { points: [...upper, ...lower] }, style: { fill: 'rgba(55,65,81,0.13)' } };
+          },
+          data: [0],
+        },
+        {
+          name: 'Average', type: 'line', data: toSeriesData(avgCurve),
+          smooth: true,
+          lineStyle: { width: 3, color: '#374151' },
+          itemStyle: { color: '#374151' },
+          symbolSize: 6,
+          z: 10,
+        },
+      ];
+
+      let ci = 0;
+      for (const id of _diffSelected) {
+        const curve = diffModelCurve(rows, id);
+        if (!curve.length) continue;
+        const color = DIFF_COLORS[ci++ % DIFF_COLORS.length];
+        series.push({
+          name: modelLabel(id), type: 'line', data: toSeriesData(curve), smooth: true,
+          lineStyle: { color, width: 1.8 },
+          itemStyle: { color },
+          symbolSize: 5,
+        });
+      }
+
+      _diffChart.setOption({
+        grid: { top: 36, right: 24, bottom: 50, left: 56 },
+        legend: { top: 4, textStyle: { fontSize: 11, color: '#4b5563' }, itemWidth: 14, itemHeight: 8 },
+        xAxis: {
+          type: 'value', name: 'gold path length', nameLocation: 'center', nameGap: 30,
+          axisLine: { lineStyle: { color: '#d1d5db' } },
+          axisTick: { lineStyle: { color: '#d1d5db' } },
+          splitLine: { lineStyle: { color: '#f3f4f6' } },
+          axisLabel: { color: '#9ca3af', fontSize: 11 },
+          minInterval: 1,
+        },
+        yAxis: {
+          type: 'value', name: 'accuracy', nameLocation: 'center', nameGap: 40,
+          min: 0, max: 1,
+          axisLine: { show: true, lineStyle: { color: '#d1d5db' } },
+          axisTick: { lineStyle: { color: '#d1d5db' } },
+          splitLine: { lineStyle: { color: '#f3f4f6' } },
+          axisLabel: { color: '#9ca3af', fontSize: 11, formatter: v => `${Math.round(v * 100)}%` },
+        },
+        tooltip: {
+          trigger: 'axis',
+          formatter: params => {
+            if (!params.length) return '';
+            const head = `<b>Gold path ${params[0].data.label}</b>`;
+            const lines = params.map(p => `${p.marker} ${p.seriesName}: ${(p.value[1] * 100).toFixed(0)}% <span style="color:#9ca3af">(n=${p.data.n})</span>`);
+            return [head, ...lines].join('<br/>');
+          },
+        },
+        series,
+      }, true);
+    }
+
+    function renderDiffPicker() {
+      const el = document.getElementById('diff-model-picker');
+      if (!el) return;
+      const rows = diffFilteredRows();
+      const ids = [...new Set(rows.map(r => r.model_id))];
+      // Sort by current-mode aggregate score (descending) so best models are first.
+      const scoreById = Object.fromEntries(getModels().map(m => [m.id, m.overall?.avg_aggregate_score ?? 0]));
+      ids.sort((a, b) => (scoreById[b] ?? 0) - (scoreById[a] ?? 0));
+      el.innerHTML = ids.map(id => {
+        const active = _diffSelected.has(id);
+        const cls = active
+          ? 'bg-indigo-100 text-indigo-700 border-indigo-300'
+          : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50';
+        return `<button data-mid="${id}" class="diff-mbtn text-xs px-2 py-1 rounded-md border transition-colors ${cls}">${modelLabel(id)}</button>`;
+      }).join('');
+      el.querySelectorAll('.diff-mbtn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const id = btn.dataset.mid;
+          if (_diffSelected.has(id)) _diffSelected.delete(id); else _diffSelected.add(id);
+          renderDiffChart();
+          renderDiffPicker();
+        });
+      });
+    }
+
+    function setupDiffPackDropdown() {
+      const sel = document.getElementById('diff-pack');
+      if (!sel) return;
+      sel.innerHTML = '<option value="all">All packs</option>' +
+        ALL_PACKS.map(p => `<option value="${p}">${p.replace(/_/g, ' ')}</option>`).join('');
+      sel.addEventListener('change', () => {
+        _diffPack = sel.value;
+        renderDiffChart();
+      });
+    }
+
+    // ── Grid-size curve ──────────────────────────────────────────────────
+    let _cellsChart = null;
+    let _cellsPack = 'all';
+    const _cellsSelected = new Set(ALL_MODELS.filter(m => m.reasoning).map(m => m.id));
+
+    // Adaptive buckets: width 5 below 30, width 20 from 30 onward.
+    function cellBucketLow(c)    { return c < 30 ? Math.floor(c / 5) * 5 : Math.floor((c - 30) / 20) * 20 + 30; }
+    function cellBucketWidth(lo) { return lo < 30 ? 5 : 20; }
+    function cellBucketCenter(lo){ return lo + (cellBucketWidth(lo) - 1) / 2; }
+    function cellBucketLabel(lo) { return `${lo}–${lo + cellBucketWidth(lo) - 1}`; }
+
+    function cellsFilteredRows() {
+      return LEVEL_ROWS.filter(r => {
+        if (r.playable_cells == null || r.playable_cells < 4) return false;
+        if (currentMode !== 'aggregate') {
+          if (r.inference_mode !== currentMode) return false;
+          if (Boolean(r.anon) !== currentAnon) return false;
+          if ((r.input_mode ?? 'text') !== currentInput) return false;
+        }
+        if (_cellsPack !== 'all' && r.pack_id !== _cellsPack) return false;
+        return true;
+      });
+    }
+
+    function cellsModelCurve(rows, modelId) {
+      const buckets = {};
+      for (const r of rows) {
+        if (modelId && r.model_id !== modelId) continue;
+        const lo = cellBucketLow(r.playable_cells);
+        if (!buckets[lo]) buckets[lo] = { hits: 0, total: 0 };
+        buckets[lo].total++;
+        if (r.success) buckets[lo].hits++;
+      }
+      return Object.entries(buckets)
+        .map(([lo, v]) => ({
+          x: cellBucketCenter(+lo), acc: v.hits / v.total, n: v.total, label: cellBucketLabel(+lo),
+        }))
+        .sort((a, b) => a.x - b.x);
+    }
+
+    function cellsAverageCurve(rows, modelIds) {
+      const curves = modelIds.map(id => cellsModelCurve(rows, id));
+      const byX = {};
+      for (const c of curves) for (const p of c) {
+        if (!byX[p.x]) byX[p.x] = { accs: [], totalN: 0, label: p.label };
+        byX[p.x].accs.push(p.acc);
+        byX[p.x].totalN += p.n;
+      }
+      return Object.entries(byX)
+        .map(([x, v]) => ({
+          x: +x,
+          acc: v.accs.reduce((a, b) => a + b, 0) / v.accs.length,
+          n: v.totalN,
+          label: v.label,
+        }))
+        .sort((a, b) => a.x - b.x);
+    }
+
+    async function renderCellsChart() {
+      const el = document.getElementById('cells-chart');
+      if (!el) return;
+      const rows = cellsFilteredRows();
+      if (!rows.length) {
+        if (_cellsChart) _cellsChart.clear();
+        el.innerHTML = '<p class="py-12 text-center text-sm text-gray-400">No data for this filter.</p>';
+        return;
+      }
+
+      const echarts = await getECharts();
+      if (!_cellsChart) {
+        el.innerHTML = '';
+        _cellsChart = echarts.init(el);
+        new ResizeObserver(() => _cellsChart?.resize()).observe(el);
+      }
+
+      const allModelIds = [...new Set(rows.map(r => r.model_id))];
+      const toSeriesData = curve => curve.map(p => ({ value: [p.x, p.acc], n: p.n, label: p.label }));
+
+      const avgCurve = cellsAverageCurve(rows, allModelIds);
+      const ciPts = avgCurve.map(p => {
+        const [lo, hi] = wilson(p.acc, p.n);
+        return { x: p.x, lo, hi };
+      });
+
+      const series = [
+        {
+          name: '95% CI', type: 'custom', silent: true, z: 1, legendHoverLink: false,
+          renderItem: (params, api) => {
+            if (ciPts.length < 2) return null;
+            const upper = ciPts.map(p => api.coord([p.x, p.hi]));
+            const lower = ciPts.slice().reverse().map(p => api.coord([p.x, p.lo]));
+            return { type: 'polygon', shape: { points: [...upper, ...lower] }, style: { fill: 'rgba(55,65,81,0.13)' } };
+          },
+          data: [0],
+        },
+        {
+          name: 'Average', type: 'line', data: toSeriesData(avgCurve),
+          smooth: true,
+          lineStyle: { width: 3, color: '#374151' },
+          itemStyle: { color: '#374151' },
+          symbolSize: 6,
+          z: 10,
+        },
+      ];
+
+      let ci = 0;
+      for (const id of _cellsSelected) {
+        const curve = cellsModelCurve(rows, id);
+        if (!curve.length) continue;
+        const color = DIFF_COLORS[ci++ % DIFF_COLORS.length];
+        series.push({
+          name: modelLabel(id), type: 'line', data: toSeriesData(curve), smooth: true,
+          lineStyle: { color, width: 1.8 },
+          itemStyle: { color },
+          symbolSize: 5,
+        });
+      }
+
+      _cellsChart.setOption({
+        grid: { top: 36, right: 24, bottom: 50, left: 56 },
+        legend: { top: 4, textStyle: { fontSize: 11, color: '#4b5563' }, itemWidth: 14, itemHeight: 8 },
+        xAxis: {
+          type: 'value', name: 'playable cells', nameLocation: 'center', nameGap: 30,
+          axisLine: { lineStyle: { color: '#d1d5db' } },
+          axisTick: { lineStyle: { color: '#d1d5db' } },
+          splitLine: { lineStyle: { color: '#f3f4f6' } },
+          axisLabel: { color: '#9ca3af', fontSize: 11 },
+        },
+        yAxis: {
+          type: 'value', name: 'accuracy', nameLocation: 'center', nameGap: 40,
+          min: 0, max: 1,
+          axisLine: { show: true, lineStyle: { color: '#d1d5db' } },
+          axisTick: { lineStyle: { color: '#d1d5db' } },
+          splitLine: { lineStyle: { color: '#f3f4f6' } },
+          axisLabel: { color: '#9ca3af', fontSize: 11, formatter: v => `${Math.round(v * 100)}%` },
+        },
+        tooltip: {
+          trigger: 'axis',
+          formatter: params => {
+            if (!params.length) return '';
+            const head = `<b>${params[0].data.label} cells</b>`;
+            const lines = params.map(p => `${p.marker} ${p.seriesName}: ${(p.value[1] * 100).toFixed(0)}% <span style="color:#9ca3af">(n=${p.data.n})</span>`);
+            return [head, ...lines].join('<br/>');
+          },
+        },
+        series,
+      }, true);
+    }
+
+    function renderCellsPicker() {
+      const el = document.getElementById('cells-model-picker');
+      if (!el) return;
+      const rows = cellsFilteredRows();
+      const ids = [...new Set(rows.map(r => r.model_id))];
+      const scoreById = Object.fromEntries(getModels().map(m => [m.id, m.overall?.avg_aggregate_score ?? 0]));
+      ids.sort((a, b) => (scoreById[b] ?? 0) - (scoreById[a] ?? 0));
+      el.innerHTML = ids.map(id => {
+        const active = _cellsSelected.has(id);
+        const cls = active
+          ? 'bg-indigo-100 text-indigo-700 border-indigo-300'
+          : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50';
+        return `<button data-mid="${id}" class="cells-mbtn text-xs px-2 py-1 rounded-md border transition-colors ${cls}">${modelLabel(id)}</button>`;
+      }).join('');
+      el.querySelectorAll('.cells-mbtn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const id = btn.dataset.mid;
+          if (_cellsSelected.has(id)) _cellsSelected.delete(id); else _cellsSelected.add(id);
+          renderCellsChart();
+          renderCellsPicker();
+        });
+      });
+    }
+
+    function setupCellsPackDropdown() {
+      const sel = document.getElementById('cells-pack');
+      if (!sel) return;
+      sel.innerHTML = '<option value="all">All packs</option>' +
+        ALL_PACKS.map(p => `<option value="${p}">${p.replace(/_/g, ' ')}</option>`).join('');
+      sel.addEventListener('change', () => {
+        _cellsPack = sel.value;
+        renderCellsChart();
+      });
+    }
+
+    // ── Game Analysis panel ──────────────────────────────────────────────
+    const BEHAVIOUR_COLS = [
+      { key: null,                     label: '#',           tip: '' },
+      { key: null,                     label: 'Model',       tip: '' },
+      { key: 'recovery_rate',          label: 'Recovery',    tip: 'After a failed attempt, fraction of levels where the model went on to succeed.', fmt: 'pct' },
+      { key: 'rejection_rate',         label: 'Rejection',   tip: 'Fraction of LLM calls that produced an invalid action (rejected by the engine).', fmt: 'pct' },
+      { key: 'mean_resets_per_level',  label: 'Resets/lvl',  tip: 'Average number of resets (auto-reset on per-attempt limit, or voluntary give-up) per level.', fmt: 'num1' },
+      { key: 'voluntary_giveup_rate',  label: 'Gave up',     tip: 'Fraction of levels in which the model used the give_up action at least once.', fmt: 'pct' },
+      { key: 'memory_use_rate',        label: 'Mem write rate', tip: 'Fraction of LLM calls (excluding the final winning call on solved levels) that wrote a non-empty memory string.', fmt: 'pct' },
+      { key: 'median_memory_chars',    label: 'Mem chars',   tip: 'Median character length of non-empty memory strings written by the model.', fmt: 'int' },
+      { key: 'repeated_state_rate',    label: 'State loops', tip: 'Fraction of turns whose resulting (board, inventory) hash had been seen earlier in the same attempt — i.e. cycling.', fmt: 'pct' },
+    ];
+
+    function _bfmt(v, kind) {
+      if (v == null) return '—';
+      if (kind === 'pct') return (v * 100).toFixed(1) + '%';
+      if (kind === 'num1') return v.toFixed(1);
+      if (kind === 'int') return `${v}`;
+      return `${v}`;
+    }
+
+    function renderBehaviour(models) {
+      const thead = document.getElementById('behaviour-thead');
+      const tbody = document.getElementById('behaviour-tbody');
+      if (!thead || !tbody) return;
+
+      thead.innerHTML = BEHAVIOUR_COLS.map(c =>
+        `<th title="${c.tip}" class="text-left px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">${c.label}</th>`
+      ).join('');
+
+      if (!models.length) {
+        tbody.innerHTML = `<tr><td colspan="${BEHAVIOUR_COLS.length}" class="px-6 py-12 text-center text-gray-400">No data for this configuration.</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = models.map((m, i) => {
+        const b = m.overall?.behaviour ?? {};
+        const cells = BEHAVIOUR_COLS.map((c, idx) => {
+          if (idx === 0) return `<td class="px-4 py-3 text-gray-400 font-mono">${i + 1}</td>`;
+          if (idx === 1) return `<td class="px-4 py-3"><span class="font-semibold text-gray-900">${strip_provider(m.display_name)}</span>${m.reasoning ? ' <span class="text-xs text-purple-500">✦</span>' : ''}</td>`;
+          return `<td class="px-4 py-3 font-mono text-gray-700">${_bfmt(b[c.key], c.fmt)}</td>`;
+        }).join('');
+        return `<tr class="hover:bg-gray-50 transition-colors">${cells}</tr>`;
+      }).join('');
+    }
+
+    async function render() {
+      const models = getModels();
+      renderOverall(models);
+      await renderPareto(models);
+      await renderDiffChart();
+      renderDiffPicker();
+      await renderCellsChart();
+      renderCellsPicker();
+      renderBehaviour(models);
+      renderPacks(models);
+      updateSelectors();
+      const n = currentMode !== 'aggregate' ? models[0]?.overall?.levels_run : null;
+      const fn = document.getElementById('levels-footnote');
+      if (fn) fn.textContent = n != null ? ` · ${n} levels tested per model.` : '';
+    }
+
+    // Selector tabs / pills wire themselves up inside updateSelectors() each render.
+
+    // Wire metric toggle (Absolute / vs. text). Hidden in text view via updateSelectors.
+    document.querySelectorAll('#metric-toggle .metric-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        currentMetric = btn.dataset.metric;
+        render();
+      });
+    });
+
+    setupDiffPackDropdown();
+    setupCellsPackDropdown();
+
+    // Initial render
+    render();
+  </script>
+</Base>

@@ -1,0 +1,389 @@
+"""
+Event helpers.  Events are plain dicts with a 'type' key and payload fields.
+Factory functions match the Dart GameEvent named constructors.
+"""
+from __future__ import annotations
+from typing import Any, Optional
+from ._models import Pos
+
+
+def _pos_to_list(pos: Pos) -> list[int]:
+    return [pos.x, pos.y]
+
+
+# ---------------------------------------------------------------------------
+# Factory functions (mirror Dart GameEvent named constructors)
+# ---------------------------------------------------------------------------
+
+def avatar_entered(pos: Pos, from_pos: Pos, direction: str) -> dict:
+    return {
+        "type": "avatar_entered",
+        "position": pos,
+        "fromPosition": from_pos,
+        "direction": direction,
+    }
+
+
+def avatar_exited(pos: Pos) -> dict:
+    return {"type": "avatar_exited", "position": pos}
+
+
+def move_blocked(target: Pos, from_pos: Pos, direction: str, blocker_kind: str) -> dict:
+    return {
+        "type": "move_blocked",
+        "position": target,
+        "fromPosition": from_pos,
+        "direction": direction,
+        "blockerKind": blocker_kind,
+    }
+
+
+def object_placed(pos: Pos, kind: str, params: dict | None = None, **extra) -> dict:
+    e: dict[str, Any] = {"type": "object_placed", "position": pos, "kind": kind, "params": params or {}}
+    e.update(extra)
+    return e
+
+
+def object_removed(pos: Pos, kind: str, animation: str | None = None) -> dict:
+    e: dict[str, Any] = {"type": "object_removed", "position": pos, "kind": kind}
+    if animation:
+        e["animation"] = animation
+    return e
+
+
+def entity_path_moved(
+    path: list[Pos],
+    kind: str,
+    params: dict | None = None,
+    layer: str = "objects",
+    removed_at_end: bool = False,
+) -> dict:
+    """An entity followed an ordered multi-cell route in one turn."""
+    return {
+        "type": "entity_path_moved",
+        "position": path[-1],
+        "path": path,
+        "kind": kind,
+        "params": params or {},
+        "layer": layer,
+        "removedAtEnd": removed_at_end,
+    }
+
+
+def line_of_sight_detected(
+    source: Pos,
+    target: Pos,
+    target_kind: str,
+    source_id: str,
+    source_kind: str,
+) -> dict:
+    return {
+        "type": "line_of_sight_detected",
+        "sourcePosition": source,
+        "position": target,
+        "kind": target_kind,
+        "sourceId": source_id,
+        "sourceKind": source_kind,
+    }
+
+
+def cell_cleared(pos: Pos, previous_kind: str, layer: str = "objects") -> dict:
+    return {
+        "type": "cell_cleared",
+        "position": pos,
+        "previousKind": previous_kind,
+        "layer": layer,
+    }
+
+
+def cell_transformed(pos: Pos, from_kind: str, to_kind: str, layer: str) -> dict:
+    return {
+        "type": "cell_transformed",
+        "position": pos,
+        "fromKind": from_kind,
+        "toKind": to_kind,
+        "layer": layer,
+    }
+
+
+def entity_fell(pos: Pos, kind: str, layer: str) -> dict:
+    """A body was on a cell whose ground gave way beneath it.
+
+    `layer` is the board layer the body was removed from, or `"avatar"` for the
+    avatar — which is not removed from the board, because a lose condition ends
+    the level in the same turn and the renderer still has to draw it falling.
+    """
+    return {
+        "type": "entity_fell",
+        "position": pos,
+        "kind": kind,
+        "layer": layer,
+    }
+
+
+def spoil_hauled(pos: Pos, layer: str) -> dict:
+    """An `excavate` backfill that did *not* happen, because a mover ended the
+    turn on the vacated cell and carried the spoil out.
+
+    Emitted in place of `cell_transformed`, so a game can react to the corridor
+    surviving — which is otherwise an *absence* of an event and has nothing to
+    hang a rule or an effect off.
+    """
+    return {"type": "spoil_hauled", "position": pos, "layer": layer}
+
+
+def inventory_changed(old_item: str | None, new_item: str | None) -> dict:
+    return {"type": "inventory_changed", "oldItem": old_item, "newItem": new_item}
+
+
+def object_pushed(kind: str, from_pos: Pos, to_pos: Pos, direction: str) -> dict:
+    return {
+        "type": "object_pushed",
+        "kind": kind,
+        "fromPosition": from_pos,
+        "toPosition": to_pos,
+        "direction": direction,
+    }
+
+
+def tiles_merged(
+    pos: Pos,
+    result_value: int,
+    input_values: list[int],
+    sources: list[Pos] | None = None,
+    kind: str | None = None,
+) -> dict:
+    out: dict = {
+        "type": "tiles_merged",
+        "position": pos,
+        "resultValue": result_value,
+        "inputValues": input_values,
+    }
+    if sources is not None:
+        out["sources"] = sources
+    if kind is not None:
+        out["kind"] = kind
+    return out
+
+
+def tile_moved(
+    from_pos: Pos,
+    to_pos: Pos,
+    kind: str,
+    params: dict | None = None,
+    layer: str = "objects",
+) -> dict:
+    """Single tile slid from `from_pos` to `to_pos` without merging.
+
+    Carries enough metadata for a UI to render an `entity_move` animation;
+    the Python solver/runner ignore it (no rendering).
+    """
+    return {
+        "type": "tile_moved",
+        "fromPosition": from_pos,
+        "position": to_pos,
+        "kind": kind,
+        "params": params or {},
+        "layer": layer,
+    }
+
+
+def tiles_slid(direction: str, moved_count: int) -> dict:
+    return {"type": "tiles_slid", "direction": direction, "movedCount": moved_count}
+
+
+def item_released(emitter_id: str, kind: str, pos: Pos, params: dict | None = None) -> dict:
+    return {
+        "type": "item_released",
+        "emitterId": emitter_id,
+        "kind": kind,
+        "position": pos,
+        "params": params or {},
+    }
+
+
+def object_settled(
+    kind: str,
+    pos: Pos,
+    from_pos: Pos,
+    layer: str = "objects",
+    from_kind: str | None = None,
+) -> dict:
+    """`layer` lets a UI animate the travel from `from_pos` to `pos` with the
+    right sprite; gravity-style effects only ever move `objects`.
+
+    `from_kind` is what the entity looked like on the way; `kind` is what it
+    became on arrival. A UI animating the travel should draw `from_kind`, or
+    the entity appears to transform before it has landed."""
+    return {
+        "type": "object_settled",
+        "kind": kind,
+        "position": pos,
+        "fromPosition": from_pos,
+        "layer": layer,
+        "fromKind": from_kind if from_kind is not None else kind,
+    }
+
+
+def actor_moved(kind: str, from_pos: Pos, to_pos: Pos, direction: str) -> dict:
+    return {
+        "type": "actor_moved",
+        "kind": kind,
+        "fromPosition": from_pos,
+        "position": to_pos,
+        "direction": direction,
+    }
+
+
+def actor_entered(kind: str, pos: Pos, from_pos: Pos, direction: str) -> dict:
+    return {
+        "type": "actor_entered",
+        "kind": kind,
+        "fromPosition": from_pos,
+        "position": pos,
+        "direction": direction,
+    }
+
+
+def actor_reacted(kind: str, from_pos: Pos, to_pos: Pos, direction: str) -> dict:
+    """A reactive (non-player) actor answered the player's move.
+
+    Deliberately distinct from ``actor_moved`` so move counters and budgets
+    keyed on player movement are unaffected; systems that should treat a rival
+    landing as an anchor name this event explicitly.
+    """
+    return {
+        "type": "actor_reacted",
+        "kind": kind,
+        "fromPosition": from_pos,
+        "position": to_pos,
+        "direction": direction,
+    }
+
+
+def actor_blocked(kind: str, pos: Pos) -> dict:
+    return {"type": "actor_blocked", "kind": kind, "position": pos}
+
+
+def actor_selected(kind: str, pos: Pos) -> dict:
+    return {"type": "actor_selected", "kind": kind, "position": pos}
+
+
+def actor_interacted(kind: str, pos: Pos) -> dict:
+    return {"type": "actor_interacted", "kind": kind, "position": pos}
+
+
+def cell_claimed(pos: Pos, layer: str, kind: str, owner_kind: str) -> dict:
+    return {
+        "type": "cell_claimed",
+        "position": pos,
+        "layer": layer,
+        "kind": kind,
+        "ownerKind": owner_kind,
+    }
+
+
+def variable_changed(name: str, old_val: Any, new_val: Any) -> dict:
+    return {
+        "type": "variable_changed",
+        "variable": name,
+        "oldValue": old_val,
+        "newValue": new_val,
+    }
+
+
+def turn_ended(turn_number: int) -> dict:
+    return {"type": "turn_ended", "turnNumber": turn_number}
+
+
+def overlay_moved(pos: list[int]) -> dict:
+    return {"type": "overlay_moved", "position": pos}
+
+
+def cells_flooded(cells: list[Pos]) -> dict:
+    return {"type": "cells_flooded", "cells": cells}
+
+
+def action_vetoed(reason: str | None = None) -> dict:
+    """The action is refused and the turn is not spent. An optional
+    human-readable `reason` explains the refusal (runners show it)."""
+    if reason:
+        return {"type": "action_vetoed", "reason": reason}
+    return {"type": "action_vetoed"}
+
+
+def cell_blocked(pos: Pos, layer: str, kind: str, guard_kind: str) -> dict:
+    """A cell refused what an operation would have put on it. `kind` is the
+    refused entity, `guardKind` the entity that refuses it. Emitted alongside
+    `action_vetoed`, so the turn is not spent — it explains the refusal."""
+    return {
+        "type": "cell_blocked",
+        "position": pos,
+        "layer": layer,
+        "kind": kind,
+        "guardKind": guard_kind,
+    }
+
+
+def boxes_merged(pos: Pos, result_sides: int, a_sides: int, b_sides: int) -> dict:
+    return {
+        "type": "boxes_merged",
+        "position": pos,
+        "resultSides": result_sides,
+        "aSides": a_sides,
+        "bSides": b_sides,
+    }
+
+
+def region_transformed(op_type: str) -> dict:
+    return {"type": "region_transformed", "opType": op_type}
+
+
+def cell_exchanged(
+    pos: Pos, mode: str, layers: list[str],
+    first_kind: Optional[str], second_kind: Optional[str],
+) -> dict:
+    """One cell of a `region_transform` exchange. `mode` is `lift` (the first
+    layer's content crossed to an empty second layer), `drop` (the reverse) or
+    `swap` (both held something). The kinds are the ones found before the
+    exchange, `None` for nothing."""
+    return {
+        "type": "cell_exchanged",
+        "position": pos,
+        "mode": mode,
+        "firstLayer": layers[0],
+        "secondLayer": layers[1],
+        "firstKind": first_kind,
+        "secondKind": second_kind,
+    }
+
+
+def avatar_caught(pos: Pos, npc_kind: str, npc_id: str) -> dict:
+    return {
+        "type": "avatar_caught",
+        "position": pos,
+        "npcKind": npc_kind,
+        "npcId": npc_id,
+    }
+
+
+def npc_moved(npc_id: str, from_pos: Pos, to_pos: Pos) -> dict:
+    return {
+        "type": "npc_moved",
+        "npcId": npc_id,
+        "fromPosition": from_pos,
+        "toPosition": to_pos,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Accessor helpers
+# ---------------------------------------------------------------------------
+
+def event_position(event: dict) -> Optional[Pos]:
+    p = event.get("position")
+    if p is None:
+        return None
+    if isinstance(p, Pos):
+        return p
+    return Pos.from_json(p)

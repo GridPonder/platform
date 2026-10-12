@@ -1,0 +1,561 @@
+"""
+Core data models: Position, Direction, Entity, Board, GameState.
+
+These mirror the Dart engine's models (engine/lib/src/models/) but use
+idiomatic Python: frozen dataclasses for value types, mutable classes for
+runtime state.
+"""
+from __future__ import annotations
+
+import bisect
+import copy
+from dataclasses import dataclass, field
+from typing import Any, Optional
+
+# ---------------------------------------------------------------------------
+# Position
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Pos:
+    x: int
+    y: int
+
+    def moved(self, direction: str) -> "Pos":
+        dx, dy = _DIR_DELTA[direction]
+        return Pos(self.x + dx, self.y + dy)
+
+    def is_valid(self, w: int, h: int) -> bool:
+        return 0 <= self.x < w and 0 <= self.y < h
+
+    def __iter__(self):
+        yield self.x
+        yield self.y
+
+    @classmethod
+    def from_json(cls, j) -> "Pos":
+        if isinstance(j, (list, tuple)):
+            return cls(int(j[0]), int(j[1]))
+        if isinstance(j, dict):
+            return cls(int(j["x"]), int(j["y"]))
+        raise ValueError(f"Cannot parse Pos from {j!r}")
+
+
+# ---------------------------------------------------------------------------
+# Direction
+# ---------------------------------------------------------------------------
+
+_DIR_DELTA: dict[str, tuple[int, int]] = {
+    "up":         (0, -1),
+    "down":       (0,  1),
+    "left":       (-1, 0),
+    "right":      (1,  0),
+    "up_left":    (-1, -1),
+    "up_right":   (1, -1),
+    "down_left":  (-1, 1),
+    "down_right": (1,  1),
+}
+
+_DIR_OPPOSITE: dict[str, str] = {
+    "up":         "down",
+    "down":       "up",
+    "left":       "right",
+    "right":      "left",
+    "up_left":    "down_right",
+    "down_right": "up_left",
+    "up_right":   "down_left",
+    "down_left":  "up_right",
+}
+
+CARDINALS = frozenset({"up", "down", "left", "right"})
+
+
+def dir_delta(d: str) -> tuple[int, int]:
+    return _DIR_DELTA.get(d, (0, 0))
+
+
+_DIRECTION_TRANSFORMS = {
+    "identity": lambda dx, dy: (dx, dy),
+    "invert": lambda dx, dy: (-dx, -dy),
+    "mirror_x": lambda dx, dy: (-dx, dy),
+    "mirror_y": lambda dx, dy: (dx, -dy),
+}
+
+
+def transform_delta(delta: tuple[int, int], transform: Optional[str]) -> tuple[int, int]:
+    """Apply a per-actor direction transform to a movement delta.
+
+    See docs/dsl/04_systems.md (`coupled_actors.directionTransforms`).
+    Unrecognised or missing transforms are treated as `identity` — both engines
+    must agree, so this is deliberately lenient rather than throwing.
+    """
+    fn = _DIRECTION_TRANSFORMS.get(transform or "identity")
+    if fn is None:
+        return delta
+    return fn(delta[0], delta[1])
+
+
+def dir_opposite(d: str) -> str:
+    return _DIR_OPPOSITE.get(d, d)
+
+
+def is_cardinal(d: str) -> bool:
+    return d in CARDINALS
+
+
+# ---------------------------------------------------------------------------
+# Entity
+# ---------------------------------------------------------------------------
+
+def _copy_value(v: Any) -> Any:
+    if isinstance(v, dict):
+        return {k: _copy_value(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_copy_value(x) for x in v]
+    if isinstance(v, set):
+        return {_copy_value(x) for x in v}
+    return v
+
+
+def _copy_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Deep copy of a JSON-shaped params map: dicts, lists and sets are copied
+    all the way down; scalars are immutable and shared."""
+    return {k: _copy_value(v) for k, v in params.items()}
+
+
+@dataclass
+class Entity:
+    kind: str
+    params: dict[str, Any] = field(default_factory=dict)
+
+    def param(self, key: str) -> Any:
+        return self.params.get(key)
+
+    def copy(self) -> "Entity":
+        # Entities with no params are never mutated in place (only replaced via
+        # board.set_entity / layer.set), so sharing the same object is safe.
+        if not self.params:
+            return self
+        return Entity(self.kind, _copy_params(self.params))
+
+    def to_key(self) -> tuple:
+        if not self.params:
+            return (self.kind,)
+        return (self.kind, _freeze_value(self.params))
+
+    @classmethod
+    def from_json(cls, j) -> "Entity":
+        if isinstance(j, str):
+            return cls(j)
+        if isinstance(j, dict):
+            kind = j["kind"]
+            params = {k: v for k, v in j.items() if k != "kind"}
+            return cls(kind, params)
+        raise ValueError(f"Cannot parse Entity from {j!r}")
+
+    def __repr__(self) -> str:
+        if not self.params:
+            return self.kind
+        p = ",".join(f"{k}:{v}" for k, v in self.params.items())
+        return f"{self.kind}({p})"
+
+
+# ---------------------------------------------------------------------------
+# MultiCellObject (pipe / emitter)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class MultiCellObject:
+    id: str
+    kind: str
+    cells: list[Pos]
+    params: dict[str, Any] = field(default_factory=dict)
+
+    def copy(self) -> "MultiCellObject":
+        return MultiCellObject(
+            self.id,
+            self.kind,
+            list(self.cells),
+            _copy_params(self.params),
+        )
+
+    @classmethod
+    def from_json(cls, j: dict) -> "MultiCellObject":
+        cells = []
+        for c in j.get("cells", []):
+            if isinstance(c, (list, tuple)):
+                cells.append(Pos.from_json(c))
+            elif isinstance(c, dict):
+                cells.append(Pos.from_json(c["position"]))
+        params = dict(j.get("params", {}))
+        return cls(j["id"], j["kind"], cells, params)
+
+
+# ---------------------------------------------------------------------------
+# Board layer
+# ---------------------------------------------------------------------------
+
+class BoardLayer:
+    """Dense 2-D grid [y][x] of optional Entity, matching Dart's BoardLayer.
+
+    Also maintains a sparse index ``_sparse`` mapping ``(x, y)`` to the Entity
+    for every cell that is neither None nor a paramless default-kind entity.
+    This lets ``GameState.to_key()`` iterate only meaningful cells (O(sparse
+    cells)) instead of the full W×H grid.
+    """
+
+    __slots__ = ("width", "height", "_cells", "default_kind", "_sparse", "_sparse_sorted")
+
+    def __init__(
+        self,
+        width: int,
+        height: int,
+        cells: list[list[Optional[Entity]]],
+        default_kind: Optional[str] = None,
+        sparse: Optional[dict] = None,
+        sparse_sorted: Optional[list] = None,
+    ):
+        self.width = width
+        self.height = height
+        self._cells = cells
+        self.default_kind = default_kind
+        if sparse is not None:
+            self._sparse = sparse
+            self._sparse_sorted = sparse_sorted if sparse_sorted is not None else sorted(sparse)
+        else:
+            # Build sparse index: non-None cells that aren't the paramless default
+            self._sparse = {
+                (x, y): cells[y][x]
+                for y in range(height)
+                for x in range(width)
+                if (e := cells[y][x]) is not None
+                and not (default_kind and e.kind == default_kind and not e.params)
+            }
+            self._sparse_sorted = sorted(self._sparse)
+
+    @classmethod
+    def empty(cls, width: int, height: int, default_kind: Optional[str] = None) -> "BoardLayer":
+        cells = [
+            [Entity(default_kind) if default_kind else None for _ in range(width)]
+            for _ in range(height)
+        ]
+        # All cells are the paramless default — sparse index is empty
+        return cls(width, height, cells, default_kind, sparse={}, sparse_sorted=[])
+
+    @classmethod
+    def from_json(cls, json_val, width: int, height: int, default_kind: Optional[str] = None) -> "BoardLayer":
+        layer = cls.empty(width, height, default_kind)
+        if json_val is None:
+            return layer
+        if isinstance(json_val, list):
+            # Dense format: json_val[y][x]
+            for y, row in enumerate(json_val):
+                if y >= height:
+                    break
+                if row is None:
+                    continue
+                for x, cell in enumerate(row):
+                    if x >= width:
+                        break
+                    if cell is not None:
+                        layer.set(Pos(x, y), Entity.from_json(cell))
+            return layer
+        if isinstance(json_val, dict) and json_val.get("format") == "sparse":
+            for entry in json_val.get("entries", []):
+                pos = Pos.from_json(entry["position"])
+                if not pos.is_valid(width, height):
+                    continue
+                kind = entry.get("kind")
+                if kind is not None:
+                    params = {k: v for k, v in entry.items() if k not in ("position", "kind")}
+                    layer.set(pos, Entity(kind, params))
+            return layer
+        raise ValueError(f"Unknown layer format: {json_val!r}")
+
+    def get(self, pos: Pos) -> Optional[Entity]:
+        if not pos.is_valid(self.width, self.height):
+            return None
+        return self._cells[pos.y][pos.x]
+
+    def set(self, pos: Pos, entity: Optional[Entity]) -> None:
+        if not pos.is_valid(self.width, self.height):
+            return
+        self._cells[pos.y][pos.x] = entity
+        key = (pos.x, pos.y)
+        # Maintain sparse index: include only non-None, non-paramless-default cells
+        is_default = entity is None or (
+            self.default_kind
+            and entity.kind == self.default_kind
+            and not entity.params
+        )
+        was_present = key in self._sparse
+        if is_default:
+            if was_present:
+                del self._sparse[key]
+                idx = bisect.bisect_left(self._sparse_sorted, key)
+                del self._sparse_sorted[idx]
+        else:
+            if not was_present:
+                bisect.insort(self._sparse_sorted, key)
+            self._sparse[key] = entity
+
+    def entries(self):
+        """Yield (Pos, Entity) for all non-null cells."""
+        for y in range(self.height):
+            for x in range(self.width):
+                e = self._cells[y][x]
+                if e is not None:
+                    yield Pos(x, y), e
+
+    def copy(self) -> "BoardLayer":
+        cells = [[e.copy() if e is not None else None for e in row] for row in self._cells]
+        # Rebuild sparse index from the new cell grid (entity refs may differ for params-having entities)
+        new_sparse = {k: cells[k[1]][k[0]] for k in self._sparse}
+        # _sparse_sorted contains immutable (x,y) tuples — safe to share via list copy
+        return BoardLayer(
+            self.width, self.height, cells, self.default_kind,
+            new_sparse, list(self._sparse_sorted),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Board
+# ---------------------------------------------------------------------------
+
+class Board:
+    """Full game board: all layers + multi-cell objects."""
+
+    __slots__ = ("width", "height", "layers", "multi_cell_objects")
+
+    def __init__(
+        self,
+        width: int,
+        height: int,
+        layers: dict[str, BoardLayer],
+        multi_cell_objects: list[MultiCellObject],
+    ):
+        self.width = width
+        self.height = height
+        self.layers = layers
+        self.multi_cell_objects = multi_cell_objects
+
+    @classmethod
+    def from_json(cls, j: dict, layer_defs: list) -> "Board":
+        size = j["size"]
+        w, h = int(size[0]), int(size[1])
+        raw_layers = j.get("layers", {})
+        layers: dict[str, BoardLayer] = {}
+        for ldef in layer_defs:
+            default_kind = (
+                ldef["defaultKind"] or "empty"
+                if ldef["isExactlyOne"]
+                else None
+            )
+            layers[ldef["id"]] = BoardLayer.from_json(
+                raw_layers.get(ldef["id"]), w, h, default_kind
+            )
+        mcos = [MultiCellObject.from_json(m) for m in j.get("multiCellObjects", [])]
+        return cls(w, h, layers, mcos)
+
+    def get_entity(self, layer_id: str, pos: Pos) -> Optional[Entity]:
+        layer = self.layers.get(layer_id)
+        return layer.get(pos) if layer else None
+
+    def set_entity(self, layer_id: str, pos: Pos, entity: Optional[Entity]) -> None:
+        layer = self.layers.get(layer_id)
+        if layer:
+            layer.set(pos, entity)
+
+    def is_in_bounds(self, pos: Pos) -> bool:
+        return pos.is_valid(self.width, self.height)
+
+    def is_void(self, pos: Pos) -> bool:
+        ground = self.get_entity("ground", pos)
+        return ground is not None and ground.kind == "void"
+
+    def has_tag_at(self, layer_id: str, pos: Pos, tag: str, entity_kinds: dict) -> bool:
+        entity = self.get_entity(layer_id, pos)
+        if entity is None:
+            return False
+        kind_def = entity_kinds.get(entity.kind)
+        return tag in (kind_def.get("tags", []) if kind_def else [])
+
+    def get_multi_cell_object(self, mco_id: str) -> Optional[MultiCellObject]:
+        for m in self.multi_cell_objects:
+            if m.id == mco_id:
+                return m
+        return None
+
+    def copy(self) -> "Board":
+        return Board(
+            self.width,
+            self.height,
+            {k: v.copy() for k, v in self.layers.items()},
+            [m.copy() for m in self.multi_cell_objects],
+        )
+
+
+# ---------------------------------------------------------------------------
+# Avatar / Inventory
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AvatarState:
+    enabled: bool = True
+    position: Optional[Pos] = None
+    facing: str = "right"
+    item: Optional[str] = None  # inventory slot
+
+    def copy(self) -> "AvatarState":
+        return AvatarState(self.enabled, self.position, self.facing, self.item)
+
+    @classmethod
+    def from_json(cls, j: dict, game_defaults: dict) -> "AvatarState":
+        enabled = j.get("enabled", game_defaults.get("avatarEnabled", True))
+        pos_raw = j.get("position")
+        pos = Pos.from_json(pos_raw) if pos_raw is not None else None
+        facing = j.get("facing", game_defaults.get("avatarFacing", "right"))
+        inv = j.get("inventory", {})
+        item = inv.get("slot") if isinstance(inv, dict) else None
+        return cls(enabled, pos, facing, item)
+
+
+# ---------------------------------------------------------------------------
+# Overlay cursor
+# ---------------------------------------------------------------------------
+
+@dataclass
+class OverlayCursor:
+    x: int
+    y: int
+    width: int
+    height: int
+
+    def copy(self) -> "OverlayCursor":
+        return OverlayCursor(self.x, self.y, self.width, self.height)
+
+    @classmethod
+    def from_json(cls, j: dict) -> "OverlayCursor":
+        pos = j.get("position", [0, 0])
+        size = j.get("size", [2, 2])
+        return cls(int(pos[0]), int(pos[1]), int(size[0]), int(size[1]))
+
+
+# ---------------------------------------------------------------------------
+# Pending move (set when solidHandling == "delegate")
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PendingMove:
+    from_pos: Pos
+    to_pos: Pos
+    direction: str
+
+
+# ---------------------------------------------------------------------------
+# GameState
+# ---------------------------------------------------------------------------
+
+class GameState:
+    """Full mutable runtime state for one level."""
+
+    __slots__ = (
+        "board", "avatar", "variables", "overlay",
+        "turn_count", "action_count", "pending_move",
+        "sequence_indices", "once_fired_rules",
+        "is_won", "is_lost",
+    )
+
+    def __init__(
+        self,
+        board: Board,
+        avatar: AvatarState,
+        variables: dict[str, Any],
+        overlay: Optional[OverlayCursor] = None,
+        turn_count: int = 0,
+        action_count: int = 0,
+        pending_move: Optional[PendingMove] = None,
+        sequence_indices: Optional[dict[str, int]] = None,
+        once_fired_rules: Optional[set[str]] = None,
+        is_won: bool = False,
+        is_lost: bool = False,
+    ):
+        self.board = board
+        self.avatar = avatar
+        self.variables = variables
+        self.overlay = overlay
+        self.turn_count = turn_count
+        self.action_count = action_count
+        self.pending_move = pending_move
+        self.sequence_indices = sequence_indices if sequence_indices is not None else {}
+        self.once_fired_rules = once_fired_rules if once_fired_rules is not None else set()
+        self.is_won = is_won
+        self.is_lost = is_lost
+
+    @classmethod
+    def from_json(cls, state_json: dict, board: Board, game_defaults: dict) -> "GameState":
+        avatar_j = state_json.get("avatar", {})
+        avatar = AvatarState.from_json(avatar_j, game_defaults)
+        variables = dict(state_json.get("variables", {}))
+        overlay_j = state_json.get("overlay")
+        overlay = OverlayCursor.from_json(overlay_j) if overlay_j else None
+        return cls(board, avatar, variables, overlay)
+
+    def copy(self) -> "GameState":
+        return GameState(
+            self.board.copy(),
+            self.avatar.copy(),
+            copy.deepcopy(self.variables),
+            self.overlay.copy() if self.overlay else None,
+            self.turn_count,
+            self.action_count,
+            self.pending_move,  # immutable dataclass, safe to share
+            dict(self.sequence_indices),
+            set(self.once_fired_rules),
+            self.is_won,
+            self.is_lost,
+        )
+
+    def to_key(self) -> tuple:
+        """Hashable snapshot for BFS/A* deduplication.
+
+        Uses each layer's ``_sparse`` index to iterate only non-default cells
+        instead of the full W×H grid, reducing key computation from O(W·H·L)
+        to O(non-default cells).
+        """
+        board_key = tuple(
+            (lid, tuple(
+                (x, y, layer._sparse[(x, y)].to_key())
+                for (x, y) in layer._sparse_sorted
+            ))
+            for lid, layer in sorted(self.board.layers.items())
+        )
+        mco_key = tuple(
+            (
+                m.id,
+                m.kind,
+                tuple((p.x, p.y) for p in m.cells),
+                _freeze_value(m.params),
+            )
+            for m in self.board.multi_cell_objects
+        )
+        av = self.avatar
+        avatar_key = (av.enabled, av.position, av.facing, av.item)
+        vars_key = _freeze_value(self.variables)
+        # The overlay is player state in its own right: two boards that differ
+        # only in where the cursor sits are different states. Packs that move
+        # the avatar in lockstep with the overlay hid this; a pack without an
+        # avatar does not.
+        ov = self.overlay
+        overlay_key = (ov.x, ov.y, ov.width, ov.height) if ov else None
+        return (board_key, mco_key, avatar_key, vars_key, overlay_key)
+
+
+def _freeze_value(value):
+    if isinstance(value, dict):
+        return tuple((k, _freeze_value(v)) for k, v in sorted(value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_value(v) for v in value)
+    if isinstance(value, set):
+        return frozenset(_freeze_value(v) for v in value)
+    return value

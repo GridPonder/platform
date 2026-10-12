@@ -1,0 +1,314 @@
+# Gridponder DSL — Theme & Controls Schema
+
+Defines visual presentation and input bindings — colors, rendering, and gesture-to-action mapping — without affecting gameplay semantics.
+
+## Purpose
+
+`theme.json` defines the visual presentation and input bindings for a game: colors, board rendering, avatar appearance, text styling, and gesture-to-action mapping. Theme data is **non-normative** — it does not affect gameplay semantics. Engine implementations may override or extend theme settings for their platform.
+
+Input bindings live here (rather than in `game.json`) because the same game actions need different physical inputs on different platforms — swipes on mobile, arrow keys on desktop/web, d-pad on gamepad. The game declares *what* actions exist (in `game.json`); the theme declares *how* the player triggers them.
+
+A game pack includes one `theme.json` alongside `game.json`. If omitted, the engine applies sensible defaults.
+
+---
+
+## Top-Level Structure
+
+```json
+{
+  "controls": { ... },
+  "coverImage": "assets/cover.png",
+  "primaryColor": "#4CAF50",
+  "backgroundColor": "#1A1A2E",
+  "boardStyle": { ... },
+  "textStyle": { ... },
+  "avatar": { ... }
+}
+```
+
+---
+
+## Field Reference
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `controls` | object | no | Input bindings — gesture/key to action mapping. |
+| `coverImage` | string | no | Path to cover art for the library screen. |
+| `primaryColor` | string | no | Primary accent color (hex). |
+| `backgroundColor` | string | no | Background color (hex). |
+| `boardStyle` | object | no | Board rendering settings. |
+| `textStyle` | object | no | Text rendering settings. |
+| `avatar` | object | no | Avatar appearance settings. |
+| `palette` | object | no | Named-colour palette (`{"red": "#E53935", …}`) used by the renderer when an entity or action references a colour by name. Names not declared here fall back to the renderer's built-in defaults; packs only declare what they want to override or add. |
+
+---
+
+## Controls
+
+Maps platform inputs to abstract game actions. The engine uses these bindings as defaults; platforms may override them.
+
+```json
+"controls": {
+  "gestureMap": [
+    { "gesture": "swipe_cardinal", "action": "move", "paramMapping": { "direction": "swipe_direction" } },
+    { "gesture": "swipe_diagonal", "action": "diagonal_swap", "paramMapping": { "direction": "swipe_direction" } },
+    { "gesture": "tap_cell", "action": "tap_cell", "paramMapping": { "position": "tap_position" }, "showSelection": true },
+    { "gesture": "button", "buttonId": "rotate_cw", "action": "rotate", "params": { "rotation": "clockwise" } }
+  ]
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `gestureMap` | array | **yes** | List of input-to-action bindings. |
+
+Each gesture mapping:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `gesture` | string | **yes** | Input type: `swipe_cardinal`, `swipe_diagonal`, `tap_cell`, `button`, `key_press`. |
+| `action` | string | **yes** | Action `id` to emit. Must match an entry in `game.json` `actions`. |
+| `buttonId` | string | conditional | Required when `gesture` is `button`. UI control identifier. |
+| `key` | string | conditional | Required when `gesture` is `key_press`: a letter `a`–`z`, one of `up`/`down`/`left`/`right` for the arrow keys, or `space` / `enter`. Checked before the built-in arrow keys and WASD movement, so a binding for one of those keys replaces that movement. |
+| `paramMapping` | object | no | Maps input parameters to action parameters dynamically. |
+| `params` | object | no | Static parameters to include with the action. |
+| `showSelection` | boolean | no | When `true`, an accepted cell-tap action leaves a visible outline on its mapped cell until another cell is selected or the level state is reset. Solve and Hint replay update the same outline. Defaults to `false`. |
+
+**Platform behavior:** On mobile, gestures are used directly. On web/desktop, the engine maps arrow keys to `swipe_cardinal` equivalents (when the game has a `move`-style action), and provides on-screen buttons for `button`-type actions. Games can provide platform-specific overrides (future extension).
+
+**Keyboard-only actions.** A zero-param action bound only to `key_press` (no `button` entry) does not get an auto-rendered on-screen button — the reference app renders a button for every zero-param action *unless* the pack's own theme binds that action id exclusively to a non-button gesture. This lets a game offer purely keyboard-driven controls for some actions (e.g. four directional actions driven by the arrow keys) without cluttering the control row.
+
+---
+
+## Board Style
+
+```json
+"boardStyle": {
+  "cellSize": 64,
+  "cellSpacing": 2,
+  "borderRadius": 4,
+  "gridLineColor": "#333333",
+  "showGridLines": true
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `cellSize` | integer | `64` | Suggested cell size in logical pixels. |
+| `cellSpacing` | integer | `2` | Gap between cells. |
+| `borderRadius` | integer | `4` | Cell corner radius. |
+| `gridLineColor` | string | `"#333333"` | Grid line color (hex). |
+| `showGridLines` | boolean | `true` | Whether to show grid lines. |
+
+---
+
+## Text Style
+
+```json
+"textStyle": {
+  "fontFamily": "default",
+  "titleColor": "#FFFFFF",
+  "bodyColor": "#CCCCCC"
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `fontFamily` | string | `"default"` | Font family name or `"default"` for platform font. |
+| `titleColor` | string | `"#FFFFFF"` | Title text color (hex). |
+| `bodyColor` | string | `"#CCCCCC"` | Body text color (hex). |
+
+---
+
+## Avatar
+
+The avatar section defines the character's appearance. It supports a simple single-sprite mode and a full **sprite map** for directional and animated avatars.
+
+### Simple mode
+
+```json
+"avatar": {
+  "sprite": "assets/sprites/rabbit.png",
+  "visible": true
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `sprite` | string | (engine default) | Fallback sprite. Used when no sprite map is provided, or as default for missing states. |
+| `visible` | boolean | `true` | Whether avatar is rendered. Set to `false` for overlay-only games. |
+
+### Sprite map mode
+
+For games with directional movement, the avatar should use a **sprite map** keyed by `state` and `direction`. The renderer selects `walk` while an `avatar_move` step is interpolating and `idle` at rest.
+
+```json
+"avatar": {
+  "visible": true,
+  "sprites": {
+    "idle": {
+      "right": "assets/sprites/avatar/rabbit_looking_right.png",
+      "left": "assets/sprites/avatar/rabbit_looking_slightly_left.png",
+      "up": "assets/sprites/avatar/rabbit_idle_away_from_player.png",
+      "down": "assets/sprites/avatar/rabbit_idle_facing_player.png"
+    },
+    "walk": {
+      "right": {
+        "frames": ["assets/sprites/avatar/rabbit_walking_right_1.png", "assets/sprites/avatar/rabbit_walking_right_2.png"],
+        "duration": 400,
+        "mode": "loop"
+      },
+      "left": { "mirror": "right" },
+      "up": {
+        "frames": ["assets/sprites/avatar/rabbit_walking_up_1.png", "assets/sprites/avatar/rabbit_walking_up_2.png"],
+        "duration": 400,
+        "mode": "loop"
+      },
+      "down": {
+        "frames": ["assets/sprites/avatar/rabbit_walking_down_1.png", "assets/sprites/avatar/rabbit_walking_down_2.png"],
+        "duration": 400,
+        "mode": "loop"
+      }
+    },
+    "pushing": {
+      "right": {
+        "frames": ["assets/sprites/avatar/rabbit_push_start.png", "assets/sprites/avatar/rabbit_push_right_middle.png", "assets/sprites/avatar/rabbit_push_right_end.png"],
+        "duration": 300,
+        "mode": "once"
+      },
+      "left": { "mirror": "right" },
+      "up": { "mirror": "right" },
+      "down": { "mirror": "right" }
+    }
+  }
+}
+```
+
+> **What the renderer actually honours today.** The Flutter renderer resolves
+> `sprites.idle.<direction>` at rest and `sprites.walk.<direction>` during an
+> interpolated `avatar_move`, advancing through the configured frames across the
+> step. `sprites.moving` remains accepted as a compatibility alias for `walk`.
+> Missing walk entries fall back to the directional idle, then the flat
+> `avatar.sprite`, and finally the shared base-pack sprites. `{"mirror":
+> "<direction>"}` resolves to the named direction drawn flipped horizontally,
+> one hop only. Custom states such as `pushing` are parsed but not requested.
+
+#### Sprite map structure
+
+| Level | Key | Value |
+|-------|-----|-------|
+| State | `"idle"`, `"walk"`, `"pushing"`, or custom | Direction map |
+| Direction | `"up"`, `"down"`, `"left"`, `"right"` | Static sprite, animation, or mirror |
+
+#### Direction values
+
+Each direction entry is one of:
+
+| Form | Description |
+|------|-------------|
+| `"path.png"` | Static sprite (string). |
+| `{ "frames": [...], "duration": N, "mode": "..." }` | Animated sprite (same schema as entity animations). |
+| `{ "mirror": "direction" }` | Reuse another direction's sprite/animation, horizontally flipped. Avoids duplicate assets. |
+
+#### Resolution order
+
+When the engine needs a sprite for state S and direction D:
+
+1. Look up `sprites[S][D]`
+2. If missing, fall back to `sprites["idle"][D]`
+3. If missing, fall back to `sprite` (top-level fallback)
+4. If missing, use engine default
+
+Games without directional movement (e.g., `slide_merge`-only games) can use simple mode — no sprite map needed.
+
+---
+
+## Complete Example
+
+```json
+{
+  "controls": {
+    "gestureMap": [
+      { "gesture": "swipe_cardinal", "action": "move", "paramMapping": { "direction": "swipe_direction" } }
+    ]
+  },
+  "coverImage": "assets/cover.png",
+  "primaryColor": "#4CAF50",
+  "backgroundColor": "#1A1A2E",
+  "boardStyle": {
+    "cellSize": 64,
+    "cellSpacing": 2,
+    "showGridLines": true
+  },
+  "textStyle": {
+    "fontFamily": "default",
+    "titleColor": "#FFFFFF"
+  },
+  "avatar": {
+    "visible": true,
+    "sprites": {
+      "idle": {
+        "right": "assets/sprites/avatar/rabbit_looking_right.png",
+        "left": "assets/sprites/avatar/rabbit_looking_slightly_left.png",
+        "up": "assets/sprites/avatar/rabbit_idle_away_from_player.png",
+        "down": "assets/sprites/avatar/rabbit_idle_facing_player.png"
+      },
+      "walk": {
+        "right": {
+          "frames": ["assets/sprites/avatar/rabbit_walking_right_1.png", "assets/sprites/avatar/rabbit_walking_right_2.png"],
+          "duration": 400,
+          "mode": "loop"
+        },
+        "left": { "mirror": "right" },
+        "up": {
+          "frames": ["assets/sprites/avatar/rabbit_walking_up_1.png", "assets/sprites/avatar/rabbit_walking_up_2.png"],
+          "duration": 400,
+          "mode": "loop"
+        },
+        "down": {
+          "frames": ["assets/sprites/avatar/rabbit_walking_down_1.png", "assets/sprites/avatar/rabbit_walking_down_2.png"],
+          "duration": 400,
+          "mode": "loop"
+        }
+      },
+      "pushing": {
+        "right": {
+          "frames": ["assets/sprites/avatar/rabbit_push_start.png", "assets/sprites/avatar/rabbit_push_right_middle.png", "assets/sprites/avatar/rabbit_push_right_end.png"],
+          "duration": 300,
+          "mode": "once"
+        },
+        "left": { "mirror": "right" }
+      }
+    }
+  }
+}
+```
+
+## Cell effects
+
+Optional. Maps an **engine event type** to a sprite-strip animation played at
+that event's position. Purely presentational — the engine never reads this, and
+a client that does not implement effects ignores it.
+
+```json
+"effects": {
+  "cell_transformed": {
+    "sheet": "assets/vfx/capture_burst_sheet.png",
+    "frames": 4,
+    "durationMs": 260,
+    "scale": 1.6
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `sheet` | string | — | Horizontal sprite strip, pack-relative. Frames are equal width, laid out left to right. |
+| `frames` | int | `1` | Number of frames in the strip. |
+| `durationMs` | int | `300` | Total play time for one pass through the strip. |
+| `scale` | number | `1.0` | Draw size relative to one board cell; values above 1 let a burst spill past the tile it fires on. |
+
+Every matching event in a turn plays the effect at its own position
+simultaneously, so a capture that flips five cells flashes all five. Useful
+event types include `cell_transformed` (a cell changed kind), `object_removed`,
+and `cell_claimed`.

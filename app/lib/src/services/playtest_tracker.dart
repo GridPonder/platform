@@ -1,0 +1,87 @@
+import 'dart:math';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'playtest_beacon.dart';
+
+const _sessionIdKey = 'playtest_session_id';
+
+/// Fire-and-forget UX tracking for playtest builds. Entirely inert unless
+/// built with `--dart-define=PLAYTEST_TRACK=1` — normal/production builds
+/// never generate a session id or send a request.
+class PlaytestTracker {
+  static const bool _compiledIn = bool.fromEnvironment(
+    'PLAYTEST_TRACK',
+    defaultValue: false,
+  );
+
+  final bool enabled;
+  final Future<void> Function(Uri uri) _send;
+  String? _sessionId;
+
+  PlaytestTracker({bool? enabled, Future<void> Function(Uri uri)? send})
+    : enabled = enabled ?? _compiledIn,
+      _send = send ?? sendBeacon;
+
+  Future<String> _ensureSessionId() async {
+    final existing = _sessionId;
+    if (existing != null) return existing;
+    final prefs = await SharedPreferences.getInstance();
+    var id = prefs.getString(_sessionIdKey);
+    if (id == null) {
+      id = _generateId();
+      await prefs.setString(_sessionIdKey, id);
+    }
+    _sessionId = id;
+    return id;
+  }
+
+  String _generateId() {
+    final rnd = Random();
+    return List.generate(16, (_) => rnd.nextInt(16).toRadixString(16)).join();
+  }
+
+  Future<void> track(
+    String event, {
+    String? level,
+    String? action,
+    String? outcome,
+    String? src,
+    int? n,
+    String? pos,
+    String? av,
+    String? tx,
+    int? t,
+    int? busy,
+    int? at,
+    String? reason,
+    String? rev,
+    String? bd,
+    String? vars,
+    String? p,
+  }) async {
+    if (!enabled) return;
+    // Tracking must never affect gameplay: a failure here (SharedPreferences,
+    // the beacon send, anything) is swallowed rather than left to become an
+    // unhandled async error, since no call site awaits track().
+    try {
+      final session = await _ensureSessionId();
+      final params = <String, String>{'session': session, 'event': event};
+      if (level != null) params['level'] = level;
+      if (action != null) params['action'] = action;
+      if (outcome != null) params['outcome'] = outcome;
+      if (src != null) params['src'] = src;
+      if (n != null) params['n'] = '$n';
+      if (pos != null && pos.isNotEmpty) params['pos'] = pos;
+      if (av != null && av.isNotEmpty) params['av'] = av;
+      if (tx != null && tx.isNotEmpty) params['tx'] = tx;
+      if (t != null) params['t'] = '$t';
+      if (busy != null) params['busy'] = '$busy';
+      if (at != null) params['at'] = '$at';
+      if (reason != null) params['reason'] = reason;
+      if (rev != null && rev.isNotEmpty) params['rev'] = rev;
+      if (bd != null && bd.isNotEmpty) params['bd'] = bd;
+      if (vars != null && vars.isNotEmpty) params['vars'] = vars;
+      if (p != null && p.isNotEmpty) params['p'] = p;
+      await _send(Uri(path: '/track', queryParameters: params));
+    } catch (_) {}
+  }
+}

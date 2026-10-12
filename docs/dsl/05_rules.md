@@ -1,0 +1,946 @@
+# Gridponder DSL — Rules Model
+
+How game-specific interactions are expressed as data-driven if/then rules that fire between system execution phases.
+
+## 1. Purpose
+
+Rules are the **glue between systems**. They handle game-specific interactions that are too narrow to justify a dedicated engine system but too important to ignore.
+
+**Design principle:** If the same rule pattern appears across many levels or games, it should become a system. Rules handle the long tail.
+
+Examples of what rules express:
+- When a pipe's exit cell is cleared, release the next queued item.
+- When all gems are collected, open the exit door.
+- When a bomb is pushed onto a pressure plate, destroy the adjacent wall.
+- When a number settles after gravity, check for merges.
+
+---
+
+## 2. Rule Structure
+
+```json
+{
+  "id": "pipe_release",
+  "on": "cell_cleared",
+  "where": { ... },
+  "if": { ... },
+  "then": [ ... ],
+  "priority": 0,
+  "once": false
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | **yes** | Unique rule identifier. |
+| `on` | string | **yes** | Event type that triggers this rule. See event catalog. |
+| `where` | condition | no | Spatial/contextual filter on the triggering event. If omitted, all events of this type match. |
+| `if` | condition | no | Additional state conditions. If omitted, no extra conditions required. |
+| `then` | array of effects | **yes** | Effects to apply when the rule fires. |
+| `priority` | integer | no | Higher priority rules fire first. Default: `0`. |
+| `once` | boolean | no | If `true`, the rule fires at most once per level attempt. Default: `false`. |
+
+### Evaluation order
+
+1. Collect all events accumulated during phases 2–4.
+2. For each event, find all matching rules (event type matches `on`).
+3. Filter by `where` condition against event data.
+4. Filter by `if` condition against board/avatar/variable state.
+5. Sort matching rules by `priority` (descending), then by declaration order.
+6. Execute `then` effects in order.
+7. Effects may produce new events.
+8. Repeat from step 1 with new events (cascade pass). Maximum `maxCascadeDepth` passes (default: 3).
+
+### Value references
+
+Effect fields may use **value references** — strings beginning with `$` — to read live game state instead of hardcoded values. References are resolved once when the rule matches, before any effects execute (snapshot semantics).
+
+| Reference | Resolves to |
+|-----------|-------------|
+| `$event.<field>` | A field from the triggering event's payload. |
+| `$cell.<layer>.kind` | The entity kind at `$event.position` on the named layer. |
+| `$cell.<layer>.param.<key>` | An entity parameter at `$event.position` on the named layer. |
+| `$avatar.position` | The avatar's current `[x, y]` position. |
+| `$avatar.item` | The avatar's current inventory item kind, or `null`. |
+
+Examples:
+```json
+{ "destroy": { "position": "$event.position", "layer": "objects" } }
+{ "set_inventory": { "item": "$cell.objects.kind" } }
+{ "transform": { "position": "$event.position", "layer": "ground", "toKind": "bridge" } }
+```
+
+Constraints:
+- References may only appear in effect fields, not in conditions.
+- `$cell` always reads at `$event.position`. To check a different position, use a condition.
+- If a reference resolves to `null` (e.g., no entity on that layer), the effect is skipped silently.
+
+---
+
+## 3. Event Catalog
+
+Events are typed objects emitted by systems and the engine.
+
+### `avatar_entered`
+Avatar moved to a new cell.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `position` | `[x, y]` | Cell the avatar entered. |
+| `direction` | string | Direction of movement. |
+| `fromPosition` | `[x, y]` | Previous avatar position. |
+
+### `avatar_exited`
+Avatar left a cell.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `position` | `[x, y]` | Cell the avatar left. |
+
+### `move_blocked`
+Avatar attempted to move but was blocked by a solid entity (when `avatar_navigation.solidHandling` is `"delegate"`).
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `position` | `[x, y]` | Target cell (the blocked destination). |
+| `direction` | string | Movement direction. |
+| `fromPosition` | `[x, y]` | Avatar's current position. |
+| `blockerKind` | string | Entity kind that blocked movement. |
+
+Rules can react to this event to implement tool-based interactions (e.g., torch burns burnable, pickaxe breaks breakable). Use the `resolve_move` effect to complete the avatar's pending movement after removing the blocker.
+
+### `actor_moved`
+Emitted by `coupled_actors` / `individual_actors` for each actor that moved.
+
+| Payload | Type | Description |
+|-------|------|-------------|
+| `kind` | string | The actor's entity kind. |
+| `position` | `[x, y]` | Cell the actor moved into. |
+| `fromPosition` | `[x, y]` | Cell the actor left. |
+| `direction` | string | The **action's** direction, not the actor's effective one. |
+
+### `actor_entered`
+Emitted immediately after `actor_moved`, with the same payload. Two events fire
+for one move so a rule can distinguish "something left that cell" from
+"something arrived at this cell" without inspecting positions.
+
+Because `where` conditions such as `position_has_tag` read the event's
+`position`, this is the hook for anything that reacts to an actor arriving on a
+cell — pickups, pressure plates, traps. A pickup that retags the actor is
+expressible with no engine support at all:
+
+```json
+{
+  "id": "take_drill",
+  "on": "actor_entered",
+  "where": { "all_of": [
+    { "event": { "kind": "digger" } },
+    { "position_has_tag": { "layer": "tools", "tag": "grants_drill" } }
+  ]},
+  "then": [
+    { "transform": { "position": "$event.position", "layer": "actors", "toKind": "digger_drill" } },
+    { "destroy": { "position": "$event.position", "layer": "tools" } }
+  ]
+}
+```
+
+Carrying the held item in the actor's **entity kind** keeps it inside board
+state, so `to_key()`, undo, `previewTurn` and solver deduplication all keep
+working with no extra handling. Replacing the `destroy` with a `transform` of
+the item entity turns the same rule into a swap that drops the old item in
+place.
+
+### `actor_blocked`
+Emitted for each actor that could not move.
+
+| Payload | Type | Description |
+|-------|------|-------------|
+| `kind` | string | The actor's entity kind. |
+| `position` | `[x, y]` | Cell the actor stayed in. |
+
+### `tiles_slid`
+Tiles slid during a slide-merge action.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `direction` | string | Slide direction. |
+| `movedCount` | integer | Number of tiles that moved. |
+
+### `object_placed`
+An entity was placed or moved to a cell on the objects layer.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `position` | `[x, y]` | Destination cell. |
+| `kind` | string | Entity kind. |
+| `params` | object | Entity parameters. |
+
+### `object_removed`
+An entity was removed from the objects layer (by any mechanism: pickup, destruction, push-away, consumption). This is the general "something was removed" event. Systems that remove entities emit this. Note: `cell_cleared` is a more specific event that fires only when a cell goes from occupied to empty — `object_removed` fires even if another entity immediately replaces the removed one.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `position` | `[x, y]` | Cell it was removed from. |
+| `kind` | string | Entity kind that was removed. |
+
+### `line_of_sight_detected`
+A clear horizontal or vertical relation was found between a source and a
+target. Detection is read-only; rules decide what effect it has.
+
+Two systems emit it. The [`line_of_sight`](04_systems.md#213-line_of_sight)
+system relates two board entities. [`follower_npcs`](04_systems.md#214-follower_npcs)
+emits it for a `requiresLineOfSight` behavior that can see the avatar, so a game
+whose watcher is an NPC can react to being seen the same way — there, `kind` is
+the literal string `avatar`, since the avatar is not a board entity.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `position` | `[x, y]` | Target position. |
+| `kind` | string | Target entity kind. |
+| `sourcePosition` | `[x, y]` | Source cell that established the sightline. |
+| `sourceId` | string | Source multi-cell object id, or a generated layer-position id. |
+| `sourceKind` | string | Source entity kind. |
+
+### `cell_cleared`
+A cell became empty (had content, now has `null`).
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `position` | `[x, y]` | Cell that was cleared. |
+| `previousKind` | string | Kind that was there before. |
+| `layer` | string | Layer the cell belongs to. Defaults to `"objects"`. |
+
+### `cell_transformed`
+A cell's entity was replaced with a different entity.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `position` | `[x, y]` | Cell that changed. |
+| `fromKind` | string | Previous kind. |
+| `toKind` | string | New kind. |
+| `layer` | string | Which layer changed. |
+
+### `cell_exchanged`
+One cell of a [`region_transform`](04_systems.md#28-region_transform) `exchange`:
+the two layers swapped what they held at this cell. Nothing is emitted for a cell
+where both sides were empty.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `position` | `[x, y]` | Cell that exchanged. |
+| `mode` | string | `"lift"` (the first layer's content crossed to an empty second layer), `"drop"` (the reverse) or `"swap"` (both held something). |
+| `firstLayer` | string | The operation's first layer. |
+| `secondLayer` | string | The operation's second layer. |
+| `firstKind` | string or null | What the first layer held before, `null` for nothing. |
+| `secondKind` | string or null | What the second layer held before, `null` for nothing (a `pairs` placeholder counts as nothing). |
+
+A theme can play a different [cell effect](06_theme.md#cell-effects) per `mode`
+with a `when` filter, e.g. `{"when": {"mode": "lift"}}`.
+
+### `cell_blocked`
+A cell refused what an operation would have put on it — currently a
+[`region_transform`](04_systems.md#28-region_transform) `exchange` with a
+`restrict` config. It arrives with `action_vetoed`, so the board is unchanged
+and the turn is not spent; the event exists to explain the refusal, and a theme
+can give it a cell effect like any other. The accompanying `action_vetoed`
+carries the same explanation as a readable `reason` string.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `position` | `[x, y]` | Cell that refused. |
+| `layer` | string | Layer the refused entity would have landed on. |
+| `kind` | string | Entity kind that was refused. |
+| `guardKind` | string | Entity kind doing the refusing. |
+
+### `entity_fell`
+
+Emitted by [`balance_regions`](04_systems.md#224-balance_regions) when a cell's
+ground gives way under a body. Actors are removed from the board; the avatar is
+not, because its `fallVariable` increments and a `variable_threshold` lose
+condition ends the level in the same turn.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `position` | `[x, y]` | Cell whose ground opened. |
+| `kind` | string | Entity kind that fell, or `"avatar"`. |
+| `layer` | string | Layer it was removed from, or `"avatar"`. |
+
+### `spoil_hauled`
+An `excavate` backfill that did **not** happen, because a mover ended the turn
+on the excavator's vacated cell and carried the spoil out. Emitted in place of
+the `cell_transformed` that would otherwise have fired, so a game can react to
+a corridor *surviving* — which is otherwise an absence of an event and has
+nothing to hang a rule or an effect off.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `position` | `[x, y]` | Cell that stayed open. |
+| `layer` | string | Layer the backfill would have been written to. |
+
+### `inventory_changed`
+Avatar inventory changed.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `oldItem` | string or null | Previous inventory slot. |
+| `newItem` | string or null | New inventory slot. |
+
+### `object_pushed`
+An object was pushed by the avatar or an object-moving system.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `kind` | string | Pushed entity kind. |
+| `fromPosition` | `[x, y]` | Original position. |
+| `toPosition` | `[x, y]` | New position. |
+| `direction` | string | Push direction. |
+| `layer` | string | Optional layer containing the pushed entity. |
+| `originPosition` | `[x, y]` | Optional position before a multi-step push sequence began. |
+
+### `elastic_block_inflated`
+An `elastic_block` expanded by one or more complete leading-edge lines.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `id` | string | Multi-cell object id. |
+| `kind` | string | Multi-cell object kind. |
+| `fromCells` | array of `[x, y]` | Footprint before inflation. |
+| `toCells` | array of `[x, y]` | Footprint after inflation. |
+| `addedCells` | array of `[x, y]` | Cells added to the footprint. |
+| `direction` | string | Inflated edge direction. |
+| `distance` | integer | Number of complete lines added. |
+
+### `elastic_block_collapsed`
+An obstructed `elastic_block` press removed trailing slices while keeping the
+leading edge fixed.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `id` | string | Multi-cell object id. |
+| `kind` | string | Multi-cell object kind. |
+| `fromCells` | array of `[x, y]` | Footprint before collapse. |
+| `toCells` | array of `[x, y]` | Footprint after collapse. |
+| `direction` | string | Edge against which the object collapsed. |
+
+### `target_completed`
+An `elastic_block` footprint exactly matched an unfinished configured target.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `targetId` | string | Configured target id. |
+
+### `target_consumed`
+A completed elastic-block target was fully vacated and applied its permanent
+board transformation.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `targetId` | string | Configured target id. |
+| `mode` | string | `"none"`, `"void"`, or `"wall"`. |
+
+### `tile_moved`
+A single entity moved between cells. Several events emitted in one phase are a
+simultaneous movement batch for renderers.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `fromPosition` | `[x, y]` | Original position. |
+| `position` | `[x, y]` | Destination position. |
+| `kind` | string | Moving entity kind. |
+| `params` | object | Entity parameters after movement. |
+| `layer` | string | Layer containing the entity. Defaults to `"objects"`. |
+
+### `routed_motion_failed`
+A routed mover could not complete the current simultaneous route tick. The
+board remains at its pre-tick positions; one event is emitted for each distinct
+mover/reason pair, followed by a `variable_changed` event for the configured
+failure counter.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `fromPosition` | `[x, y]` | Mover's unchanged position. |
+| `position` | `[x, y]` | Intended destination, or the source for a source-route error. |
+| `kind` | string | Mover entity kind. |
+| `reason` | string | `invalid_heading`, `invalid_source_route`, `left_board`, `disconnected_route`, `closed_gate`, `occupied`, `wrong_exit`, `same_destination`, `head_on`, or `blocked_by_mover`. |
+
+### `entity_path_moved`
+A routed entity travelled through two or more cells during one accepted action.
+The path includes both its starting cell and final cell.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `path` | array of `[x, y]` | Ordered cells visited, including start and finish. |
+| `position` | `[x, y]` | Final path position. |
+| `kind` | string | Moving entity kind. |
+| `params` | object | Entity parameters after travel. |
+| `layer` | string | Layer containing the entity. |
+| `removedAtEnd` | boolean | Whether the entity was removed after reaching the final cell. |
+
+### `routed_motion_blocked`
+A continuous routed mover stopped safely rather than failing the turn.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `fromPosition` | `[x, y]` | Cell where the mover remains. |
+| `position` | `[x, y]` | Cell it could not enter, or its current cell for a source/cycle stop. |
+| `kind` | string | Mover entity kind. |
+| `reason` | string | Failure reasons above, plus `u_turn`, `route_cycle`, or `travel_limit`. |
+
+### `tiles_merged`
+Two tiles merged during slide.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `position` | `[x, y]` | Position of the resulting merged tile. |
+| `resultValue` | integer | Value of the merged tile. |
+| `inputValues` | array of integers | Values of the tiles that merged. |
+
+### `item_released`
+An emitter released an item.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `emitterId` | string | Multi-cell object id. |
+| `kind` | string | Released entity kind. |
+| `position` | `[x, y]` | Spawn position. |
+| `params` | object | Entity parameters. |
+
+### `object_settled`
+An entity settled after gravity/motion.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `kind` | string | Entity kind on arrival. |
+| `position` | `[x, y]` | Final position. |
+| `fromPosition` | `[x, y]` | Position before settling. |
+| `layer` | string | Layer the entity settled on. Defaults to `"objects"`. |
+| `fromKind` | string | Kind it had while travelling. Same as `kind` unless the system applied a settle transform on arrival. |
+
+A UI animates the travel from `fromPosition` to `position` using `fromKind`,
+so an entity that transforms on impact is not drawn transformed in mid-air.
+Cells of one rigid component settle in the same batch and so animate together.
+
+> **Resolved after the NPC phase.** `npc_resolution` (phase 6) runs after the
+> cascade pass in phase 5, so the engine gives rules a second pass over the NPC
+> events once that phase completes. Rules on `npc_moved` and `avatar_caught`
+> therefore fire in the same turn the NPC acted, before goal and lose
+> evaluation — which is how a level can, for example, unseal a door the moment an
+> NPC steps onto a plate. `follower_npcs` still writes `contactVariable` itself
+> rather than depending on a rule, so a lose condition works with no rules at
+> all.
+
+### `avatar_caught`
+
+Emitted by [`follower_npcs`](04_systems.md#214-follower_npcs) when an NPC whose
+behavior sets `lethalContact` steps onto the avatar's cell. The system also
+increments its `contactVariable`, so a `variable_threshold` lose condition fires
+on the same turn without needing a rule.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `position` | `[x, y]` | Cell where contact happened. |
+| `npcKind` | string | Entity kind of the NPC that made contact. |
+| `npcId` | string | NPC identifier (derived from its pre-move position). |
+
+### `npc_moved`
+An NPC moved during NPC resolution.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `npcId` | string | NPC identifier (derived from position or kind). |
+| `fromPosition` | `[x, y]` | Old position. |
+| `toPosition` | `[x, y]` | New position. |
+
+### `goal_step_completed`
+A goal milestone was reached.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `goalId` | string | Goal identifier. |
+| `stepIndex` | integer | Which step was completed. |
+
+### `variable_changed`
+A state variable was modified.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `variable` | string | Variable name. |
+| `oldValue` | any | Previous value. |
+| `newValue` | any | New value. |
+
+### `turn_ended`
+All phases completed for this turn.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `turnNumber` | integer | Current turn count. |
+
+---
+
+## 4. Condition Catalog
+
+Conditions filter when a rule should fire. Every condition evaluates to `true` or `false`.
+
+### Spatial/event conditions (used in `where`)
+
+#### `position`
+Match against the event's primary position.
+
+```json
+{ "position": [3, 2] }
+```
+
+#### `position_has_tag`
+The event position's cell has a specific tag on a layer.
+
+```json
+{ "position_has_tag": { "layer": "ground", "tag": "liquid" } }
+```
+
+#### `event`
+Match fields from the event payload. Consolidates kind and parameter matching.
+
+```json
+{ "event": { "kind": "metal_crate" } }
+{ "event": { "param": "value", "equals": 5 } }
+{ "event": { "kind": "metal_crate", "param": "value", "equals": 5 } }
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `kind` | string | Match entity kind in event data. |
+| `param` | string | Event parameter key to match. |
+| `equals` | any | Required value for the `param` field. |
+
+When both `kind` and `param`/`equals` are present, both must match (implicit AND).
+
+### State conditions (used in `if`)
+
+#### `cell`
+Check a cell's content on a specific layer.
+
+```json
+{ "cell": { "position": [3, 2], "layer": "objects", "kind": "rock" } }
+{ "cell": { "position": [3, 2], "layer": "objects", "isEmpty": true } }
+{ "cell": { "position": [3, 2], "layer": "objects", "hasTag": "solid" } }
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `position` | `[x, y]` | **yes** | Cell to check. |
+| `layer` | string | **yes** | Layer to check. |
+| `kind` | string | — | Cell must contain this exact kind. |
+| `isEmpty` | boolean | — | `true`: cell must be empty. `false`: cell must be occupied. |
+| `hasTag` | string | — | Cell entity must have this tag. |
+
+Exactly one of `kind`, `isEmpty`, or `hasTag` must be present.
+
+#### `avatar`
+Check avatar state.
+
+```json
+{ "avatar": { "at": [3, 2] } }
+{ "avatar": { "hasItem": "torch" } }
+{ "avatar": { "hasItem": true } }
+{ "avatar": { "hasItem": false } }
+{ "avatar": { "at": [3, 2], "hasItem": "torch" } }
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `at` | `[x, y]` | Avatar must be at this position. |
+| `hasItem` | string or boolean | String: specific item kind. `true`: slot not empty. `false`: slot empty. |
+
+At least one field must be present. When both are present, both must be true (implicit AND).
+
+#### `variable`
+Check a state variable against a value.
+
+```json
+{ "variable": { "name": "gemsCollected", "op": "eq", "value": 5 } }
+{ "variable": { "name": "gemsCollected", "op": "gte", "value": 3 } }
+```
+
+Operators: `"eq"`, `"neq"`, `"gt"`, `"gte"`, `"lt"`, `"lte"`.
+
+#### `emitter_has_next`
+An emitter has remaining items in its queue.
+
+```json
+{ "emitter_has_next": { "emitterId": "pipe_1" } }
+```
+
+#### `board_count`
+Count entities matching a selector.
+
+```json
+{ "board_count": { "kind": "gem", "op": "eq", "value": 0 } }
+```
+
+### Logical combinators
+
+#### `all_of`
+All sub-conditions must be true (AND).
+
+```json
+{ "all_of": [
+  { "avatar": { "hasItem": "torch" } },
+  { "cell": { "position": [3, 2], "layer": "objects", "hasTag": "burnable" } }
+]}
+```
+
+#### `any_of`
+At least one sub-condition must be true (OR).
+
+```json
+{ "any_of": [
+  { "variable": { "name": "mode", "op": "eq", "value": "fire" } },
+  { "avatar": { "hasItem": "torch" } }
+]}
+```
+
+#### `not`
+Negate a condition.
+
+```json
+{ "not": { "cell": { "position": [3, 2], "layer": "objects", "isEmpty": true } } }
+```
+
+---
+
+## 5. Effect Catalog
+
+Effects are state mutations applied when a rule fires.
+
+### `spawn`
+Place a new entity on the board.
+
+```json
+{ "spawn": { "position": [3, 2], "layer": "objects", "kind": "number", "value": 5 } }
+```
+
+### `destroy`
+Remove an entity from the board. If `animation` is specified, the engine plays the named animation on the entity before removing it.
+
+```json
+{ "destroy": { "position": [3, 2], "layer": "objects" } }
+{ "destroy": { "position": [3, 2], "layer": "objects", "animation": "burning" } }
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `position` | `[x, y]` or ref | **yes** | Cell to destroy. |
+| `layer` | string | **yes** | Layer to remove from. |
+| `animation` | string | no | Animation name from the entity kind's `animations` map. Played before removal. |
+
+### `transform`
+Change an entity at a position to a different kind. If `animation` is specified, the engine plays the named animation on the source entity before transforming it.
+
+```json
+{ "transform": { "position": [3, 2], "layer": "ground", "toKind": "bridge" } }
+{ "transform": { "position": [3, 2], "layer": "ground", "toKind": "bridge", "animation": "dissolving" } }
+{ "transform": { "position": "$event.position", "layer": "ground", "fromKind": "cracked", "toKind": "void" } }
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `position` | `[x, y]` or ref | **yes** | Cell to transform. |
+| `layer` | string | **yes** | Layer to modify. |
+| `toKind` | string | **yes** | New entity kind. |
+| `fromKind` | string or array | no | Only transform when the cell already holds this kind (or one of these). No match, no effect and no event. |
+| `animation` | string | no | Animation name from the source entity kind's `animations` map. Played before transform. |
+
+`fromKind` exists because conditions cannot inspect a `$event` position — only
+effects can read one. Without it, a rule keyed on an event has to transform the
+cell blindly, which forces every cell the rule might ever touch to be authored
+as the same kind. With it, a rule such as "the floor gives way under whatever
+walks off it" applies to the cracked tiles and leaves solid ground alone, so the
+art and the rule agree without a per-cell repair rule propping them up.
+
+### `move_entity`
+Move an entity from one position to another.
+
+```json
+{ "move_entity": { "from": [3, 2], "to": [3, 4], "layer": "objects" } }
+```
+
+### `set_cell`
+Directly set a cell's content (kind + params).
+
+```json
+{ "set_cell": { "position": [3, 2], "layer": "objects", "kind": "number", "value": 7 } }
+```
+
+### `release_from_emitter`
+Trigger a queued emitter to release its next item.
+
+```json
+{ "release_from_emitter": { "emitterId": "pipe_1" } }
+```
+
+### `apply_gravity`
+Apply gravity to matching entities.
+
+```json
+{ "apply_gravity": { "selector": { "tag": "mergeable" }, "direction": "down" } }
+```
+
+### `set_variable`
+Set a state variable to a value.
+
+```json
+{ "set_variable": { "name": "doorsOpen", "value": true } }
+```
+
+### `increment_variable`
+Increment a numeric variable.
+
+```json
+{ "increment_variable": { "name": "gemsCollected", "amount": 1 } }
+```
+
+### `set_inventory`
+Set the avatar's inventory slot.
+
+```json
+{ "set_inventory": { "item": "torch" } }
+```
+
+### `clear_inventory`
+Empty the avatar's inventory slot.
+
+```json
+{ "clear_inventory": {} }
+```
+
+### `resolve_move`
+Complete a pending avatar move that was blocked (requires a prior `move_blocked` event in this cascade). The avatar moves to the blocked target cell. Emits `avatar_exited` and `avatar_entered`.
+
+```json
+{ "resolve_move": {} }
+```
+
+No-op if there is no pending move. Typically used after destroying or transforming the blocking entity.
+
+### Effect-emitted events
+
+Effects automatically emit events when they modify state. These events are available in subsequent cascade passes.
+
+| Effect | Events emitted |
+|--------|---------------|
+| `destroy` | `object_removed`, potentially `cell_cleared` |
+| `spawn` | `object_placed` |
+| `transform` | `cell_transformed` |
+| `set_cell` | `cell_transformed` or `object_placed` |
+| `move_entity` | `object_removed` + `object_placed` |
+| `set_inventory` | `inventory_changed` |
+| `clear_inventory` | `inventory_changed` |
+| `resolve_move` | `avatar_exited` + `avatar_entered` |
+
+---
+
+## 6. Cascade Semantics
+
+### Cascade Resolution Loop
+
+During phase 5 (`cascade_resolution`), the engine executes:
+
+```
+events = events accumulated from phases 2–4
+for pass = 1 to maxCascadeDepth:
+    matching_rules = evaluate all rules against events
+    if no matching rules: break
+    for each rule (sorted by priority desc, then declaration order):
+        execute rule.then effects
+        collect new events from effects
+    run cascade-phase systems (queued_emitters, gravity)
+    collect their events
+    events = new events only
+```
+
+### Loop Termination
+
+The cascade loop terminates when:
+- No rules matched in a pass, OR
+- `maxCascadeDepth` is reached (default: 3)
+
+This prevents infinite loops. If a game genuinely needs deeper chaining, `maxCascadeDepth` can be increased in `game.json` defaults.
+
+### Priority and Ordering
+
+1. Rules with higher `priority` fire first.
+2. Among equal-priority rules, declaration order wins (game-level rules before level-local rules, then by array position within each).
+3. A rule with `"once": true` fires at most once per level attempt (tracked across all turns).
+
+---
+
+## 7. Constraint
+
+Rules must **not** contain:
+- Arbitrary code strings or expressions
+- Embedded scripts
+- Custom function references
+- Unbounded loops
+
+All conditions and effects use the fixed catalogs defined above. This keeps the DSL safe, deterministic, and analyzable.
+
+---
+
+## 8. Worked Examples
+
+### Example A: Pipe releases number when exit is clear
+
+```json
+{
+  "id": "pipe_1_release",
+  "on": "cell_cleared",
+  "where": { "position": [1, 2] },
+  "if": { "emitter_has_next": { "emitterId": "pipe_1" } },
+  "then": [
+    { "release_from_emitter": { "emitterId": "pipe_1" } },
+    { "apply_gravity": { "selector": { "tag": "mergeable" }, "direction": "down" } }
+  ]
+}
+```
+
+### Example B: Collecting all gems opens the exit
+
+```json
+{
+  "id": "all_gems_collected",
+  "on": "object_removed",
+  "where": { "event": { "kind": "gem" } },
+  "if": { "board_count": { "kind": "gem", "op": "eq", "value": 0 } },
+  "then": [
+    { "spawn": { "position": [4, 4], "layer": "markers", "kind": "exit" } }
+  ],
+  "once": true
+}
+```
+
+### Example C: Pressure plate opens door
+
+```json
+{
+  "id": "plate_activated",
+  "on": "avatar_entered",
+  "where": { "position": [2, 3] },
+  "then": [
+    { "destroy": { "position": [5, 1], "layer": "objects" } },
+    { "set_variable": { "name": "plateActive", "value": true } }
+  ]
+}
+```
+
+---
+
+## 9. Rule Recipes
+
+Rule recipes are documented patterns that replace what was previously handled by dedicated engine systems. They use the standard rule primitives (events, conditions, effects, value references) and can be copied into a game's `rules` array.
+
+### Recipe A: Single-slot inventory pickup
+
+Replaces `single_slot_inventory` system. The avatar picks up tagged objects on cell entry.
+
+```json
+{
+  "id": "pickup_item",
+  "on": "avatar_entered",
+  "where": { "position_has_tag": { "layer": "objects", "tag": "pickup" } },
+  "then": [
+    { "set_inventory": { "item": "$cell.objects.kind" } },
+    { "destroy": { "position": "$event.position", "layer": "objects" } }
+  ]
+}
+```
+
+**Variant — ignore if slot filled:** Add an `if` condition to skip pickup when carrying an item.
+
+```json
+{
+  "id": "pickup_item_if_empty",
+  "on": "avatar_entered",
+  "where": { "position_has_tag": { "layer": "objects", "tag": "pickup" } },
+  "if": { "avatar": { "hasItem": false } },
+  "then": [
+    { "set_inventory": { "item": "$cell.objects.kind" } },
+    { "destroy": { "position": "$event.position", "layer": "objects" } }
+  ]
+}
+```
+
+### Recipe B: Consumable tool interactions
+
+Replaces `consumable_interactions` system. When avatar movement is blocked, a carried tool can destroy the blocker.
+
+```json
+{
+  "id": "torch_burns",
+  "on": "move_blocked",
+  "where": { "position_has_tag": { "layer": "objects", "tag": "burnable" } },
+  "then": [
+    { "destroy": { "position": "$event.position", "layer": "objects", "animation": "burning" } },
+    { "clear_inventory": {} },
+    { "resolve_move": {} }
+  ]
+}
+```
+
+```json
+{
+  "id": "pickaxe_breaks",
+  "on": "move_blocked",
+  "where": { "position_has_tag": { "layer": "objects", "tag": "breakable" } },
+  "then": [
+    { "destroy": { "position": "$event.position", "layer": "objects", "animation": "breaking" } },
+    { "clear_inventory": {} },
+    { "resolve_move": {} }
+  ]
+}
+```
+
+The `resolve_move` effect completes the avatar's pending movement into the now-cleared cell. The cascade produces `avatar_entered`, which can trigger further rules (e.g., Recipe A for pickup).
+
+### Recipe C: Liquid transitions
+
+Replaces `liquid_transitions` system. Handles objects entering liquid and avatar crossing water.
+
+**Object pushed into liquid creates bridge:**
+
+```json
+{
+  "id": "object_creates_bridge",
+  "on": "object_placed",
+  "where": { "all_of": [
+    { "position_has_tag": { "layer": "ground", "tag": "liquid" } },
+    { "position_has_tag": { "layer": "objects", "tag": "pushable" } }
+  ]},
+  "then": [
+    { "destroy": { "position": "$event.position", "layer": "objects" } },
+    { "transform": { "position": "$event.position", "layer": "ground", "toKind": "bridge" } }
+  ]
+}
+```
+
+**Water crossing clears inventory:**
+
+```json
+{
+  "id": "water_clears_items",
+  "on": "avatar_entered",
+  "where": { "position_has_tag": { "layer": "ground", "tag": "liquid" } },
+  "if": { "avatar": { "hasItem": true } },
+  "then": [
+    { "clear_inventory": {} }
+  ]
+}
+```
+
+### Why recipes, not systems?
+
+These patterns are simple reactive logic — an event happens, a condition is checked, state is modified. This is exactly what rules are for. Expressing them as rules:
+
+- **Makes them visible and modifiable** in game.json (game authors can adjust, extend, or omit them)
+- **Removes implicit behavior** that was hidden inside engine systems
+- **Reduces the system count** without losing expressiveness
+- **Allows per-game variation** (e.g., water that heals instead of clearing inventory)

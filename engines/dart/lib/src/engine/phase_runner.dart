@@ -1,0 +1,371 @@
+import '../engine/goal_evaluator.dart';
+import '../engine/lose_evaluator.dart';
+import '../engine/turn_result.dart';
+import '../models/event.dart';
+import '../models/game_action.dart';
+import '../models/game_definition.dart';
+import '../models/game_state.dart';
+import '../models/level_definition.dart';
+import '../models/position.dart';
+import '../rules/rules_engine.dart';
+import '../systems/system_registry.dart';
+
+/// Executes all 7 phases of a single turn.
+class PhaseRunner {
+  final GameDefinition _game;
+  final LevelDefinition _level;
+  final GoalEvaluator _goalEval = GoalEvaluator();
+  final LoseEvaluator _loseEval = LoseEvaluator();
+
+  PhaseRunner(this._game, this._level);
+
+  TurnResult run(GameAction action, LevelState state) {
+    final effectiveGame = _game.withSystemOverrides(_level.systemOverrides);
+    // Instantiate systems with any level-specific overrides
+    final systems = SystemRegistry.instantiate(effectiveGame, null);
+
+    // Phase 1: Input validation
+    if (!_game.isValidAction(action)) {
+      return TurnResult.rejected(state);
+    }
+
+    final allEvents = <GameEvent>[];
+    final animations = <AnimationStep>[];
+
+    // Stage allocator: each phase advances `baseStage` past whatever stages
+    // its emitted animations used, so later phases never overlap earlier ones.
+    int baseStage = 0;
+    int advanceBase() {
+      if (animations.isEmpty) return baseStage;
+      final maxStage = animations
+          .map((a) => a.stage)
+          .fold<int>(baseStage, (m, s) => s > m ? s : m);
+      return maxStage + 1;
+    }
+
+    // Phase 2: Action resolution
+    for (final sys in systems) {
+      final events = sys.executeActionResolution(action, state, effectiveGame);
+
+      // A veto rejects the whole transaction. Only the events emitted by the
+      // vetoing system describe that rejection; events from earlier systems
+      // describe mutations of the working state that will be discarded.
+      if (events.any((e) => e.type == 'action_vetoed')) {
+        return TurnResult.rejected(state, events: events);
+      }
+
+      allEvents.addAll(events);
+      _collectAnimations(events, state, animations, baseStage);
+    }
+
+    // Phase 3: Movement resolution
+    baseStage = advanceBase();
+    for (final sys in systems) {
+      final events = sys.executeMovementResolution(state, effectiveGame);
+      allEvents.addAll(events);
+      _collectAnimations(events, state, animations, baseStage);
+    }
+
+    // Phase 4: Interaction resolution (no-op in v0)
+
+    // Phase 5: Cascade resolution
+    baseStage = advanceBase();
+    final rulesEngine = RulesEngine(
+      _game.rules,
+      _level.rules,
+    );
+    final maxDepth = _game.defaults.maxCascadeDepth;
+    final cascadeEvents = rulesEngine.evaluate(
+        allEvents, state, effectiveGame, maxDepth, systems);
+    allEvents.addAll(cascadeEvents);
+    _collectAnimationsFromList(cascadeEvents, state, animations, baseStage);
+
+    // Phase 6: NPC resolution
+    baseStage = advanceBase();
+    final npcEvents = <GameEvent>[];
+    for (final sys in systems) {
+      final events = sys.executeNpcResolution(state, effectiveGame);
+      npcEvents.addAll(events);
+      allEvents.addAll(events);
+      _collectAnimations(events, state, animations, baseStage);
+    }
+
+    // Rules get a pass over the NPC events too. Without this, `npc_moved` and
+    // `avatar_caught` are documented as rule-triggerable events that no rule can
+    // ever see, because the cascade above runs before this phase.
+    if (npcEvents.isNotEmpty) {
+      final npcCascade = rulesEngine.evaluate(
+          npcEvents, state, effectiveGame, maxDepth, systems);
+      allEvents.addAll(npcCascade);
+      _collectAnimationsFromList(npcCascade, state, animations, baseStage);
+    }
+
+    // Derived state: variables that are pure functions of the board the turn
+    // has just finished with (readouts such as a pan's weight). Last, so
+    // nothing after it can make them stale.
+    for (final sys in systems) {
+      sys.executeDeriveState(state, effectiveGame);
+    }
+
+    // Phase 7: Goal evaluation
+    //
+    // A turn that only *selects* an actor changes no board state, so it is not
+    // a move: it must not be charged against `max_actions`, nor shown as one in
+    // the UI, which reads this counter. Games that tap to switch between actors
+    // would otherwise pay for the tap as well as the step. `turnCount` still
+    // advances — it is the pipeline's tick, not a move.
+    //
+    // This counts every event from every phase, including NPC resolution —
+    // deliberately not excluded wholesale, since a system whose NPC
+    // resolution has a genuine, gameplay-relevant effect every turn (e.g.
+    // `turn_cycle` advancing a signal) must still cost the action even when
+    // the action itself was just a selection. What keeps a system like
+    // `beam`, which also runs unconditionally every turn, from wrongly
+    // disqualifying a free selection is its own responsibility: it must
+    // only emit events when its retrace actually changed something, not on
+    // every turn regardless — see `beam`'s own docs.
+    final selectionOnly = allEvents.isNotEmpty &&
+        allEvents.every((e) => e.type == 'actor_selected');
+    if (!selectionOnly) {
+      state.actionCount++;
+    }
+    state.turnCount++;
+
+    // Check goals before lose conditions: winning on the last allowed move counts as a win.
+    final goalStatus =
+        _goalEval.evaluate(_level.goals, state, effectiveGame, allEvents);
+    if (goalStatus.isWon) {
+      state.isWon = true;
+    }
+
+    if (!state.isWon) {
+      final loseStatus = _loseEval.evaluate(
+        _level.loseConditions,
+        state,
+        goals: _level.goals,
+        game: effectiveGame,
+        goalSatisfied: goalStatus.satisfied,
+      );
+      if (loseStatus.isLost) {
+        state.isLost = true;
+        return TurnResult(
+          accepted: true,
+          newState: state,
+          events: allEvents,
+          animations: animations,
+          goalProgress: goalStatus.progress,
+          isWon: false,
+          isLost: true,
+          loseReason: loseStatus.reason,
+        );
+      }
+    }
+
+    allEvents.add(GameEvent.turnEnded(state.turnCount));
+
+    return TurnResult(
+      accepted: true,
+      newState: state,
+      events: allEvents,
+      animations: animations,
+      goalProgress: goalStatus.progress,
+      isWon: goalStatus.isWon,
+      isLost: false,
+    );
+  }
+
+  void _collectAnimations(List<GameEvent> events, LevelState state,
+          List<AnimationStep> out, int baseStage) =>
+      _collectAnimationsFromList(events, state, out, baseStage);
+
+  /// Translates [events] into [AnimationStep]s, appending to [out].
+  ///
+  /// Stage assignment within a phase:
+  ///   • motion (avatar_move, tile_moved, item_released spawns) → baseStage+0
+  ///   • merge   (tiles_merged with sources)                    → baseStage+1
+  ///   • destroy (object_removed with animation)                → baseStage+2
+  void _collectAnimationsFromList(List<GameEvent> events, LevelState state,
+      List<AnimationStep> out, int baseStage) {
+    final motionStage = baseStage;
+    final mergeStage = baseStage + 1;
+    final destroyStage = baseStage + 2;
+
+    for (final event in events) {
+      if (event.type == 'avatar_entered') {
+        final pos = event.position;
+        final from = event.payload['fromPosition'];
+        if (pos != null && from != null) {
+          final fromPos = from is Position ? from : Position.fromJson(from);
+          out.add(AnimationStep.avatarMove(fromPos, pos, stage: motionStage));
+        }
+      } else if (event.type == 'actor_moved') {
+        final pos = event.position;
+        final from = event.payload['fromPosition'];
+        final kind = event.payload['kind'] as String?;
+        if (pos != null && from != null && kind != null) {
+          final fromPos = from is Position ? from : Position.fromJson(from);
+          final dur = _motionDurationMs(kind, 'moveDurationMs', 130);
+          out.add(AnimationStep.entityMove(
+            fromPos,
+            pos,
+            kind,
+            'actors',
+            durationMs: dur,
+            stage: motionStage,
+          ));
+        }
+      } else if (event.type == 'npc_moved') {
+        // follower_npcs predates actor_moved and reports its destination as
+        // toPosition. Resolve the moved kind from the post-phase actors layer
+        // so autonomous NPCs receive the same in-flight animation as actors.
+        final from = event.payload['fromPosition'];
+        final to = event.payload['toPosition'];
+        if (from != null && to != null) {
+          final fromPos = from is Position ? from : Position.fromJson(from);
+          final toPos = to is Position ? to : Position.fromJson(to);
+          final entity = state.board.getEntity('actors', toPos);
+          if (entity != null) {
+            final dur = _motionDurationMs(entity.kind, 'moveDurationMs', 130);
+            out.add(AnimationStep.entityMove(
+              fromPos,
+              toPos,
+              entity.kind,
+              'actors',
+              durationMs: dur,
+              stage: motionStage,
+              // A copy: the board's params are written in place by later
+              // turns, and the sprite must show the NPC as it moved.
+              params: Map<String, dynamic>.of(entity.params),
+            ));
+          }
+        }
+      } else if (event.type == 'tile_moved') {
+        final pos = event.position;
+        final from = event.payload['fromPosition'];
+        final kind = event.payload['kind'] as String?;
+        if (pos != null && from != null && kind != null) {
+          final fromPos = from is Position ? from : Position.fromJson(from);
+          final layer = event.payload['layer'] as String? ?? 'objects';
+          final params =
+              (event.payload['params'] as Map?)?.cast<String, dynamic>() ??
+                  const <String, dynamic>{};
+          final dur = _motionDurationMs(kind, 'moveDurationMs', 130);
+          out.add(AnimationStep.entityMove(
+            fromPos,
+            pos,
+            kind,
+            layer,
+            durationMs: dur,
+            stage: motionStage,
+            params: params,
+          ));
+        }
+      } else if (event.type == 'entity_path_moved') {
+        final pathRaw = event.payload['path'];
+        final kind = event.payload['kind'] as String?;
+        if (pathRaw is List && kind != null) {
+          final path = pathRaw
+              .map((p) => p is Position ? p : Position.fromJson(p))
+              .toList();
+          if (path.length > 1) {
+            final layer = event.payload['layer'] as String? ?? 'objects';
+            final params =
+                (event.payload['params'] as Map?)?.cast<String, dynamic>() ??
+                    const <String, dynamic>{};
+            final dur = _motionDurationMs(kind, 'pathStepDurationMs', 80);
+            out.add(AnimationStep.entityPath(
+              path,
+              kind,
+              layer,
+              durationMs: dur,
+              stage: motionStage,
+              params: params,
+              removedAtEnd: event.payload['removedAtEnd'] as bool? ?? false,
+            ));
+          }
+        }
+      } else if (event.type == 'object_settled') {
+        // An entity that travelled to rest under gravity or a collapse. Cells
+        // of one rigid component all settle in the same batch, so giving them
+        // a shared stage animates the piece falling as a unit — which is the
+        // only way the player can see what actually travelled together.
+        final pos = event.position;
+        final from = event.payload['fromPosition'];
+        final kind = event.payload['kind'] as String?;
+        if (pos != null && from != null && kind != null) {
+          final fromPos = from is Position ? from : Position.fromJson(from);
+          if (fromPos != pos) {
+            final layer = event.payload['layer'] as String? ?? 'objects';
+            // Animate what was travelling, not what it turned into on impact.
+            final travellingKind = event.payload['fromKind'] as String? ?? kind;
+            // Per-cell pacing, like the ice-slide convention — a long fall
+            // should read as fast, not as one slow glide.
+            final dur = _motionDurationMs(travellingKind, 'fallDurationMs', 80);
+            out.add(AnimationStep.entityMove(
+              fromPos,
+              pos,
+              travellingKind,
+              layer,
+              durationMs: dur,
+              stage: motionStage,
+            ));
+          }
+        }
+      } else if (event.type == 'tiles_merged') {
+        final pos = event.position;
+        final sourcesRaw = event.payload['sources'];
+        final kind = event.payload['kind'] as String?;
+        if (pos != null && sourcesRaw is List && kind != null) {
+          final sources = sourcesRaw
+              .map((p) => p is Position ? p : Position.fromJson(p))
+              .toList();
+          final inputValues =
+              (event.payload['inputValues'] as List?)?.cast<int>() ?? const [];
+          final result = event.payload['resultValue'];
+          // Build minimal source/result params; renderer can fall back to kind.
+          final sourceParams =
+              inputValues.map((v) => <String, dynamic>{'value': v}).toList();
+          final sourceKinds = List<String>.filled(sources.length, kind);
+          final resultParams = <String, dynamic>{
+            if (result != null) 'value': result,
+          };
+          final dur = _motionDurationMs(kind, 'mergeDurationMs', 200);
+          out.add(AnimationStep.entityMerge(
+            pos,
+            sources,
+            sourceKinds,
+            sourceParams,
+            kind,
+            resultParams,
+            'objects',
+            durationMs: dur,
+            stage: mergeStage,
+          ));
+        }
+      } else if (event.type == 'object_removed') {
+        // Entity destroy animations: events carry an optional 'animation' key
+        // naming the AnimationDef to play (e.g. 'burning' on wood).
+        final animName = event.payload['animation'] as String?;
+        final kind = event.payload['kind'] as String?;
+        final pos = event.position;
+        if (animName != null && kind != null && pos != null) {
+          final animDef = _game.entityKinds[kind]?.animations[animName];
+          if (animDef != null) {
+            out.add(AnimationStep.entityAnim(
+                pos, kind, animName, animDef.durationMs,
+                stage: destroyStage));
+          }
+        }
+      }
+    }
+  }
+
+  int _motionDurationMs(String kind, String key, int fallback) {
+    final motion = _game.entityKinds[kind]?.motion;
+    if (motion == null) return fallback;
+    final v = motion[key];
+    if (v is int) return v;
+    if (v is num) return v.toInt();
+    return fallback;
+  }
+}

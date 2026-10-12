@@ -1,0 +1,620 @@
+import '../models/board.dart';
+import '../models/entity.dart';
+import '../models/event.dart';
+import '../models/game_definition.dart';
+import '../models/game_state.dart';
+import '../models/goal.dart';
+import '../models/position.dart';
+
+class GoalStatus {
+  final bool isWon;
+  final Map<String, double> progress; // goalId → 0.0..1.0
+  final Map<String, bool> satisfied; // goalId → individually done this turn
+
+  const GoalStatus({
+    required this.isWon,
+    required this.progress,
+    this.satisfied = const {},
+  });
+}
+
+class GoalEvaluator {
+  /// Evaluate all goals. Level is won when ALL goals are satisfied.
+  /// Also processes sequence_match progress and emits goal_step_completed events.
+  ///
+  /// Per-goal `satisfied` is computed here (rather than a caller re-deriving
+  /// it from `progress`) because the two aren't equivalent: a zero-target
+  /// `variable_threshold` goal (e.g. a budget that must reach exactly 0)
+  /// reports `progress` 1.0 unconditionally — there's no lower value to
+  /// normalize against — regardless of whether it's actually `done`. A lose
+  /// condition that asks "is goal X met" (e.g. `premature_success`) needs the
+  /// real boolean, not that placeholder.
+  GoalStatus evaluate(
+    List<GoalDef> goals,
+    LevelState state,
+    GameDefinition game,
+    List<GameEvent> pendingEvents,
+  ) {
+    if (goals.isEmpty) return const GoalStatus(isWon: false, progress: {});
+
+    final progress = <String, double>{};
+    final satisfied = <String, bool>{};
+    bool allDone = true;
+
+    for (final goal in goals) {
+      final (done, prog) = _evaluateGoal(goal, state, game, pendingEvents);
+      progress[goal.id] = prog;
+      satisfied[goal.id] = done;
+      if (!done) allDone = false;
+    }
+
+    return GoalStatus(isWon: allDone, progress: progress, satisfied: satisfied);
+  }
+
+  (bool done, double progress) _evaluateGoal(
+    GoalDef goal,
+    LevelState state,
+    GameDefinition game,
+    List<GameEvent> pendingEvents,
+  ) {
+    switch (goal.type) {
+      case 'reach_target':
+        return _reachTarget(goal, state, game);
+      case 'sequence_match':
+        return _sequenceMatch(goal, state, game, pendingEvents);
+      case 'board_match':
+        return _boardMatch(goal, state, game);
+      case 'variable_threshold':
+        return _variableThreshold(goal, state);
+      case 'all_cleared':
+        return _allCleared(goal, state, game);
+      case 'sum_constraint':
+        return _sumConstraint(goal, state);
+      case 'count_constraint':
+        return _countConstraint(goal, state);
+      case 'param_match':
+        return _paramMatch(goal, state);
+      case 'balance':
+        return _balance(goal, state, game);
+      default:
+        return (false, 0.0);
+    }
+  }
+
+  (bool, double) _reachTarget(
+      GoalDef goal, LevelState state, GameDefinition game) {
+    if (!state.avatar.enabled || state.avatar.position == null) {
+      return (false, 0.0);
+    }
+    final pos = state.avatar.position!;
+    final targetKind = goal.config['targetKind'] as String?;
+    final targetTag = goal.config['targetTag'] as String?;
+
+    bool reached = false;
+    for (final layerId in ['markers', 'objects', 'ground', 'actors']) {
+      final entity = state.board.getEntity(layerId, pos);
+      if (entity == null) continue;
+      if (targetKind != null && entity.kind == targetKind) {
+        reached = true;
+        break;
+      }
+      if (targetTag != null && game.hasTag(entity.kind, targetTag)) {
+        reached = true;
+        break;
+      }
+    }
+    return (reached, reached ? 1.0 : 0.0);
+  }
+
+  (bool, double) _sequenceMatch(
+    GoalDef goal,
+    LevelState state,
+    GameDefinition game,
+    List<GameEvent> pendingEvents,
+  ) {
+    final sequence =
+        (goal.config['sequence'] as List?)?.map((e) => e as int).toList() ?? [];
+    if (sequence.isEmpty) return (true, 1.0);
+
+    final currentIndex = state.sequenceIndices[goal.id] ?? 0;
+
+    // Process on_merge trigger: scan for current target in tiles_merged events
+    final trigger = (goal.config['scanTrigger'] as String?) ?? 'turn_end';
+    int index = currentIndex;
+
+    if (trigger == 'on_merge') {
+      for (final event in pendingEvents) {
+        if (event.type == 'tiles_merged' && index < sequence.length) {
+          final resultValue = event.payload['resultValue'] as int?;
+          if (resultValue == sequence[index]) {
+            index++;
+            // Emit goal step completed (we add to pending events externally)
+          }
+        }
+      }
+    } else {
+      // turn_end: scan board for current target
+      while (index < sequence.length) {
+        final target = sequence[index];
+        final found = _findNumberOnBoard(state.board, target, game);
+        if (found == null) break;
+        // consume (remove) if consumeOnMatch is true (default)
+        final consume = (goal.config['consumeOnMatch'] as bool?) ?? true;
+        if (consume) {
+          state.board.setEntity(found.key, found.value, null);
+        }
+        index++;
+      }
+    }
+
+    state.sequenceIndices[goal.id] = index;
+
+    final prog = sequence.isEmpty ? 1.0 : index / sequence.length;
+    return (index >= sequence.length, prog);
+  }
+
+  MapEntry<String, Position>? _findNumberOnBoard(
+      Board board, int target, GameDefinition game) {
+    for (final entry in (board.layers['objects']?.entries() ??
+        const <MapEntry<Position, EntityInstance>>[])) {
+      if (entry.value.kind == 'number') {
+        final v = entry.value.param('value');
+        if (v == target || v?.toString() == target.toString()) {
+          return MapEntry('objects', entry.key);
+        }
+      }
+    }
+    return null;
+  }
+
+  (bool, double) _boardMatch(
+      GoalDef goal, LevelState state, GameDefinition game) {
+    final targetLayers =
+        goal.config['targetLayers'] as Map<String, dynamic>? ?? {};
+    final matchMode = (goal.config['matchMode'] as String?) ?? 'exact_non_null';
+
+    int totalCells = 0;
+    int matchedCells = 0;
+
+    for (final layerEntry in targetLayers.entries) {
+      final layerId = layerEntry.key;
+      final targetData = layerEntry.value as List;
+      final boardLayer = state.board.layers[layerId];
+      if (boardLayer == null) continue;
+
+      for (int y = 0; y < targetData.length; y++) {
+        final row = targetData[y] as List;
+        for (int x = 0; x < row.length; x++) {
+          final target = row[x];
+          if (matchMode == 'exact_non_null' && target == null) continue;
+          totalCells++;
+          final actual = boardLayer.getAt(Position(x, y));
+          if (matchMode == 'exact_non_null') {
+            final targetEntity = EntityInstance.fromJson(target);
+            if (actual != null && actual.kind == targetEntity.kind) {
+              matchedCells++;
+            }
+          } else {
+            // exact
+            if (target == null && actual == null) {
+              matchedCells++;
+            } else if (target != null && actual != null) {
+              final targetEntity = EntityInstance.fromJson(target);
+              if (actual.kind == targetEntity.kind) matchedCells++;
+            }
+          }
+        }
+      }
+    }
+
+    if (totalCells == 0) return (true, 1.0);
+    final prog = matchedCells / totalCells;
+    return (matchedCells == totalCells, prog);
+  }
+
+  (bool, double) _variableThreshold(GoalDef goal, LevelState state) {
+    final name = goal.config['variable'] as String;
+    final target = goal.config['target'] as num;
+    final comparison = (goal.config['comparison'] as String?) ?? 'gte';
+    final current = state.variables[name];
+    if (current == null) return (false, 0.0);
+    final numCurrent = current as num;
+
+    bool done;
+    switch (comparison) {
+      case 'eq':
+        done = numCurrent == target;
+      case 'gte':
+        done = numCurrent >= target;
+      case 'lte':
+        done = numCurrent <= target;
+      default:
+        done = false;
+    }
+
+    final prog =
+        (target == 0) ? 1.0 : (numCurrent / target).clamp(0.0, 1.0).toDouble();
+    return (done, prog);
+  }
+
+  /// Evaluates row/column/board numeric sum constraints.
+  ///
+  /// Config fields:
+  ///   layer      — layer id to scan (default "objects")
+  ///   scope      — "row" | "col" | "all_rows" | "all_cols" | "board"
+  ///   index      — row or col index (required for "row" / "col" scopes)
+  ///   target     — expected sum (num)
+  ///   comparison — "eq" (default) | "gte" | "lte"
+  ///
+  /// Numeric value is extracted from `num_<n>` kind or `number` kind with
+  /// a `value` parameter. Non-numeric entities contribute 0.
+  (bool, double) _sumConstraint(GoalDef goal, LevelState state) {
+    final layerId = (goal.config['layer'] as String?) ?? 'objects';
+    final scope = (goal.config['scope'] as String?) ?? 'board';
+    final target = goal.config['target'] as num;
+    final comparison = (goal.config['comparison'] as String?) ?? 'eq';
+    final index = goal.config['index'] as int?;
+
+    final layer = state.board.layers[layerId];
+    if (layer == null) return (false, 0.0);
+
+    final w = state.board.width;
+    final h = state.board.height;
+
+    int cellValue(Position pos) {
+      final entity = layer.getAt(pos);
+      if (entity == null) return 0;
+      final kind = entity.kind;
+      if (kind.startsWith('num_')) return int.tryParse(kind.substring(4)) ?? 0;
+      if (kind == 'number') return (entity.param('value') as int?) ?? 0;
+      return 0;
+    }
+
+    int rowSum(int y) => List.generate(w, (x) => cellValue(Position(x, y)))
+        .fold(0, (a, b) => a + b);
+    int colSum(int x) => List.generate(h, (y) => cellValue(Position(x, y)))
+        .fold(0, (a, b) => a + b);
+
+    bool satisfies(int sum) => switch (comparison) {
+          'gte' => sum >= target,
+          'lte' => sum <= target,
+          _ => sum == target,
+        };
+
+    switch (scope) {
+      case 'row':
+        if (index == null) return (false, 0.0);
+        final ok = satisfies(rowSum(index));
+        return (ok, ok ? 1.0 : 0.0);
+      case 'col':
+        if (index == null) return (false, 0.0);
+        final ok = satisfies(colSum(index));
+        return (ok, ok ? 1.0 : 0.0);
+      case 'all_rows':
+        final satisfied = List.generate(h, rowSum).where(satisfies).length;
+        return (satisfied == h, satisfied / h);
+      case 'all_cols':
+        final satisfied = List.generate(w, colSum).where(satisfies).length;
+        return (satisfied == w, satisfied / w);
+      case 'board':
+        int total = 0;
+        for (int y = 0; y < h; y++)
+          for (int x = 0; x < w; x++) total += cellValue(Position(x, y));
+        final ok = satisfies(total);
+        return (ok, ok ? 1.0 : 0.0);
+      default:
+        return (false, 0.0);
+    }
+  }
+
+  /// Evaluates row/column count constraints based on a cell predicate.
+  ///
+  /// Config fields:
+  ///   layer      — layer id to scan (default "objects")
+  ///   scope      — "all_rows" | "all_cols" | "row" | "col"
+  ///   index      — row or col index (required for "row" / "col" scopes)
+  ///   predicate  — "even" | "odd" | "gte_N" | "lte_N" | "eq_N"
+  ///   target     — expected count (num)
+  ///   comparison — "eq" (default) | "gte" | "lte"
+  (bool, double) _countConstraint(GoalDef goal, LevelState state) {
+    final layerId = (goal.config['layer'] as String?) ?? 'objects';
+    final scope = (goal.config['scope'] as String?) ?? 'all_rows';
+    final predicate = (goal.config['predicate'] as String?) ?? 'even';
+    final target = goal.config['target'] as num;
+    final comparison = (goal.config['comparison'] as String?) ?? 'eq';
+    final index = goal.config['index'] as int?;
+
+    final layer = state.board.layers[layerId];
+    if (layer == null) return (false, 0.0);
+
+    final w = state.board.width;
+    final h = state.board.height;
+
+    int cellValue(Position pos) {
+      final entity = layer.getAt(pos);
+      if (entity == null) return 0;
+      final kind = entity.kind;
+      if (kind.startsWith('num_')) return int.tryParse(kind.substring(4)) ?? 0;
+      if (kind == 'number') return (entity.param('value') as int?) ?? 0;
+      return 0;
+    }
+
+    bool matchesPredicate(int value) {
+      if (predicate == 'even') return value % 2 == 0;
+      if (predicate == 'odd') return value % 2 != 0;
+      if (predicate.startsWith('gte_')) {
+        return value >= int.parse(predicate.substring(4));
+      }
+      if (predicate.startsWith('lte_')) {
+        return value <= int.parse(predicate.substring(4));
+      }
+      if (predicate.startsWith('eq_')) {
+        return value == int.parse(predicate.substring(3));
+      }
+      return false;
+    }
+
+    bool hasEntity(Position pos) => layer.getAt(pos) != null;
+
+    int rowCount(int y) {
+      int count = 0;
+      for (int x = 0; x < w; x++) {
+        final pos = Position(x, y);
+        if (hasEntity(pos) && matchesPredicate(cellValue(pos))) count++;
+      }
+      return count;
+    }
+
+    int colCount(int x) {
+      int count = 0;
+      for (int y = 0; y < h; y++) {
+        final pos = Position(x, y);
+        if (hasEntity(pos) && matchesPredicate(cellValue(pos))) count++;
+      }
+      return count;
+    }
+
+    bool satisfies(int count) => switch (comparison) {
+          'gte' => count >= target,
+          'lte' => count <= target,
+          _ => count == target,
+        };
+
+    switch (scope) {
+      case 'row':
+        if (index == null) return (false, 0.0);
+        final ok = satisfies(rowCount(index));
+        return (ok, ok ? 1.0 : 0.0);
+      case 'col':
+        if (index == null) return (false, 0.0);
+        final ok = satisfies(colCount(index));
+        return (ok, ok ? 1.0 : 0.0);
+      case 'all_rows':
+        final satisfied = List.generate(h, rowCount).where(satisfies).length;
+        return (satisfied == h, satisfied / h);
+      case 'all_cols':
+        final satisfied = List.generate(w, colCount).where(satisfies).length;
+        return (satisfied == w, satisfied / w);
+      default:
+        return (false, 0.0);
+    }
+  }
+
+  (bool, double) _allCleared(
+      GoalDef goal, LevelState state, GameDefinition game) {
+    final kind = goal.config['kind'] as String?;
+    final tag = goal.config['tag'] as String?;
+
+    int remaining = 0;
+    for (final layer in state.board.layers.values) {
+      for (final entry in layer.entries()) {
+        if (kind != null && entry.value.kind == kind) remaining++;
+        if (tag != null && game.hasTag(entry.value.kind, tag)) remaining++;
+      }
+    }
+
+    return (remaining == 0, remaining == 0 ? 1.0 : 0.0);
+  }
+
+  /// Checks that every marker position has an entity with a specific param value.
+  (bool, double) _paramMatch(GoalDef goal, LevelState state) {
+    final markerLayerId = goal.config['markerLayer'] as String? ?? 'markers';
+    final markerKind = goal.config['markerKind'] as String?;
+    final checkLayerId = goal.config['checkLayer'] as String? ?? 'objects';
+    final checkKind = goal.config['checkKind'] as String?;
+    final checkParam = goal.config['checkParam'] as String?;
+    final checkValue = goal.config['checkValue'];
+
+    if (checkParam == null || checkValue == null) return (false, 0.0);
+
+    final markerLayer = state.board.layers[markerLayerId];
+    final checkLayer = state.board.layers[checkLayerId];
+    if (markerLayer == null) return (false, 0.0);
+
+    int total = 0;
+    int matched = 0;
+    for (final entry in markerLayer.entries()) {
+      if (markerKind != null && entry.value.kind != markerKind) continue;
+      total++;
+      if (checkLayer == null) continue;
+      final entity = checkLayer.getAt(entry.key);
+      if (entity == null) continue;
+      if (checkKind != null && entity.kind != checkKind) continue;
+      if (entity.param(checkParam) == checkValue) matched++;
+    }
+
+    if (total == 0) return (false, 0.0);
+    return (matched == total, matched / total);
+  }
+
+  /// Returns the declared default kind of the layer with id [layerId], or
+  /// null if the layer isn't declared (or has no default).
+  ///
+  /// `Board.fromJson` normalizes a missing `exactly_one` default to `empty`, so
+  /// callers use the same fallback when the declaration itself is null.
+  String? _layerDefaultKind(GameDefinition game, String? layerId) {
+    for (final l in game.layers) {
+      if (l.id == layerId) return l.defaultKind;
+    }
+    return null;
+  }
+
+  /// Counts cells in `cfg["claimableLayer"]` whose kind matches
+  /// `cfg["claimableKind"]` (default: that layer's declared default kind) —
+  /// every non-wall ground cell eligible to be owned.
+  ///
+  /// `claimableKind` accepts a single kind or a list of kinds, for boards where
+  /// more than one ground kind can be owned.
+  int _countClaimable(
+      Board board, Map<String, dynamic> cfg, GameDefinition game) {
+    final claimableLayerId = cfg['claimableLayer'] as String? ?? 'ground';
+    final layer = board.layers[claimableLayerId];
+    if (layer == null) return 0;
+    final raw = cfg['claimableKind'];
+    final kinds = raw is List
+        ? raw.map((k) => k.toString()).toSet()
+        : {
+            (raw as String?) ??
+                _layerDefaultKind(game, claimableLayerId) ??
+                'empty',
+          };
+    return layer.entries().where((e) => kinds.contains(e.value.kind)).length;
+  }
+
+  /// Cells held by each owner, where those cells sit, and how many cells are
+  /// claimable at all.
+  ///
+  /// The single pass everything about a balance goal is derived from, so the
+  /// progress an agent is shown and the condition it is scored against cannot
+  /// disagree. Two copies of this counting would drift, and the drift would be
+  /// invisible: the agent would be told it was one cell short of a goal it had
+  /// already met. The positions feed the connectivity check the same way.
+  (Map<String, int>, Map<String, Set<Position>>, int) _balanceTally(
+      Map<String, dynamic> cfg, LevelState state, GameDefinition game) {
+    final owners = (cfg['owners'] as List?)?.cast<String>() ?? [];
+    final counts = <String, int>{for (final o in owners) o: 0};
+    final positions = <String, Set<Position>>{
+      for (final o in owners) o: <Position>{},
+    };
+
+    final layerId = cfg['layer'] as String?;
+    final layer = state.board.layers[layerId];
+    if (layer != null) {
+      for (final entry in layer.entries()) {
+        final kind = entry.value.kind;
+        if (counts.containsKey(kind)) {
+          counts[kind] = counts[kind]! + 1;
+          positions[kind]!.add(entry.key);
+        }
+      }
+    }
+    return (counts, positions, _countClaimable(state.board, cfg, game));
+  }
+
+  /// Cells held by each owner, and how many cells are claimable at all — what
+  /// the goal renderer needs. See [_balanceTally].
+  (Map<String, int>, int) balanceCounts(
+      Map<String, dynamic> cfg, LevelState state, GameDefinition game) {
+    final (counts, _, claimable) = _balanceTally(cfg, state, game);
+    return (counts, claimable);
+  }
+
+  /// Per owner, how many of its cells connect orthogonally (through its own
+  /// cells) to its `connectionSources` cell. Null when the owner has no valid
+  /// source or does not hold it — counted as 0 connected cells, and the owner
+  /// is never connected. Mirrors `_balance_connected` in engines/python/_goal.py.
+  Map<String, int?> _balanceConnected(
+      Map<String, dynamic> cfg, Map<String, Set<Position>> positions) {
+    final rawSources = cfg['connectionSources'] as Map<String, dynamic>? ?? {};
+    final result = <String, int?>{};
+    for (final entry in positions.entries) {
+      final cells = entry.value;
+      final rawSource = rawSources[entry.key];
+      if (rawSource is! List || rawSource.length != 2) {
+        result[entry.key] = null;
+        continue;
+      }
+      final source = Position((rawSource[0] as num).toInt(),
+          (rawSource[1] as num).toInt());
+      if (!cells.contains(source)) {
+        result[entry.key] = null;
+        continue;
+      }
+      final reached = <Position>{source};
+      final frontier = <Position>[source];
+      while (frontier.isNotEmpty) {
+        final current = frontier.removeLast();
+        for (final neighbor in <Position>[
+          Position(current.x + 1, current.y),
+          Position(current.x - 1, current.y),
+          Position(current.x, current.y + 1),
+          Position(current.x, current.y - 1),
+        ]) {
+          if (cells.contains(neighbor) && reached.add(neighbor)) {
+            frontier.add(neighbor);
+          }
+        }
+      }
+      result[entry.key] = reached.length;
+    }
+    return result;
+  }
+
+  /// Per owner, cells connected to its source — the same count the win
+  /// condition uses when `requireConnected` is set (0 without a held source).
+  Map<String, int> balanceConnectedCounts(
+      Map<String, dynamic> cfg, LevelState state, GameDefinition game) {
+    final (_, positions, _) = _balanceTally(cfg, state, game);
+    return _balanceConnected(cfg, positions)
+        .map((owner, n) => MapEntry(owner, n ?? 0));
+  }
+
+  /// Win when a territory layer is divided completely and into exactly-equal
+  /// shares among the configured owners (or per requireComplete/requireEqual).
+  ///
+  /// Config fields:
+  ///   layer            — territory layer id to scan
+  ///   owners           — entity kinds tallied as "owned" cells
+  ///   claimableLayer   — layer id whose cells are eligible to be claimed
+  ///   claimableKind    — kind that counts as claimable (default: that
+  ///                      layer's declared default kind)
+  ///   requireComplete  — require owned == claimable (default true)
+  ///   requireEqual     — require every owner's count to match (default true)
+  ///   requireConnected — require each owner's cells to form one orthogonally
+  ///                      connected component containing its connection source
+  ///   connectionSources — map from owner kind to fixed [x,y] source position
+  (bool, double) _balance(GoalDef goal, LevelState state, GameDefinition game) {
+    final owners = (goal.config['owners'] as List?)?.cast<String>() ?? [];
+    final (counts, positions, claimable) =
+        _balanceTally(goal.config, state, game);
+    final owned = counts.values.fold(0, (a, b) => a + b);
+    final equal = counts.values.toSet().length == 1;
+    final complete = owned == claimable;
+    final requireConnected =
+        (goal.config['requireConnected'] as bool?) ?? false;
+    var connected = true;
+    var connectedOwned = owned;
+    if (requireConnected) {
+      final reachedByOwner = _balanceConnected(goal.config, positions);
+      connectedOwned = reachedByOwner.values
+          .whereType<int>()
+          .fold(0, (a, b) => a + b);
+      for (final owner in owners) {
+        final reached = reachedByOwner[owner];
+        if (reached == null || reached != positions[owner]!.length) {
+          connected = false;
+        }
+      }
+    }
+    final progressNumerator = requireConnected ? connectedOwned : owned;
+    final progress = claimable != 0 ? progressNumerator / claimable : 0.0;
+
+    final requireEqual = (goal.config['requireEqual'] as bool?) ?? true;
+    final requireComplete = (goal.config['requireComplete'] as bool?) ?? true;
+    final done = owned > 0 &&
+        (equal || !requireEqual) &&
+        (complete || !requireComplete) &&
+        connected;
+    return (done, progress);
+  }
+}

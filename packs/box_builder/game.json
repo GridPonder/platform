@@ -1,0 +1,251 @@
+{
+  "layers": [
+    {
+      "id": "ground",
+      "occupancy": "exactly_one",
+      "default": "empty"
+    },
+    {
+      "id": "objects",
+      "occupancy": "zero_or_one"
+    },
+    {
+      "id": "markers",
+      "occupancy": "zero_or_one"
+    }
+  ],
+  "entityKinds": {
+    "empty": {
+      "layer": "ground",
+      "tags": [
+        "walkable"
+      ],
+      "sprite": "assets/sprites/grass.png",
+      "symbol": "."
+    },
+    "void": {
+      "layer": "ground",
+      "tags": [],
+      "sprite": "assets/sprites/oak.png",
+      "symbol": "#",
+      "description": "impassable, cannot enter"
+    },
+    "box_fragment": {
+      "layer": "objects",
+      "tags": [
+        "sided"
+      ],
+      "params": {
+        "sides": {
+          "type": "integer"
+        }
+      },
+      "sprite": "assets/sprites/box_{sides}.png",
+      "spriteParam": "sides",
+      "symbol": "b",
+      "symbolParam": "sides",
+      "description": "value is a sum of joined sides \u2014 1=up, 2=right, 4=down, 8=left; F (=15) means all four sides joined"
+    },
+    "box_target": {
+      "layer": "markers",
+      "tags": [
+        "goal_target"
+      ],
+      "sprite": "assets/sprites/box_target.png",
+      "symbol": "X"
+    },
+    "rock": {
+      "layer": "objects",
+      "tags": [
+        "solid",
+        "breakable"
+      ],
+      "sprite": "assets/sprites/rock2.png",
+      "animations": {
+        "breaking": {
+          "frames": [
+            "assets/sprites/rock2_with_cracks.png",
+            "assets/sprites/rock2_broken.png"
+          ],
+          "duration": 800,
+          "mode": "once"
+        }
+      },
+      "symbol": "R",
+      "description": "blocks movement; destroyed by walking into it while carrying a pickaxe"
+    },
+    "pickaxe": {
+      "layer": "objects",
+      "tags": [
+        "pickup"
+      ],
+      "sprite": "assets/sprites/pickaxe.png",
+      "symbol": "P",
+      "description": "pick up by walking onto it; then walk into a rock to destroy it"
+    },
+    "portal": {
+      "layer": "objects",
+      "tags": [
+        "teleport"
+      ],
+      "params": {
+        "channel": {
+          "type": "string"
+        }
+      },
+      "sprite": null,
+      "symbol": "O",
+      "display": {
+        "type": "icon",
+        "value": "blur_on"
+      }
+    }
+  },
+  "actions": [
+    {
+      "id": "move",
+      "params": {
+        "direction": {
+          "type": "direction",
+          "values": [
+            "up",
+            "down",
+            "left",
+            "right"
+          ]
+        }
+      }
+    }
+  ],
+  "systems": [
+    {
+      "id": "sided_box",
+      "type": "sided_box",
+      "config": {
+        "sidedTag": "sided",
+        "sidesParam": "sides",
+        "validGroundTags": [
+          "walkable"
+        ],
+        "toolInteractions": [
+          {
+            "item": "pickaxe",
+            "targetTag": "breakable",
+            "consumeItem": true,
+            "animation": "breaking"
+          }
+        ]
+      }
+    },
+    {
+      "id": "portals",
+      "type": "portals",
+      "config": {
+        "matchKey": "channel"
+      }
+    }
+  ],
+  "rules": [
+    {
+      "id": "pickup_item",
+      "on": "avatar_entered",
+      "where": {
+        "position_has_tag": {
+          "layer": "objects",
+          "tag": "pickup"
+        }
+      },
+      "then": [
+        {
+          "set_inventory": {
+            "item": "$cell.objects.kind"
+          }
+        },
+        {
+          "destroy": {
+            "position": "$event.position",
+            "layer": "objects"
+          }
+        }
+      ]
+    }
+  ],
+  "ui": {
+    "showGoal": false
+  },
+  "defaults": {
+    "avatar": {
+      "enabled": true,
+      "facing": "right"
+    },
+    "maxCascadeDepth": 1
+  },
+  "levelSequence": [
+    {
+      "type": "story",
+      "title": "The Box That Pip Built",
+      "text": "Pip the rabbit has found a pile of box fragments scattered across the workshop!\n\nPush the pieces together to build complete boxes on every target square. A box needs all four sides \u2014 top, right, bottom, and left \u2014 to be complete.\n\nBe careful: you can slip inside an open box, and when you push against a wall from the inside, you'll carry it with you!",
+      "image": "assets/rabbit_built_box.png"
+    },
+    {
+      "type": "level",
+      "ref": "bb_001"
+    },
+    {
+      "type": "level",
+      "ref": "bb_002"
+    },
+    {
+      "type": "level",
+      "ref": "bb_003"
+    },
+    {
+      "type": "level",
+      "ref": "bb_004"
+    },
+    {
+      "type": "level",
+      "ref": "bb_005"
+    },
+    {
+      "type": "level",
+      "ref": "bb_006"
+    },
+    {
+      "type": "level",
+      "ref": "bb_008"
+    },
+    {
+      "type": "level",
+      "ref": "bb_009"
+    },
+    {
+      "type": "level",
+      "ref": "bb_011"
+    },
+    {
+      "type": "level",
+      "ref": "bb_012"
+    },
+    {
+      "type": "level",
+      "ref": "bb_013"
+    },
+    {
+      "type": "level",
+      "ref": "bb_014"
+    },
+    {
+      "type": "level",
+      "ref": "bb_015"
+    },
+    {
+      "type": "level",
+      "ref": "bb_016"
+    },
+    {
+      "type": "level",
+      "ref": "bb_017"
+    }
+  ]
+}

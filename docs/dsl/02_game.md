@@ -1,0 +1,727 @@
+# Gridponder DSL — Game Schema
+
+Defines all gameplay content shared across levels: entity kinds, systems, actions, rules, and the level sequence.
+
+## Purpose
+
+`game.json` contains all gameplay content shared across levels: entity kinds, systems, actions, rules, defaults, and the level sequence. It does **not** repeat identity or presentation metadata — those live exclusively in `manifest.json`.
+
+Visual presentation and input bindings are defined separately in `theme.json` — see [06_theme.md](06_theme.md).
+
+---
+
+## Top-Level Structure
+
+```json
+{
+  "layers": [ ... ],
+  "actions": [ ... ],
+  "entityKinds": { ... },
+  "systems": [ ... ],
+  "rules": [ ... ],
+  "levelSequence": [ ... ],
+  "defaults": { ... }
+}
+```
+
+---
+
+## Field Reference
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `layers` | array | **yes** | Board layer definitions. |
+| `actions` | array | **yes** | Available player action types. |
+| `entityKinds` | object | **yes** | Catalog of entity kind definitions. |
+| `systems` | array | **yes** | Enabled engine systems with configuration. |
+| `rules` | array | no | Game-level rules (shared across levels). |
+| `levelSequence` | array | **yes** | Ordered list of levels and story screens. |
+| `defaults` | object | no | Default values for level fields. |
+| `ui` | object | no | Which in-play panels the app shows. See [UI](#ui). |
+| `goalDescriptions` | object | no | One sentence per goal id, shown in the goal panel. |
+| `loseDescriptions` | object | no | One sentence per lose-condition reason string (e.g. `"variable_threshold:hazardHit"`, `"max_actions"` — see `LoseStatus.reason` in the engine), shown in the loss banner in place of the renderer's generic "Out of Moves!" text. A reason absent from the map falls back to that generic text, so packs that never customize this are unaffected. |
+
+---
+
+## UI
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `showGoal` | boolean | `false` | Show the goal panel during play. |
+| `showGuide` | boolean | `false` | Show the level's `guide` text during play. |
+| `showGoalPreview` | boolean | `true` | Whether a `board_match` goal is drawn as a miniature target board. Turn it off for a game that uses `board_match` to say "this entity stands here" rather than to specify a pattern — a two-row board with one marked square explains less than the sentence does. The panel then falls back to `goalDescriptions`, listing every goal the level has. |
+| `showMoves` | boolean | `true` | Whether to show the generic "Moves: N" action counter. Turn it off for a game whose action count includes non-move actions (e.g. cell selection in a `beam`-based game) and so doesn't read as a meaningful tally — surface progress via `readouts` instead. |
+| `readouts` | array | `[]` | Live `state.variables` chips shown during play. Each entry: `{"variable": "...", "label": "...", "color": "..."?, "blankWhen": N?}`. Pack-agnostic — the app only knows how to draw a labelled number, never what it means. |
+
+---
+
+## Layers
+
+Defines the board's layer stack. Each layer has a name and occupancy rule.
+
+```json
+"layers": [
+  { "id": "ground",   "occupancy": "exactly_one", "default": "empty" },
+  { "id": "objects",   "occupancy": "zero_or_one" },
+  { "id": "markers",   "occupancy": "zero_or_one" },
+  { "id": "actors",    "occupancy": "zero_or_one" },
+  { "id": "structures","occupancy": "zero_or_one" }
+]
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | **yes** | Layer identifier. |
+| `occupancy` | string | **yes** | `"exactly_one"` (every cell has a value) or `"zero_or_one"` (cells may be null). |
+| `default` | string | no | Default cell value for `exactly_one` layers. Default: `"empty"`. |
+
+The layer order defines rendering order (first = bottom). The avatar is not part of any layer — it is rendered separately on top. Text and benchmark-image observations use this same order; when several visible entities share a cell, the text grid shows the topmost one and the stacked-cell detail lists every visible entity from top to bottom: the avatar, the non-ground layers, a multi-cell object (drawn above `ground` and below every other layer), then `ground`. Ground under a multi-cell object is treated as that object's background and is not listed. In named mode each entry is prefixed with its layer id (`[avatar]` for the avatar, `[multi-cell]` for a multi-cell object); anonymous mode omits the prefix, because layer ids are pack vocabulary.
+
+Layer ids are free-form, but a few names carry conventional meaning that built-in systems default to: `ground` (walkable/solid terrain), `objects` (pushables, pickups, number tiles), `markers` (goal/anchor markers), `actors` (layer entities moved by [`coupled_actors`](04_systems.md#211-coupled_actors) or selected/moved by [`individual_actors`](04_systems.md#212-individual_actors)), and `territory` (per-owner claim marks written by actor systems' optional `claim` config and read by the [`balance` goal](03_levels.md#goals)). All of these are configurable per-system via `config` — the names above are only the defaults.
+
+---
+
+## Actions
+
+Declares the abstract action types available in this game.
+
+```json
+"actions": [
+  {
+    "id": "move",
+    "params": { "direction": { "type": "direction", "values": ["up", "down", "left", "right"] } }
+  },
+  {
+    "id": "diagonal_swap",
+    "params": { "direction": { "type": "direction", "values": ["up_left", "up_right", "down_left", "down_right"] } }
+  },
+  {
+    "id": "rotate",
+    "params": { "rotation": { "type": "enum", "values": ["clockwise", "counterclockwise"] } }
+  },
+  {
+    "id": "flip",
+    "params": { "axis": { "type": "enum", "values": ["vertical", "horizontal"] } }
+  },
+  {
+    "id": "flood",
+    "params": {}
+  },
+  {
+    "id": "tap_cell",
+    "params": { "position": { "type": "position" } }
+  }
+]
+```
+
+Each action:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | **yes** | Unique action identifier. Referenced by controls and systems. |
+| `params` | object | **yes** | Parameter definitions. Keys are param names, values describe the type. |
+
+Parameter types:
+- `direction` — a direction value from the given `values` list
+- `position` — a `[x, y]` board coordinate
+- `enum` — one of the given `values`
+- `integer` — an integer value
+
+---
+
+## Entity Kinds
+
+Defines all entity types used by this game. Levels reference kinds by their key name.
+
+```json
+"entityKinds": {
+  "empty": {
+    "layer": "ground",
+    "tags": ["walkable"],
+    "sprite": null,
+    "description": "Walkable floor"
+  },
+  "void": {
+    "layer": "ground",
+    "tags": [],
+    "sprite": "assets/sprites/void.png",
+    "description": "Non-playable area"
+  },
+  "wall": {
+    "layer": "ground",
+    "tags": ["solid"],
+    "sprite": "assets/sprites/wall.png"
+  },
+  "water": {
+    "layer": "ground",
+    "tags": ["liquid", "walkable"],
+    "sprite": "assets/sprites/water.png"
+  },
+  "rock": {
+    "layer": "objects",
+    "tags": ["solid", "breakable"],
+    "sprite": "assets/sprites/rock.png"
+  },
+  "wood": {
+    "layer": "objects",
+    "tags": ["solid", "burnable", "pushable"],
+    "sprite": "assets/sprites/wood.png"
+  },
+  "torch": {
+    "layer": "objects",
+    "tags": ["pickup"],
+    "sprite": "assets/sprites/torch.png"
+  },
+  "pickaxe": {
+    "layer": "objects",
+    "tags": ["pickup"],
+    "sprite": "assets/sprites/pickaxe.png"
+  },
+  "metal_crate": {
+    "layer": "objects",
+    "tags": ["solid", "pushable"],
+    "sprite": "assets/sprites/metal_crate.png"
+  },
+  "flag": {
+    "layer": "markers",
+    "tags": ["goal_target"],
+    "sprite": "assets/sprites/flag.png"
+  },
+  "portal": {
+    "layer": "objects",
+    "tags": ["teleport"],
+    "sprite": "assets/sprites/portal.png",
+    "params": { "channel": { "type": "string", "required": true } }
+  },
+  "number": {
+    "layer": "objects",
+    "tags": ["mergeable"],
+    "sprite": "assets/sprites/number.png",
+    "params": { "value": { "type": "integer", "required": true } }
+  },
+  "spirit": {
+    "layer": "actors",
+    "tags": ["npc"],
+    "sprite": "assets/sprites/spirit.png",
+    "params": {
+      "behavior": { "type": "string", "required": true },
+      "targetTag": { "type": "string" }
+    }
+  },
+  "colored": {
+    "layer": "objects",
+    "tags": ["pushable"],
+    "sprite": "assets/sprites/colored.png",
+    "params": { "color": { "type": "string", "required": true } }
+  }
+}
+```
+
+### Entity Kind Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `layer` | string | **yes** | Which board layer this kind belongs to. Must reference a defined layer. |
+| `tags` | array of strings | **yes** | Semantic labels. Systems use tags for entity selection. |
+| `sprite` | string or null | no | Path to sprite asset. `null` means invisible/transparent. May contain a `{paramName}` placeholder when used with `spriteParam`. |
+| `spriteParam` | string | no | If set, the `{paramName}` placeholder in `sprite` is substituted with this instance parameter's value at render time. Used for entities whose appearance varies by a numeric or string param (e.g. box fragments show different PNG tiles per sides bitmask). `sprite` must contain `{paramName}` when this field is set. |
+| `symbol` | string | **yes** | Single Unicode character used in text grid representations (`TextRenderer`). Must be unique within a game; `@` is reserved for the avatar. Use narrow (display-width 1) characters only — basic ASCII, box-drawing (`═║╬`), math symbols (`≈`), or similar. Wide characters (emoji, CJK) break grid alignment and must not be used. |
+| `observationSymbol` | string | no | Public symbol used by text observations instead of `symbol`. It may be shared by multiple kinds so distinct internal states can remain visually indistinguishable (for example, two yellow phases with different successors). `symbol` remains the unique engine/authoring identity. Must be a non-empty string other than `@`. See [Shared observation symbols](#shared-observation-symbols). |
+| `symbolParam` | string | no | If set, the symbol is taken from this instance parameter at render time instead of `symbol`. Used for entities whose symbol varies by value (e.g. number tiles show their numeric digit). `symbol` acts as the legend label and fallback. |
+| `params` | object | no | Parameterized fields that instances may set. Each param defines its `type` and optionally `required`. |
+| `description` | string | no | Human-readable description. |
+| `uiName` | string | no | Display name for UI. Defaults to the kind key. |
+| `animations` | object | no | Named animation sequences for this entity. See [Animations](#animations). |
+| `motion` | object | no | Motion timings used by the renderer when this kind appears in a motion event (`tile_moved`, `tiles_merged` with sources, etc.). See [Motion](#motion). Optional — engine has sensible defaults. |
+| `outline` | object | no | Render hint: stroke a visible border along the perimeter of every contiguous region of cells of this kind. See [Outline](#outline). Pure render hint — no engine impact. |
+| `display` | object | no | Procedural render block consulted when no `sprite` is supplied (or the asset fails to load). See [Display](#display). |
+| `groundBeneath` | boolean | no | Render hint: paint this layer's default kind's sprite underneath this entity before drawing its own sprite/display, so any transparent pixels show that terrain texture instead of bare canvas. For a solid ground-layer kind that replaces the default terrain outright (a wall, a placed reflector) rather than sitting on an object layer above it, this is what makes it read as "sitting on" the floor instead of floating on nothing. (Equivalent to, and checked alongside, the older `display: {"groundBeneath": true}` nested form — this top-level field is what a `sprite`-only kind with no `display` block needs.) Pure render hint — no engine impact. |
+| `render` | object | no | Additional rendering hints (opacity, tint). |
+
+### Animations
+
+Entity kinds may define named **animation sequences** triggered by effects or systems. Each animation is a named key mapping to a frame sequence.
+
+```json
+"wood": {
+  "layer": "objects",
+  "tags": ["solid", "burnable", "pushable"],
+  "sprite": "assets/sprites/wood.png",
+  "animations": {
+    "burning": {
+      "frames": ["assets/sprites/wood_fire_ignites.png", "assets/sprites/wood_full_burn.png", "assets/sprites/wood_smoke_and_ash.png"],
+      "duration": 1500,
+      "mode": "once"
+    }
+  }
+}
+```
+
+```json
+"rock": {
+  "layer": "objects",
+  "tags": ["solid", "breakable"],
+  "sprite": "assets/sprites/rock.png",
+  "animations": {
+    "breaking": {
+      "frames": ["assets/sprites/rock_with_cracks.png", "assets/sprites/rock_broken.png"],
+      "duration": 1000,
+      "mode": "once"
+    }
+  }
+}
+```
+
+Animation fields:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `frames` | array of strings | **yes** | Ordered sprite paths. Played sequentially. |
+| `duration` | integer | **yes** | Total animation duration in milliseconds. Divided evenly across frames. |
+| `mode` | string | no | `"once"` (default) — plays once. `"loop"` — repeats until state changes. |
+
+Effects reference animations by name via the `animation` field (see [05_rules.md §5](05_rules.md#5-effect-catalog)). When an effect specifies an animation, the engine plays it before (or during) the state change. If no animation is specified, the state change is instant.
+
+The animation name is scoped to the entity kind at the target position. For example, `"animation": "burning"` on a `destroy` effect at a cell containing `wood` looks up `wood.animations.burning`.
+
+### Motion
+
+A `motion` block on an entity kind sets per-cell motion durations the renderer uses when this kind participates in a multi-step cascade (e.g. number tiles sliding under `slide_merge`, items emitted from a `queued_emitters` pipe). All keys are optional; the renderer uses engine defaults when omitted. **Behaviour is unaffected** — these timings only control visual pacing.
+
+```json
+"number": {
+  "layer": "objects",
+  "tags": ["mergeable"],
+  "sprite": "assets/sprites/number_{value}.png",
+  "spriteParam": "value",
+  "motion": {
+    "moveDurationMs": 130,
+    "mergeDurationMs": 200,
+    "pathStepDurationMs": 80,
+    "spawnDurationMs": 120
+  }
+}
+```
+
+| Key | Used when | Default |
+|-----|-----------|---------|
+| `moveDurationMs` | Engine emits `tile_moved` (slide leg of `slide_merge`, push, portal exit). **Per cell** (matches the ice-slide pacing convention). | 130 |
+| `mergeDurationMs` | Engine emits `tiles_merged` with `sources` (post-slide merge in `slide_merge`). | 200 |
+| `pathStepDurationMs` | Engine emits `entity_path` (multi-cell traversal, e.g. queued-emitter routes). Per cell. | 80 |
+| `spawnDurationMs` | Engine emits `entity_spawn` (e.g. queued-emitter spawn). | 120 |
+| `frameDurationMs` | Optional time per frame for `motion.sprites.walk`. When present, walk frames advance by elapsed motion time; otherwise they retain the legacy one-frame-per-cell cadence. | absent |
+
+#### How motion events are sequenced
+
+Each turn produces a list of `AnimationStep`s grouped by an integer `stage`. Steps with the same stage play in parallel; the next stage starts after the longest step of the previous stage finishes. The default stage is `0`, so legacy avatar/entity animations behave exactly as before.
+
+Within a single phase the engine assigns:
+
+- `motion` events (`avatar_move`, `tile_moved`, `entity_spawn`, `entity_path`) → stage `base + 0`
+- `merge` events (`tiles_merged` with sources) → stage `base + 1`
+- `destroy/transform` animations (`object_removed` with `animation`) → stage `base + 2`
+
+Each subsequent phase (movement → cascade) advances `base` past whatever stages the prior phase emitted, so a slide cannot overlap a downstream cascade animation.
+
+#### Opting out
+
+Systems that emit motion expose an `emitMotion` config flag (default `true`). Set it to `false` to fall back to the legacy snap-to-final-state behaviour:
+
+```json
+{ "id": "merge", "type": "slide_merge",
+  "config": { "emitMotion": false, "...": "..." } }
+```
+
+This is useful for fast-paced packs where the cascade animation would slow play, or for headless contexts where animations are irrelevant.
+
+### Outline
+
+An `outline` block on an entity kind tells the renderer to stroke a visible border along the perimeter of every contiguous region of cells of that kind. Useful for highlighting an *owned* or *connected* region whose cells are otherwise indistinguishable from their neighbours — e.g. the flooded territory in flood_colors, the merged cluster in box_builder, or the player's painted area in any colouring puzzle.
+
+```json
+"cell_flooded": {
+  "layer": "objects",
+  "tags": ["flooded"],
+  "outline": {
+    "color": "#222222",
+    "width": 3
+  }
+}
+```
+
+| Key | Type | Default | Notes |
+|-----|------|---------|-------|
+| `color` | string (CSS hex) | `"#222222"` | Stroke colour. `#RRGGBB` or `#AARRGGBB`. |
+| `width` | integer | `2` | Stroke width in logical pixels. |
+
+Algorithm: for every cell whose entity is of this kind, the renderer draws a line on each side whose orthogonal neighbour is *not* of the same kind (or out of bounds). Stitched together this traces the region boundary exactly once. Multiple disconnected regions of the same kind get separate outlines. Layer is taken from the kind's `layer` field, so the outline picks the right grid automatically.
+
+Pure render hint: no engine logic, no events, no Python solver impact. Implemented in both the Flutter renderer and the Python image renderer used for vision-mode benchmarks.
+
+### Display
+
+A `display` block on an entity kind tells the renderer how to draw the entity procedurally when no `sprite` is supplied (or the sprite asset fails to load). Lets a pack express "render this as a rounded coloured tile" or "render this as a 🥕" without the renderer having to recognise the entity-kind name.
+
+```json
+"cell_red": {
+  "layer": "objects",
+  "tags": ["floodable"],
+  "display": { "type": "tile", "color": "red" }
+},
+"carrot": {
+  "layer": "markers",
+  "display": { "type": "emoji", "value": "🥕" }
+},
+"portal": {
+  "layer": "objects",
+  "display": { "type": "icon", "value": "blur_on" }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type`  | string | One of `tile` (rounded shadowed coloured tile), `fill` (flat colour rectangle), `circle` (filled circle with glow), `label` (coloured tile with a centred text label), `emoji` (centred glyph), `icon` (Material-style icon by name). |
+| `color` | string | Optional. A palette name (`"red"`), `@param:<key>` (read colour name from instance param), or `@hue:<source>` (derive an HSL colour from a numeric string — useful for value-coloured tiles). See *substitution tokens* below. |
+| `value` | string | Optional. The glyph (for `emoji`) or icon name (for `icon`). |
+| `label` | string | Optional. Text shown by the `label` type. May use the substitution tokens below. |
+
+#### Substitution tokens
+
+Both `display.color` and `display.label` accept these tokens (the colour field additionally accepts the `@hue:` modifier above):
+
+| Token | Resolves to |
+|-------|-------------|
+| `@param:<key>`         | the entity instance's `<key>` parameter (as a string) |
+| `@kind_suffix:<prefix>` | the entity's kind name with `<prefix>` removed — useful for kinds named like `num_5`, `cell_red` |
+| anything else          | a literal string |
+
+`@hue:<source>` wraps any string token (or literal) and runs it through the renderer's value-to-colour function (HSL hue = `(int(source)*37) mod 360`, saturation 0.6, lightness 0.45). This is how number-style tiles get a deterministic colour per value:
+
+```json
+"number": {
+  "display": { "type": "label",
+    "color": "@hue:@param:value", "label": "@param:value" }
+},
+"num_5": {
+  "display": { "type": "label",
+    "color": "@hue:@kind_suffix:num_", "label": "@kind_suffix:num_" }
+}
+```
+
+Recognised icon names today: `blur_on`, `star`, `flag`. Extend the renderer's icon table to add more — pure additive work, no DSL impact.
+
+Pure render hint: no engine logic, no behavioural impact. Implemented in both the Flutter renderer (`board_renderer.dart`'s `_renderFromDisplay`) and the Python image renderer (`board_image.py`'s `_draw_from_display`).
+
+---
+
+### Tags
+
+Tags are simple semantic labels. They do not carry behavior on their own — systems read tags to decide what to do.
+
+Standard tags for v0.5:
+
+| Tag | Meaning |
+|-----|---------|
+| `solid` | Blocks avatar movement (unless a system handles the interaction) |
+| `walkable` | Avatar can enter this cell |
+| `pickup` | Can be picked up by avatar |
+| `pushable` | Can be pushed by avatar |
+| `breakable` | Can be destroyed by a tool |
+| `burnable` | Can be burned by a fire tool |
+| `liquid` | A terrain type with liquid behavior |
+| `bridge` | Walkable surface created over liquid |
+| `teleport` | Triggers portal system |
+| `mergeable` | Can be merged with matching entities |
+| `goal_target` | Target for reach-type goals |
+| `npc` | Non-player character with autonomous behavior |
+| `target_marker` | Non-blocking marker for NPC targeting |
+
+Games may define custom tags beyond these.
+
+Two optional tags define player-facing multi-cell observation behavior:
+
+| Tag | Meaning |
+|-----|---------|
+| `observation_occluder` | Treat the multi-cell object as opaque: ordinary board-layer contents below its footprint are omitted from the text grid, legend, stack/state details, and benchmark image (including its hidden-item insets and region outlines) until uncovered. |
+| `public_piece` | Identify the object as a numbered piece instead of exposing its authoring `id`; text observations include its public kind and current footprint, plus any detail lines the systems acting on it publish (for example `sliding_blocks` prints a non-empty `axis`). |
+
+These tags affect observation rendering only. They do not change collision,
+movement, collection, or goal semantics.
+
+### Shared observation symbols
+
+Kinds that show the same public symbol (`observationSymbol`, or `symbol` when
+none is declared), where at least one of them declares `observationSymbol`,
+form one **public identity**. Every observation presents the whole group as
+its **first-declared** member (in `entityKinds` order): the legend, the
+stacked-cell detail, per-entity state, system status blocks, the `Selected:`
+status line, and goal text (including a `board_match` target grid, its
+`Target legend:` and `Also required:` lines) print the public symbol and that
+kind's `uiName` (or id) and `description`, whichever member is on the board. Declare the group's neutral public face first, for example a kind
+whose `uiName` is "Yellow signal" rather than "Yellow (turns green)".
+Anonymous mode gives the whole group one letter. Kinds with `symbolParam`
+never join a group.
+
+### Background kinds in text observations
+
+A kind tagged `observation_background` is a placeholder that should not hide
+real content in text observations (for example an empty slot that the app
+draws as a small socket above whatever lies beneath). In the text grid and the
+overlay view it yields the cell to every other visible entity, ground included,
+and shows only where the cell would otherwise read as empty (`.`); the stacked
+cell detail still lists it, after everything else. Legend, entity state, goal
+text, the benchmark image and the app are unaffected: they keep the declared
+layer order.
+
+### Multi-Cell Object Kinds
+
+Multi-cell objects (e.g., pipes) referenced in level `multiCellObjects` arrays should also have an entity kind definition in `entityKinds`. The kind defines tags, sprite, and parameter schema. The `layer` for multi-cell objects is typically `"structures"`.
+
+```json
+"pipe": {
+  "layer": "structures",
+  "tags": ["emitter"],
+  "sprite": "assets/sprites/pipe.png",
+  "params": {
+    "queue":          { "type": "array",    "required": true },
+    "currentIndex":   { "type": "integer" },
+    "exitPosition":   { "type": "position", "required": true },
+    "exitDirection":  { "type": "string" },
+    "exit2Position":  { "type": "position" },
+    "exit2Direction": { "type": "string" },
+    "exit2Index":     { "type": "integer" }
+  }
+}
+```
+
+When `exit2Position` is present the pipe is **bidirectional**: it has two open exits and routes numbers toward the nearer open exit each turn. See [§2.5 queued\_emitters](04_systems.md#25-queued_emitters) for the full routing rules.
+
+---
+
+## Systems
+
+Declares which engine systems are active and their configuration.
+
+```json
+"systems": [
+  {
+    "id": "movement",
+    "type": "avatar_navigation",
+    "config": {
+      "directions": ["up", "down", "left", "right"],
+      "solidHandling": "delegate"
+    }
+  },
+  {
+    "id": "push",
+    "type": "push_objects",
+    "config": {
+      "pushableTags": ["pushable"],
+      "chainPush": false
+    }
+  }
+]
+```
+
+Each system entry:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `id` | string | **yes** | Unique instance identifier for this system. Used by levels for overrides. |
+| `type` | string | **yes** | Built-in system type. See [System Catalog](04_systems.md). |
+| `config` | object | **yes** | System-specific configuration. |
+| `enabled` | boolean | no | Whether the system is active. Default: `true`. |
+
+See [04_systems.md](04_systems.md) for the complete system type catalog and config schemas.
+
+---
+
+## Rules (Game-Level)
+
+Game-level rules apply to all levels unless overridden. See [05_rules.md](05_rules.md) for the full rules model.
+
+```json
+"rules": [
+  {
+    "id": "water_clears_inventory",
+    "on": "avatar_entered",
+    "where": { "position_has_tag": { "layer": "ground", "tag": "liquid" } },
+    "if": { "avatar": { "hasItem": true } },
+    "then": [
+      { "clear_inventory": {} }
+    ]
+  }
+]
+```
+
+---
+
+## Level Sequence
+
+An ordered list defining the game's playable progression. Entries are either level references or story screens.
+
+```json
+"levelSequence": [
+  { "type": "story", "title": "Chapter 1", "text": "The rabbit sets out on a journey...", "image": "assets/story/intro.png" },
+  { "type": "level", "ref": "fw_001" },
+  { "type": "level", "ref": "fw_002" },
+  { "type": "story", "text": "The rabbit reaches the river...", "image": "assets/story/river.png" },
+  { "type": "level", "ref": "fw_003" },
+  { "type": "level", "ref": "fw_004" },
+  { "type": "story", "text": "Victory!", "image": "assets/story/victory.png" }
+]
+```
+
+### Level Entry
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"level"` | **yes** | Marks this as a level. |
+| `ref` | string | **yes** | Level `id`. Must match a file in the levels directory. |
+
+### Story Entry
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `type` | `"story"` | **yes** | Marks this as a story screen. |
+| `title` | string | no | Optional heading text. |
+| `text` | string | no | Body text. |
+| `image` | string | no | Path to an illustration. |
+
+At least one of `text` or `image` must be present. Story screens are displayed between levels and dismissed by tapping.
+
+---
+
+## Defaults
+
+Default values applied to levels when those fields are not specified. This reduces repetition.
+
+```json
+"defaults": {
+  "avatar": {
+    "enabled": true,
+    "facing": "right",
+    "inventory": { "slot": null }
+  },
+  "maxCascadeDepth": 3
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `avatar` | object | Default avatar configuration. Levels can override. |
+| `maxCascadeDepth` | integer | Maximum cascade passes during rule resolution. Default: `3`. |
+
+---
+
+## Complete Example
+
+```json
+{
+  "id": "com.gridponder.flag_worlds",
+  "dslVersion": "0.5",
+  "title": "Flag Worlds",
+  "description": "Guide the rabbit to the flag using tools, crates, and portals.",
+
+  "layers": [
+    { "id": "ground",  "occupancy": "exactly_one", "default": "empty" },
+    { "id": "objects",  "occupancy": "zero_or_one" },
+    { "id": "markers",  "occupancy": "zero_or_one" },
+    { "id": "actors",   "occupancy": "zero_or_one" }
+  ],
+
+  "actions": [
+    { "id": "move", "params": { "direction": { "type": "direction", "values": ["up","down","left","right"] } } }
+  ],
+
+  "entityKinds": {
+    "empty": { "layer": "ground", "tags": ["walkable"], "sprite": null },
+    "void":  { "layer": "ground", "tags": [], "sprite": "assets/sprites/void.png" },
+    "wall":  { "layer": "ground", "tags": ["solid"], "sprite": "assets/sprites/wall.png" },
+    "water": { "layer": "ground", "tags": ["liquid", "walkable"], "sprite": "assets/sprites/water.png" },
+    "bridge":{ "layer": "ground", "tags": ["walkable"], "sprite": "assets/sprites/bridge.png" },
+    "rock":  { "layer": "objects", "tags": ["solid", "breakable"], "sprite": "assets/sprites/rock.png",
+               "animations": { "breaking": { "frames": ["assets/sprites/rock_with_cracks.png", "assets/sprites/rock_broken.png"], "duration": 1000, "mode": "once" } } },
+    "wood":  { "layer": "objects", "tags": ["solid", "burnable", "pushable"], "sprite": "assets/sprites/wood.png",
+               "animations": { "burning": { "frames": ["assets/sprites/wood_fire_ignites.png", "assets/sprites/wood_full_burn.png", "assets/sprites/wood_smoke_and_ash.png"], "duration": 1500, "mode": "once" } } },
+    "torch": { "layer": "objects", "tags": ["pickup"], "sprite": "assets/sprites/torch.png" },
+    "pickaxe": { "layer": "objects", "tags": ["pickup"], "sprite": "assets/sprites/pickaxe.png" },
+    "metal_crate": { "layer": "objects", "tags": ["solid", "pushable"], "sprite": "assets/sprites/metal_crate.png" },
+    "flag":  { "layer": "markers", "tags": ["goal_target"], "sprite": "assets/sprites/flag.png" },
+    "portal": { "layer": "objects", "tags": ["teleport"], "sprite": "assets/sprites/portal.png",
+                "params": { "channel": { "type": "string", "required": true } } }
+  },
+
+  "systems": [
+    { "id": "movement", "type": "avatar_navigation", "config": { "directions": ["up","down","left","right"], "solidHandling": "delegate" } },
+    { "id": "push", "type": "push_objects", "config": { "pushableTags": ["pushable"], "chainPush": false } },
+    { "id": "portals", "type": "portals", "config": { "teleportTags": ["teleport"], "matchKey": "channel", "endMovement": true } }
+  ],
+
+  "rules": [
+    {
+      "id": "pickup_item",
+      "on": "avatar_entered",
+      "where": { "position_has_tag": { "layer": "objects", "tag": "pickup" } },
+      "then": [
+        { "set_inventory": { "item": "$cell.objects.kind" } },
+        { "destroy": { "position": "$event.position", "layer": "objects" } }
+      ]
+    },
+    {
+      "id": "torch_burns",
+      "on": "move_blocked",
+      "where": { "position_has_tag": { "layer": "objects", "tag": "burnable" } },
+      "if": { "avatar": { "hasItem": "torch" } },
+      "then": [
+        { "destroy": { "position": "$event.position", "layer": "objects", "animation": "burning" } },
+        { "clear_inventory": {} },
+        { "resolve_move": {} }
+      ]
+    },
+    {
+      "id": "pickaxe_breaks",
+      "on": "move_blocked",
+      "where": { "position_has_tag": { "layer": "objects", "tag": "breakable" } },
+      "if": { "avatar": { "hasItem": "pickaxe" } },
+      "then": [
+        { "destroy": { "position": "$event.position", "layer": "objects", "animation": "breaking" } },
+        { "clear_inventory": {} },
+        { "resolve_move": {} }
+      ]
+    },
+    {
+      "id": "object_creates_bridge",
+      "on": "object_placed",
+      "where": { "all_of": [
+        { "position_has_tag": { "layer": "ground", "tag": "liquid" } },
+        { "position_has_tag": { "layer": "objects", "tag": "pushable" } }
+      ]},
+      "then": [
+        { "destroy": { "position": "$event.position", "layer": "objects" } },
+        { "transform": { "position": "$event.position", "layer": "ground", "toKind": "bridge" } }
+      ]
+    },
+    {
+      "id": "water_clears_items",
+      "on": "avatar_entered",
+      "where": { "position_has_tag": { "layer": "ground", "tag": "liquid" } },
+      "if": { "avatar": { "hasItem": true } },
+      "then": [
+        { "clear_inventory": {} }
+      ]
+    }
+  ],
+
+  "levelSequence": [
+    { "type": "level", "ref": "fw_001" },
+    { "type": "level", "ref": "fw_002" },
+    { "type": "level", "ref": "fw_003" }
+  ],
+
+  "defaults": {
+    "avatar": { "enabled": true, "facing": "right", "inventory": { "slot": null } },
+    "maxCascadeDepth": 3
+  }
+}
+```
