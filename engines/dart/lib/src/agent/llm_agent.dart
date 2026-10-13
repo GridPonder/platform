@@ -601,6 +601,12 @@ Choose the action most likely to reach the goal in fewest total actions (summed 
       if (!anonymize) {
         final override = game.goalDescriptions[g.id];
         if (override != null) {
+          if (g.type == 'board_match') {
+            final targetGrid = _renderTargetGrid(game, g.config);
+            goalParts
+                .add(targetGrid != null ? '$override\n$targetGrid' : override);
+            continue;
+          }
           final progress = _goalProgress(g.type, g.id, g.config, state, game);
           goalParts
               .add(progress != null ? '$override (now: $progress)' : override);
@@ -1070,8 +1076,23 @@ Choose the action most likely to reach the goal in fewest total actions (summed 
     final exact = (config['matchMode'] ?? 'exact_non_null') == 'exact';
     final nullSymbol = exact ? '.' : '?';
     final anon = kindToLabel != null;
+    final matchParams = (config['matchParams'] as List?)
+            ?.map((value) => value.toString())
+            .toSet() ??
+        const <String>{};
 
-    String symbolFor(String kindId) {
+    String symbolFor(String kindId, [Object? cell]) {
+      final kindDef = game.entityKinds[kindId];
+      final symbolParam = kindDef?.symbolParam;
+      final paramValue = cell is Map &&
+              symbolParam != null &&
+              matchParams.contains(symbolParam)
+          ? cell[symbolParam]
+          : null;
+      if (paramValue != null) {
+        final rendered = paramValue.toString();
+        return rendered.length == 1 ? rendered : 'N';
+      }
       if (anon && kindToLabel.containsKey(kindId)) return kindToLabel[kindId]!;
       final sym = game.publicSymbol(kindId);
       return (sym != null && sym.isNotEmpty) ? sym : kindId[0];
@@ -1093,27 +1114,28 @@ Choose the action most likely to reach the goal in fewest total actions (summed 
     final also = <String>[];
     for (int y = 0; y < height; y++) {
       for (int x = 0; x < width; x++) {
-        final kindsHere = <String>[];
+        final cellsHere = <(String, Object?)>[];
         for (final layerId in layerOrder) {
           final rows = targetLayers[layerId] as List? ?? const [];
           if (y >= rows.length || rows[y] is! List) continue;
           final row = rows[y] as List;
           if (x >= row.length) continue;
-          final kind = _targetCellKind(row[x]);
-          if (kind != null) kindsHere.add(kind);
+          final cell = row[x];
+          final kind = _targetCellKind(cell);
+          if (kind != null) cellsHere.add((kind, cell));
         }
-        if (kindsHere.isEmpty) {
+        if (cellsHere.isEmpty) {
           nullUsed = true;
           continue;
         }
-        final top = kindsHere.first;
-        final sym = symbolFor(top);
+        final (top, topCell) = cellsHere.first;
+        final sym = symbolFor(top, topCell);
         grid[y][x] = sym;
         if (!gridKinds.contains((sym, top))) gridKinds.add((sym, top));
-        for (final other in kindsHere.skip(1)) {
+        for (final (other, otherCell) in cellsHere.skip(1)) {
           also.add(anon
-              ? '($x,$y) ${symbolFor(other)}'
-              : '($x,$y) ${symbolFor(other)}=${_kindName(game, other)}');
+              ? '($x,$y) ${symbolFor(other, otherCell)}'
+              : '($x,$y) ${symbolFor(other, otherCell)}=${_kindName(game, other)}');
         }
       }
     }

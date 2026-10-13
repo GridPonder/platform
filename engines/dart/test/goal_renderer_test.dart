@@ -274,4 +274,53 @@ void main() {
     expect(text.split('\n'), contains('Target legend: Y=Amber lamp'));
     expect(text, isNot(contains('Secret')));
   });
+
+  test('board_match renders a selected symbol parameter value', () {
+    final game = GameDefinition.fromJson({
+      'layers': [
+        {'id': 'objects', 'occupancy': 'zero_or_one'},
+      ],
+      'entityKinds': {
+        'cell': {
+          'layer': 'objects',
+          'symbol': 'C',
+          'symbolParam': 'rank',
+        },
+      },
+    }, id: 'param_target_renderer');
+    final level = LevelDefinition.fromJson({
+      'id': 'target',
+      'board': {
+        'size': [3, 1],
+        'layers': <String, dynamic>{},
+      },
+      'goals': [
+        {
+          'id': 'target',
+          'type': 'board_match',
+          'config': {
+            'targetLayers': {
+              'objects': [
+                [
+                  null,
+                  {'kind': 'cell', 'rank': 3},
+                  null,
+                ],
+              ],
+            },
+            'matchParams': ['rank'],
+          },
+        },
+      ],
+    }, game.layers);
+
+    final state = level.initialState();
+    final text = LlmAgent.describeGoals(level, state, game);
+    expect(text.split('\n'), contains('?3?'));
+
+    game.goalDescriptions['target'] = 'Match rank exactly.';
+    final overridden = LlmAgent.describeGoals(level, state, game);
+    expect(overridden, startsWith('Match rank exactly.\n'));
+    expect(overridden.split('\n'), contains('?3?'));
+  });
 }
