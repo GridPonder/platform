@@ -385,6 +385,8 @@ A `display` block on an entity kind tells the renderer how to draw the entity pr
 | `value` | string | Optional. The glyph (for `emoji`) or icon name (for `icon`). |
 | `label` | string | Optional. Text shown by the `label` type. May use the substitution tokens below. |
 
+A `circle_label` display with `"overlay": true` keeps the kind's sprite and draws its label as a small badge in the corner; when the label resolves to nothing (an `@param:` the instance does not carry) no badge is drawn, so a kind can badge only the cells that hold the value.
+
 #### Substitution tokens
 
 Both `display.color` and `display.label` accept these tokens (the colour field additionally accepts the `@hue:` modifier above):

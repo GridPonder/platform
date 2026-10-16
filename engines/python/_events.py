@@ -96,6 +96,12 @@ def cell_cleared(pos: Pos, previous_kind: str, layer: str = "objects") -> dict:
     }
 
 
+def water_settled(wet_cells: int) -> dict:
+    """Standing water moved: a ``fill_spill`` settle changed the water layer.
+    ``wetCells`` is how many cells are under water afterwards."""
+    return {"type": "water_settled", "wetCells": wet_cells}
+
+
 def cell_transformed(pos: Pos, from_kind: str, to_kind: str, layer: str) -> dict:
     return {
         "type": "cell_transformed",

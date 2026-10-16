@@ -70,6 +70,11 @@ class GameEvent {
       GameEvent('cell_cleared',
           {'position': pos, 'previousKind': previousKind, 'layer': layer});
 
+  /// Standing water moved: a `fill_spill` settle changed the water layer.
+  /// `wetCells` is how many cells are under water afterwards.
+  static GameEvent waterSettled(int wetCells) =>
+      GameEvent('water_settled', {'wetCells': wetCells});
+
   static GameEvent cellTransformed(
           Position pos, String fromKind, String toKind, String layer) =>
       GameEvent('cell_transformed', {

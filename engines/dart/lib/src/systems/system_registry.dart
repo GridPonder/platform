@@ -7,6 +7,7 @@ import 'beam_system.dart';
 import 'cell_rotation_system.dart';
 import 'coupled_actors_system.dart';
 import 'elastic_block_system.dart';
+import 'fill_spill_system.dart';
 import 'flank_capture_system.dart';
 import 'flood_fill_system.dart';
 import 'ice_slide_system.dart';
@@ -59,6 +60,7 @@ class SystemRegistry {
     'flank_capture': (id, config) => FlankCaptureSystem(id: id, config: config),
     'support_collapse': (id, config) =>
         SupportCollapseSystem(id: id, config: config),
+    'fill_spill': (id, _) => FillSpillSystem(id: id),
     'flood_fill': (id, _) => FloodFillSystem(id: id),
     'terrain_skip': (id, _) => TerrainSkipSystem(id: id),
     'tile_teleport': (id, _) => TileTeleportSystem(id: id),

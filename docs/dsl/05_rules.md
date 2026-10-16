@@ -220,6 +220,13 @@ A cell's entity was replaced with a different entity.
 | `toKind` | string | New kind. |
 | `layer` | string | Which layer changed. |
 
+### `water_settled`
+Emitted by [`fill_spill`](04_systems.md#226-fill_spill) when a settle changed the water layer.
+
+| Payload | Type | Description |
+|-------|------|-------------|
+| `wetCells` | integer | How many cells are under water after the settle. |
+
 ### `cell_exchanged`
 One cell of a [`region_transform`](04_systems.md#28-region_transform) `exchange`:
 the two layers swapped what they held at this cell. Nothing is emitted for a cell

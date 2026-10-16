@@ -191,7 +191,21 @@ For games with directional movement, the avatar should use a **sprite map** keye
 > Missing walk entries fall back to the directional idle, then the flat
 > `avatar.sprite`, and finally the shared base-pack sprites. `{"mirror":
 > "<direction>"}` resolves to the named direction drawn flipped horizontally,
-> one hop only. Custom states such as `pushing` are parsed but not requested.
+> one hop only. Custom states such as `pushing` are parsed but not requested,
+> except through `cellStates` below.
+
+#### Cell states
+
+`avatar.cellStates` maps an entity kind to a sprite state. While the avatar
+rests on a cell holding that kind (any layer; the topmost match wins), the
+renderer draws `sprites.<state>.<direction>` instead of `idle`, falling back to
+the idle sprite for missing directions. Use it to show what the avatar is
+standing in, for example an avatar wading through water:
+
+```json
+"cellStates": {"water_1": "wading", "water_2": "wading"},
+"sprites": {"idle": {...}, "wading": {"up": "assets/avatar/wading_up.png", ...}}
+```
 
 #### Sprite map structure
 

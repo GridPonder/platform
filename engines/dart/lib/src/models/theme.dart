@@ -5,7 +5,8 @@ class GestureBinding {
       gesture; // swipe_cardinal, swipe_diagonal, tap_cell, button, key_press
   final String action;
   final String? buttonId;
-  final String? key; // for key_press: single character (e.g. "c") or "up"/"down"/"left"/"right"
+  final String?
+      key; // for key_press: single character (e.g. "c") or "up"/"down"/"left"/"right"
   final Map<String, String>? paramMapping;
   final Map<String, dynamic>? params;
   final bool showSelection;
@@ -111,10 +112,16 @@ class AvatarThemeDef {
   final Map<String, Map<String, AvatarSpriteEntry>>
       sprites; // state → dir → entry
 
+  /// Entity kind → sprite state used while the avatar's cell holds that kind
+  /// (e.g. any water kind → `wading`). Checked at rest only; the first
+  /// matching layer from the top of the stack wins.
+  final Map<String, String> cellStates;
+
   const AvatarThemeDef({
     this.visible = true,
     this.sprite,
     this.sprites = const {},
+    this.cellStates = const {},
   });
 
   factory AvatarThemeDef.fromJson(Map<String, dynamic> j) {
@@ -129,6 +136,8 @@ class AvatarThemeDef {
       visible: (j['visible'] as bool?) ?? true,
       sprite: j['sprite'] as String?,
       sprites: sprites,
+      cellStates: ((j['cellStates'] as Map?) ?? const {})
+          .map((k, v) => MapEntry(k as String, v as String)),
     );
   }
 
