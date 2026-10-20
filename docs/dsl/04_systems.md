@@ -2408,6 +2408,51 @@ mechanic's semantics.
 
 ---
 
+### 2.30 `cargo_gate`
+
+**Purpose:** Colored gate cells that only admit a mover travelling light. An
+empty mover may enter any gate; a mover carrying cargo may enter only a gate
+whose color matches every item it carries, and never with more than
+`maxCargo` items. Elsewhere the cargo makes no difference. The cargo is the
+body of a [`trailing_body`](#229-trailing_body) system — one item per body
+segment, each with the color it was picked up with.
+
+**Phase:** `action_resolution` — list it **before** the movement system it
+guards (e.g. `avatar_navigation`): a refused move is vetoed, so the whole
+turn is rejected and not spent, exactly like pressing into a `vetoLayers`
+cell.
+
+**Config:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `cargoSystem` | string | — (required) | Id of the `trailing_body` system whose body is the cargo. |
+| `gateLayer` | string | `"ground"` | Layer the gate entities live on. |
+| `gateTag` | string | `"cargo_gate"` | Tag identifying gate entities. Tag them `walkable` too if they are ground. |
+| `gateParam` | string | `"color"` | Gate entity param holding its color, compared with each carried item's color. |
+| `maxCargo` | int | `1` | Most items a mover may carry onto a gate. |
+| `moveAction` | string | `"move"` | The action whose target cell is checked. |
+
+**Algorithm:** for a `moveAction`, find the cell one step from the avatar in
+the action's direction. If it holds a gate and the mover carries anything,
+the move is allowed only when the number of items is at most `maxCargo` and
+every item's color equals the gate's; otherwise emit `action_vetoed` and
+`cell_blocked` (`position` = the gate cell, `kind` = `"cargo"`,
+`guardKind` = the gate kind).
+
+**Events emitted:** `action_vetoed`, `cell_blocked` on a refused move.
+
+**Scope:** only the step onto a gate cell is checked. A body that is already
+travelling across gates just follows the mover, and a pickup made while
+standing on a gate is not re-checked, so levels should not put loaders on
+gate cells. Only the avatar's own moves are checked; forced slides (e.g.
+`directional_pusher`) are not.
+
+**Reuse:** colored lanes, customs checkpoints, "one item only" doors — any
+mechanic where what the mover carries decides where it may go.
+
+---
+
 ## 3. System Summary Table
 
 | System | Type | Phase | Primary Action |
@@ -2424,6 +2469,7 @@ mechanic's semantics.
 | Queued Emitters | `queued_emitters` | `cascade_resolution` | (event-triggered) |
 | Gravity | `gravity` | `cascade_resolution` | (automatic after state changes) |
 | Trailing Body | `trailing_body` | `movement_resolution` | (automatic on mover movement) |
+| Cargo Gate | `cargo_gate` | `action_resolution` | vetoes a `move` onto a gate the cargo doesn't fit |
 | Overlay Cursor | `overlay_cursor` | `action_resolution` | `move` |
 | Region Transform | `region_transform` | `action_resolution` | `rotate`, `flip`, `diagonal_swap` |
 | Flood Fill | `flood_fill` | `action_resolution` | `flood` |
