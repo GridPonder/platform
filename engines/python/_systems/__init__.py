@@ -31,6 +31,7 @@ from .line_of_sight import LineOfSightSystem
 from .overlay_cursor import OverlayCursorSystem
 from .portals import PortalsSystem
 from .cargo_gate import CargoGateSystem
+from .directional_pusher import DirectionalPusherSystem
 from .trailing_body import TrailingBodySystem
 from .push_objects import PushObjectsSystem
 from .queued_emitters import QueuedEmittersSystem
@@ -58,6 +59,7 @@ _REGISTRY: dict[str, SystemFactory] = {
     "cascade_cells": lambda sys_id, config: CascadeCellsSystem(sys_id, config),
     "proximity_effects": lambda sys_id, config: ProximityEffectsSystem(sys_id, config),
     "cargo_gate": lambda sys_id, _: CargoGateSystem(sys_id),
+    "directional_pusher": lambda sys_id, _: DirectionalPusherSystem(sys_id),
     "trailing_body": lambda sys_id, config: TrailingBodySystem(sys_id, config),
     "push_objects": lambda sys_id, _: PushObjectsSystem(sys_id),
     "portals": lambda sys_id, _: PortalsSystem(sys_id),

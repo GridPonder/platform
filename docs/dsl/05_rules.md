@@ -97,6 +97,17 @@ Avatar left a cell.
 |---------|------|-------------|
 | `position` | `[x, y]` | Cell the avatar left. |
 
+### `avatar_pushed`
+A [`directional_pusher`](04_systems.md#231-directional_pusher) shoved the avatar. Emitted once, after the per-cell `avatar_exited`/`avatar_entered` pairs of the slide.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `position` | `[x, y]` | Cell the slide ended on. |
+| `fromPosition` | `[x, y]` | Trigger cell the slide started from. |
+| `pusherPosition` | `[x, y]` | Cell of the pusher that fired. |
+| `direction` | string | Pusher direction. |
+| `distance` | int | Cells travelled. |
+
 ### `move_blocked`
 Avatar attempted to move but was blocked by a solid entity (when `avatar_navigation.solidHandling` is `"delegate"`).
 
@@ -481,6 +492,34 @@ All phases completed for this turn.
 | Payload | Type | Description |
 |---------|------|-------------|
 | `turnNumber` | integer | Current turn count. |
+
+### `body_grown`
+A [`trailing_body`](04_systems.md#229-trailing_body) system added a segment
+because the mover consumed a growth-triggering entity this turn (the body's
+length increased, rather than merely sliding).
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `position` | `[x, y]` | Cell the new segment occupies (the cell the mover just left). |
+| `color` | string | The new segment's fixed color, read from the growth-trigger entity. |
+| `length` | integer | Total segment count immediately after this growth. |
+
+### `body_segment_added`
+A [`trailing_body`](04_systems.md#229-trailing_body) system placed a segment
+on `bodyLayer` this turn — fires on both a growth turn and an ordinary slide.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `position` | `[x, y]` | Cell the segment now occupies. |
+| `color` | string | The segment's fixed color. |
+
+### `body_segment_freed`
+A [`trailing_body`](04_systems.md#229-trailing_body) system cleared a cell
+that fell outside the body's current window — the cell is walkable again.
+
+| Payload | Type | Description |
+|---------|------|-------------|
+| `position` | `[x, y]` | Cell that was cleared on `bodyLayer`. |
 
 ---
 

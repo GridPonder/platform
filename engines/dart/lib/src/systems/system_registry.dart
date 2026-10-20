@@ -19,6 +19,7 @@ import 'line_of_sight_system.dart';
 import 'overlay_cursor_system.dart';
 import 'portals_system.dart';
 import 'cargo_gate_system.dart';
+import 'directional_pusher_system.dart';
 import 'trailing_body_system.dart';
 import 'push_objects_system.dart';
 import 'queued_emitters_system.dart';
@@ -54,6 +55,7 @@ class SystemRegistry {
     'push_objects': (id, _) => PushObjectsSystem(id: id),
     'portals': (id, _) => PortalsSystem(id: id),
     'cargo_gate': (id, _) => CargoGateSystem(id: id),
+    'directional_pusher': (id, _) => DirectionalPusherSystem(id: id),
     'trailing_body': (id, config) => TrailingBodySystem(id: id, config: config),
     'follower_npcs': (id, _) => FollowerNpcsSystem(id: id),
     'slide_merge': (id, _) => SlideMergeSystem(id: id),
