@@ -29,13 +29,23 @@ class LoseConditionDef {
   /// condition fires. Presentation only — never read to decide a loss.
   final String? description;
 
-  const LoseConditionDef(
-      {required this.type, required this.config, this.description});
+  /// When true, this condition beats a goal reached on the same turn (e.g. a
+  /// collision on the winning move is a loss). Otherwise it is only checked on a
+  /// turn that did not win.
+  final bool overridesWin;
 
-  factory LoseConditionDef.fromJson(Map<String, dynamic> j) =>
-      LoseConditionDef(
+  const LoseConditionDef({
+    required this.type,
+    required this.config,
+    this.description,
+    this.overridesWin = false,
+  });
+
+  factory LoseConditionDef.fromJson(Map<String, dynamic> j) => LoseConditionDef(
         type: j['type'] as String,
         config: Map<String, dynamic>.from(j['config'] as Map? ?? {}),
-        description: j['description'] is String ? j['description'] as String : null,
+        description:
+            j['description'] is String ? j['description'] as String : null,
+        overridesWin: j['overridesWin'] as bool? ?? false,
       );
 }

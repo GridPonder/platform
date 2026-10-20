@@ -16,6 +16,203 @@ const Map<String, int> shaftStatusCodes = {
   'seized': 2,
 };
 
+// -- shared passability + step prediction ------------------------------------
+//
+// Top-level (not methods) because AvatarNavigationSystem's `yieldingLayers`
+// check needs to call the exact same "what would this NPC do next" logic
+// without going through a FollowerNpcsSystem instance. Keeping these as
+// plain functions is what makes that a real shared implementation rather
+// than a second copy that can drift.
+
+/// Whether [pos] is part of the player's own body for contact/passability
+/// purposes: either the avatar's own cell, or a `solid`-tagged entity on the
+/// `tail` layer (a trailing_body segment — an item the player is carrying). A
+/// hazard's contact rule shouldn't care whether it hit the mover itself or
+/// a segment riding behind it; both are "the player", so both use the
+/// same lethal/blocking treatment.
+bool _playerBodyAt(
+    Board board, GameDefinition game, LevelState state, Position pos) {
+  if (state.avatar.position == pos) return true;
+  final tailLayer = board.layers['tail'];
+  if (tailLayer == null) return false;
+  final entity = tailLayer.getAt(pos);
+  return entity != null && game.hasTag(entity.kind, 'solid');
+}
+
+bool _canMoveTo({
+  required Position pos,
+  required Board board,
+  required GameDefinition game,
+  required bool solidBlocking,
+  required Set<Position> occupiedAfterMove,
+  required LevelState state,
+  bool blockAvatar = true,
+  List<String> movementBlockingLayers = const [],
+}) {
+  if (!board.isInBounds(pos)) return false;
+  if (board.isVoid(pos)) return false;
+
+  // Can't overlap with the avatar or its trailing body unless the
+  // behavior treats contact as lethal, in which case stepping onto either
+  // is the point.
+  if (blockAvatar && _playerBodyAt(board, game, state, pos)) return false;
+
+  // Can't overlap with other NPCs
+  if (occupiedAfterMove.contains(pos)) return false;
+
+  // Check solid blocking via objects layer
+  if (solidBlocking) {
+    final objectsLayer = board.layers['objects'];
+    if (objectsLayer != null) {
+      final entity = objectsLayer.getAt(pos);
+      if (entity != null && game.hasTag(entity.kind, 'solid')) return false;
+    }
+
+    // Additional layers that block only whichever NPC behavior configured
+    // them — additive on top of the hardcoded `objects` check above, not a
+    // replacement for it.
+    for (final layerName in movementBlockingLayers) {
+      final layer = board.layers[layerName];
+      if (layer == null) continue;
+      final entity = layer.getAt(pos);
+      if (entity != null && game.hasTag(entity.kind, 'solid')) return false;
+    }
+  }
+
+  return true;
+}
+
+/// An NPC's facing param, falling back to `right` when missing or unknown.
+///
+/// Public (no leading underscore): `AvatarNavigationSystem`'s
+/// `yieldingLayers` check reads an NPC's current facing the same way before
+/// calling [predictCircuitStep].
+Direction facingOf(EntityInstance entity) {
+  final facingStr = entity.param('facing')?.toString() ?? 'right';
+  try {
+    return Direction.fromJson(facingStr);
+  } catch (_) {
+    return Direction.right;
+  }
+}
+
+// Clockwise rotation order: right -> down -> left -> up -> right
+const _clockwiseOrder = [
+  Direction.right,
+  Direction.down,
+  Direction.left,
+  Direction.up,
+];
+
+Direction _rotateClockwise(Direction current) {
+  final idx = _clockwiseOrder.indexOf(current);
+  if (idx == -1) return Direction.right;
+  return _clockwiseOrder[(idx + 1) % _clockwiseOrder.length];
+}
+
+Direction _reverseDirection(Direction dir) {
+  switch (dir) {
+    case Direction.up:
+      return Direction.down;
+    case Direction.down:
+      return Direction.up;
+    case Direction.left:
+      return Direction.right;
+    case Direction.right:
+      return Direction.left;
+    case Direction.upLeft:
+      return Direction.downRight;
+    case Direction.upRight:
+      return Direction.downLeft;
+    case Direction.downLeft:
+      return Direction.upRight;
+    case Direction.downRight:
+      return Direction.upLeft;
+  }
+}
+
+/// What a `patrol` or `clockwise` NPC would do next, from [npcPos] facing
+/// [facing], against board state exactly as it stands right now.
+///
+/// `patrol` and `clockwise` are the only two `follower_npcs` behaviors whose
+/// decision depends solely on the NPC's own position/facing and the board —
+/// never on where the avatar ends up this turn — which is what makes
+/// predicting them safe. This is the ONE implementation of "what would this
+/// NPC do next" for those two behaviors: it is pure (never mutates the NPC
+/// entity or the board) and returns `(nextPosition, resultingFacing)`.
+/// `nextPosition` is null when the NPC is fully boxed in (patrol, can't even
+/// reverse) or every rotation is blocked (clockwise); in that case
+/// `resultingFacing` just echoes the facing passed in. Callers that want to
+/// commit a move/facing change apply the result themselves.
+///
+/// Shared by [FollowerNpcsSystem]'s own turn resolution
+/// (`_behaviorPatrol`/`_behaviorClockwise`) and by
+/// `AvatarNavigationSystem`'s `yieldingLayers` vacate check, so the two can
+/// never drift out of sync.
+(Position?, Direction) predictCircuitStep({
+  required String behaviorType,
+  required Position npcPos,
+  required Direction facing,
+  required LevelState state,
+  required Board board,
+  required GameDefinition game,
+  required bool solidBlocking,
+  required Set<Position> occupiedAfterMove,
+  required bool blockAvatar,
+  List<String> movementBlockingLayers = const [],
+}) {
+  if (behaviorType == 'clockwise') {
+    var current = facing;
+    for (var i = 0; i < _clockwiseOrder.length; i++) {
+      final candidate = npcPos.moved(current);
+      if (_canMoveTo(
+        pos: candidate,
+        board: board,
+        game: game,
+        solidBlocking: solidBlocking,
+        occupiedAfterMove: occupiedAfterMove,
+        state: state,
+        blockAvatar: blockAvatar,
+        movementBlockingLayers: movementBlockingLayers,
+      )) {
+        return (candidate, current);
+      }
+      current = _rotateClockwise(current);
+    }
+    return (null, facing);
+  }
+
+  // patrol: forward, else reversed, else stuck.
+  final candidate = npcPos.moved(facing);
+  if (_canMoveTo(
+    pos: candidate,
+    board: board,
+    game: game,
+    solidBlocking: solidBlocking,
+    occupiedAfterMove: occupiedAfterMove,
+    state: state,
+    blockAvatar: blockAvatar,
+    movementBlockingLayers: movementBlockingLayers,
+  )) {
+    return (candidate, facing);
+  }
+  final reversed = _reverseDirection(facing);
+  final reversedCandidate = npcPos.moved(reversed);
+  if (_canMoveTo(
+    pos: reversedCandidate,
+    board: board,
+    game: game,
+    solidBlocking: solidBlocking,
+    occupiedAfterMove: occupiedAfterMove,
+    state: state,
+    blockAvatar: blockAvatar,
+    movementBlockingLayers: movementBlockingLayers,
+  )) {
+    return (reversedCandidate, reversed);
+  }
+  return (null, facing);
+}
+
 class FollowerNpcsSystem extends GameSystem {
   const FollowerNpcsSystem({required super.id}) : super(type: 'follower_npcs');
 
@@ -85,6 +282,7 @@ class FollowerNpcsSystem extends GameSystem {
           npcEntity: move.$2,
           state: state,
           board: board,
+          game: game,
           contactVariable: contactVariable,
           occupiedAfterMove: occupiedAfterMove,
           events: events,
@@ -159,6 +357,10 @@ class FollowerNpcsSystem extends GameSystem {
       }
 
       final solidBlocking = behaviorDef['solidBlocking'] as bool? ?? true;
+      final movementBlockingLayers =
+          (behaviorDef['movementBlockingLayers'] as List<dynamic>? ?? const [])
+              .map((l) => l.toString())
+              .toList();
 
       final nextPos = _computeNextPosition(
         npcPos: npcPos,
@@ -168,6 +370,7 @@ class FollowerNpcsSystem extends GameSystem {
         state: state,
         game: game,
         solidBlocking: solidBlocking,
+        movementBlockingLayers: movementBlockingLayers,
         occupiedAfterMove: occupiedAfterMove,
         sight: sight,
       );
@@ -184,6 +387,7 @@ class FollowerNpcsSystem extends GameSystem {
         npcEntity: npcEntity,
         state: state,
         board: board,
+        game: game,
         contactVariable: contactVariable,
         occupiedAfterMove: occupiedAfterMove,
         events: events,
@@ -203,12 +407,26 @@ class FollowerNpcsSystem extends GameSystem {
     required EntityInstance npcEntity,
     required LevelState state,
     required Board board,
+    required GameDefinition game,
     required String contactVariable,
     required Set<Position> occupiedAfterMove,
     required List<GameEvent> events,
   }) {
     final npcId = 'spirit_${npcPos.x}_${npcPos.y}';
-    final caught = state.avatar.position == nextPos;
+    final directCaught = _playerBodyAt(board, game, state, nextPos);
+    // A swap: the avatar moved into npcPos this same turn (already reflected
+    // in state.avatar.position, since avatar_navigation's phase runs first)
+    // while this NPC moves into the avatar's pre-move cell. Final positions
+    // never overlap in this case, so `directCaught` alone misses it — but
+    // the two crossed paths exactly as if they'd collided head-on. Only
+    // reachable by a lethal-contact NPC: a blocking one can never predict a
+    // step onto the avatar's pre-move cell in the first place (see
+    // `_npcIsVacating`'s `blockAvatar` in avatar_navigation_system.dart), so
+    // this never fires for behaviors that merely block.
+    final swapCaught = !directCaught &&
+        state.avatarPositionAtTurnStart == nextPos &&
+        state.avatar.position == npcPos;
+    final caught = directCaught || swapCaught;
 
     occupiedAfterMove.remove(npcPos);
     occupiedAfterMove.add(nextPos);
@@ -315,7 +533,7 @@ class FollowerNpcsSystem extends GameSystem {
       for (final m in members) {
         // The WHOLE train turns, not just the active members.
         m.value.params['facing'] =
-            _reverseDirection(_facingOf(m.value)).toJson();
+            _reverseDirection(facingOf(m.value)).toJson();
       }
       return [
         for (var i = 0; i < active.length; i++)
@@ -347,7 +565,7 @@ class FollowerNpcsSystem extends GameSystem {
       final behaviorDef = behaviorsConfig[m.value.param('behavior')?.toString()]
           as Map<String, dynamic>?;
       if (behaviorDef == null) return null;
-      final own = _facingOf(m.value);
+      final own = facingOf(m.value);
       final facing = reversed ? _reverseDirection(own) : own;
       final candidate = m.key.moved(facing);
       // Two members whose tracks cross can both reach the crossing on the same
@@ -364,6 +582,11 @@ class FollowerNpcsSystem extends GameSystem {
         occupiedAfterMove: occupied,
         state: state,
         blockAvatar: !(behaviorDef['lethalContact'] as bool? ?? false),
+        movementBlockingLayers:
+            (behaviorDef['movementBlockingLayers'] as List<dynamic>? ??
+                    const [])
+                .map((l) => l.toString())
+                .toList(),
       );
       if (!ok) return null;
       claimed.add(candidate);
@@ -512,7 +735,7 @@ class FollowerNpcsSystem extends GameSystem {
     // vertical one is not on the horizontal one's row, and board order must
     // not decide which of the two gets checked.
     bool onLineOf(MapEntry<Position, EntityInstance> m, Position other) {
-      final facing = _facingOf(m.value);
+      final facing = facingOf(m.value);
       final horizontal = facing == Direction.left || facing == Direction.right;
       return horizontal ? m.key.y == other.y : m.key.x == other.x;
     }
@@ -527,15 +750,6 @@ class FollowerNpcsSystem extends GameSystem {
           );
         }
       }
-    }
-  }
-
-  /// A member's facing param, falling back to right when missing or unknown.
-  Direction _facingOf(EntityInstance entity) {
-    try {
-      return Direction.fromJson(entity.param('facing')?.toString() ?? 'right');
-    } catch (_) {
-      return Direction.right;
     }
   }
 
@@ -562,6 +776,7 @@ class FollowerNpcsSystem extends GameSystem {
     required LevelState state,
     required GameDefinition game,
     required bool solidBlocking,
+    required List<String> movementBlockingLayers,
     required Set<Position> occupiedAfterMove,
     bool? sight,
   }) {
@@ -582,6 +797,7 @@ class FollowerNpcsSystem extends GameSystem {
           board: board,
           game: game,
           solidBlocking: solidBlocking,
+          movementBlockingLayers: movementBlockingLayers,
           occupiedAfterMove: occupiedAfterMove,
           sight: sight,
         );
@@ -596,6 +812,7 @@ class FollowerNpcsSystem extends GameSystem {
           board: board,
           game: game,
           solidBlocking: solidBlocking,
+          movementBlockingLayers: movementBlockingLayers,
           occupiedAfterMove: occupiedAfterMove,
           blockAvatar: blockAvatar,
         );
@@ -610,6 +827,7 @@ class FollowerNpcsSystem extends GameSystem {
           board: board,
           game: game,
           solidBlocking: solidBlocking,
+          movementBlockingLayers: movementBlockingLayers,
           occupiedAfterMove: occupiedAfterMove,
           blockAvatar: blockAvatar,
         );
@@ -622,6 +840,7 @@ class FollowerNpcsSystem extends GameSystem {
           board: board,
           game: game,
           solidBlocking: solidBlocking,
+          movementBlockingLayers: movementBlockingLayers,
           occupiedAfterMove: occupiedAfterMove,
           blockAvatar: blockAvatar,
         );
@@ -634,6 +853,7 @@ class FollowerNpcsSystem extends GameSystem {
           board: board,
           game: game,
           solidBlocking: solidBlocking,
+          movementBlockingLayers: movementBlockingLayers,
           occupiedAfterMove: occupiedAfterMove,
           blockAvatar: blockAvatar,
         );
@@ -641,37 +861,6 @@ class FollowerNpcsSystem extends GameSystem {
       default:
         return null;
     }
-  }
-
-  bool _canMoveTo({
-    required Position pos,
-    required Board board,
-    required GameDefinition game,
-    required bool solidBlocking,
-    required Set<Position> occupiedAfterMove,
-    required LevelState state,
-    bool blockAvatar = true,
-  }) {
-    if (!board.isInBounds(pos)) return false;
-    if (board.isVoid(pos)) return false;
-
-    // Can't overlap with the avatar unless the behavior treats contact as
-    // lethal, in which case stepping onto the avatar is the point.
-    if (blockAvatar && state.avatar.position == pos) return false;
-
-    // Can't overlap with other NPCs
-    if (occupiedAfterMove.contains(pos)) return false;
-
-    // Check solid blocking via objects layer
-    if (solidBlocking) {
-      final objectsLayer = board.layers['objects'];
-      if (objectsLayer != null) {
-        final entity = objectsLayer.getAt(pos);
-        if (entity != null && game.hasTag(entity.kind, 'solid')) return false;
-      }
-    }
-
-    return true;
   }
 
   Direction _cardinalTowardTarget(Position from, Position target) {
@@ -692,6 +881,7 @@ class FollowerNpcsSystem extends GameSystem {
     required Board board,
     required GameDefinition game,
     required bool solidBlocking,
+    List<String> movementBlockingLayers = const [],
     required Set<Position> occupiedAfterMove,
     required LevelState state,
     bool blockAvatar = true,
@@ -720,6 +910,7 @@ class FollowerNpcsSystem extends GameSystem {
           board: board,
           game: game,
           solidBlocking: solidBlocking,
+          movementBlockingLayers: movementBlockingLayers,
           occupiedAfterMove: occupiedAfterMove,
           state: state,
           blockAvatar: blockAvatar,
@@ -778,6 +969,7 @@ class FollowerNpcsSystem extends GameSystem {
     required Board board,
     required GameDefinition game,
     required bool solidBlocking,
+    required List<String> movementBlockingLayers,
     required Set<Position> occupiedAfterMove,
     bool? sight,
   }) {
@@ -802,6 +994,7 @@ class FollowerNpcsSystem extends GameSystem {
       board: board,
       game: game,
       solidBlocking: solidBlocking,
+      movementBlockingLayers: movementBlockingLayers,
       occupiedAfterMove: occupiedAfterMove,
       state: state,
       blockAvatar: !lethalContact,
@@ -815,6 +1008,7 @@ class FollowerNpcsSystem extends GameSystem {
     required Board board,
     required GameDefinition game,
     required bool solidBlocking,
+    required List<String> movementBlockingLayers,
     required Set<Position> occupiedAfterMove,
     required bool blockAvatar,
   }) {
@@ -863,6 +1057,7 @@ class FollowerNpcsSystem extends GameSystem {
             board: board,
             game: game,
             solidBlocking: solidBlocking,
+            movementBlockingLayers: movementBlockingLayers,
             occupiedAfterMove: occupiedAfterMove,
             state: state,
             blockAvatar: blockAvatar,
@@ -882,6 +1077,7 @@ class FollowerNpcsSystem extends GameSystem {
     required Board board,
     required GameDefinition game,
     required bool solidBlocking,
+    required List<String> movementBlockingLayers,
     required Set<Position> occupiedAfterMove,
     required bool blockAvatar,
   }) {
@@ -931,6 +1127,7 @@ class FollowerNpcsSystem extends GameSystem {
             board: board,
             game: game,
             solidBlocking: solidBlocking,
+            movementBlockingLayers: movementBlockingLayers,
             occupiedAfterMove: occupiedAfterMove,
             state: state,
             blockAvatar: blockAvatar,
@@ -943,20 +1140,6 @@ class FollowerNpcsSystem extends GameSystem {
     return best;
   }
 
-  // Clockwise rotation order: right -> down -> left -> up -> right
-  static const _clockwiseOrder = [
-    Direction.right,
-    Direction.down,
-    Direction.left,
-    Direction.up,
-  ];
-
-  Direction _rotateClockwise(Direction current) {
-    final idx = _clockwiseOrder.indexOf(current);
-    if (idx == -1) return Direction.right;
-    return _clockwiseOrder[(idx + 1) % _clockwiseOrder.length];
-  }
-
   Position? _behaviorClockwise({
     required Position npcPos,
     required EntityInstance npcEntity,
@@ -964,38 +1147,27 @@ class FollowerNpcsSystem extends GameSystem {
     required Board board,
     required GameDefinition game,
     required bool solidBlocking,
+    required List<String> movementBlockingLayers,
     required Set<Position> occupiedAfterMove,
     required bool blockAvatar,
   }) {
-    final facingStr = npcEntity.param('facing')?.toString() ?? 'right';
-    Direction facing;
-    try {
-      facing = Direction.fromJson(facingStr);
-    } catch (_) {
-      facing = Direction.right;
+    final facing = facingOf(npcEntity);
+    final (nextPos, newFacing) = predictCircuitStep(
+      behaviorType: 'clockwise',
+      npcPos: npcPos,
+      facing: facing,
+      state: state,
+      board: board,
+      game: game,
+      solidBlocking: solidBlocking,
+      movementBlockingLayers: movementBlockingLayers,
+      occupiedAfterMove: occupiedAfterMove,
+      blockAvatar: blockAvatar,
+    );
+    if (nextPos != null) {
+      npcEntity.params['facing'] = newFacing.toJson();
     }
-
-    // Try current facing first, then rotate clockwise until a valid move is found
-    for (var i = 0; i < _clockwiseOrder.length; i++) {
-      final candidate = npcPos.moved(facing);
-      final isValid = _canMoveTo(
-        pos: candidate,
-        board: board,
-        game: game,
-        solidBlocking: solidBlocking,
-        occupiedAfterMove: occupiedAfterMove,
-        state: state,
-        blockAvatar: blockAvatar,
-      );
-      if (isValid) {
-        // Update NPC facing param (mutate params map directly)
-        npcEntity.params['facing'] = facing.toJson();
-        return candidate;
-      }
-      facing = _rotateClockwise(facing);
-    }
-
-    return null;
+    return nextPos;
   }
 
   Position? _behaviorPatrol({
@@ -1005,69 +1177,26 @@ class FollowerNpcsSystem extends GameSystem {
     required Board board,
     required GameDefinition game,
     required bool solidBlocking,
+    required List<String> movementBlockingLayers,
     required Set<Position> occupiedAfterMove,
     required bool blockAvatar,
   }) {
-    final facingStr = npcEntity.param('facing')?.toString() ?? 'right';
-    Direction facing;
-    try {
-      facing = Direction.fromJson(facingStr);
-    } catch (_) {
-      facing = Direction.right;
-    }
-
-    final candidate = npcPos.moved(facing);
-    if (_canMoveTo(
-      pos: candidate,
+    final facing = facingOf(npcEntity);
+    final (nextPos, newFacing) = predictCircuitStep(
+      behaviorType: 'patrol',
+      npcPos: npcPos,
+      facing: facing,
+      state: state,
       board: board,
       game: game,
       solidBlocking: solidBlocking,
+      movementBlockingLayers: movementBlockingLayers,
       occupiedAfterMove: occupiedAfterMove,
-      state: state,
-      blockAvatar: blockAvatar,
-    )) {
-      return candidate;
-    }
-
-    // Reverse direction on obstacle
-    final reversed = _reverseDirection(facing);
-    final reversedCandidate = npcPos.moved(reversed);
-    final reversedValid = _canMoveTo(
-      pos: reversedCandidate,
-      board: board,
-      game: game,
-      solidBlocking: solidBlocking,
-      occupiedAfterMove: occupiedAfterMove,
-      state: state,
       blockAvatar: blockAvatar,
     );
-
-    if (reversedValid) {
-      npcEntity.params['facing'] = reversed.toJson();
-      return reversedCandidate;
+    if (nextPos != null && newFacing != facing) {
+      npcEntity.params['facing'] = newFacing.toJson();
     }
-
-    return null;
-  }
-
-  Direction _reverseDirection(Direction dir) {
-    switch (dir) {
-      case Direction.up:
-        return Direction.down;
-      case Direction.down:
-        return Direction.up;
-      case Direction.left:
-        return Direction.right;
-      case Direction.right:
-        return Direction.left;
-      case Direction.upLeft:
-        return Direction.downRight;
-      case Direction.upRight:
-        return Direction.downLeft;
-      case Direction.downLeft:
-        return Direction.upRight;
-      case Direction.downRight:
-        return Direction.upLeft;
-    }
+    return nextPos;
   }
 }

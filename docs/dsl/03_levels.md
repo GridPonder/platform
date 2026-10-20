@@ -382,6 +382,18 @@ Every lose condition may also carry an optional `description` string: a short, p
 { "type": "variable_threshold", "config": { "variable": "damage", "target": 3 }, "description": "the hull took three hits" }
 ```
 
+Goals are checked before lose conditions, so a turn that reaches every goal
+wins even if it also meets a lose condition — winning on the last move
+allowed by `max_actions` counts. A lose condition can opt out of that with
+`"overridesWin": true` (top-level on the condition, default `false`): it is
+then checked first and, if met, the turn is a loss even though the goals were
+reached. Use it for failures that must never be outrun, such as a collision on
+the winning move:
+
+```json
+{ "type": "variable_threshold", "overridesWin": true, "config": { "variable": "caught", "target": 1, "comparison": "gte" } }
+```
+
 ### Lose Condition Types
 
 #### `max_actions`

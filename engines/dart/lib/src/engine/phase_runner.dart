@@ -43,6 +43,10 @@ class PhaseRunner {
       return maxStage + 1;
     }
 
+    // Snapshot the avatar's pre-move position so phase 6 can detect a swap
+    // with a lethal-contact NPC (see LevelState.avatarPositionAtTurnStart).
+    state.avatarPositionAtTurnStart = state.avatar.position;
+
     // Phase 2: Action resolution
     for (final sys in systems) {
       final events = sys.executeActionResolution(action, state, effectiveGame);
@@ -134,6 +138,34 @@ class PhaseRunner {
     // Check goals before lose conditions: winning on the last allowed move counts as a win.
     final goalStatus =
         _goalEval.evaluate(_level.goals, state, effectiveGame, allEvents);
+
+    // Lose conditions marked `overridesWin` (e.g. a collision) beat a goal reached
+    // on the same turn; every other lose condition is checked only when the
+    // turn did not win.
+    final overriding =
+        _level.loseConditions.where((c) => c.overridesWin).toList();
+    final overridingLoss = overriding.isEmpty
+        ? null
+        : _loseEval.evaluate(
+            overriding,
+            state,
+            goals: _level.goals,
+            game: effectiveGame,
+            goalSatisfied: goalStatus.satisfied,
+          );
+    if (overridingLoss != null && overridingLoss.isLost) {
+      state.isLost = true;
+      return TurnResult(
+        accepted: true,
+        newState: state,
+        events: allEvents,
+        animations: animations,
+        goalProgress: goalStatus.progress,
+        isWon: false,
+        isLost: true,
+        loseReason: overridingLoss.reason,
+      );
+    }
     if (goalStatus.isWon) {
       state.isWon = true;
     }

@@ -82,6 +82,7 @@ Levels may override specific config fields per system via `systemOverrides`. Ove
 | `directions` | array of strings | `["up","down","left","right"]` | Allowed movement directions. |
 | `solidHandling` | string | `"block"` | What happens when moving into a solid cell: `"block"` (reject move) or `"delegate"` (let later systems handle, e.g. push or consume). |
 | `solidLayers` | array of strings | `["objects"]` | Layers checked for a `solid` blocker, in order; the first match wins. Packs that place blockers elsewhere — NPCs on `actors`, for instance — have to list that layer explicitly. |
+| `yieldingLayers` | array of strings | `[]` | Layers where a blocking entity is let through instead of blocking, if it's a `follower_npcs` `patrol`/`clockwise` NPC genuinely about to vacate that cell this same turn (predicted from board state as it stands at the start of the turn — see `follower_npcs`' shared step-prediction helper). Never applies to a chasing behavior (`toward_avatar`/`toward_tag`/`toward_color`) or to a shafted (train) member, both of which still block exactly as before — predicting a chasing behavior here would be a circular dependency on the avatar's own move. Empty by default, so this changes nothing for a pack that never sets it. |
 | `moveAction` | string | `"move"` | Which action id triggers navigation. |
 | `validGroundTags` | array of strings | `[]` | When non-empty, the target's ground cell must carry one of these tags. Empty keeps the void-only check, so packs that omit the field are unaffected. |
 | `groundLayer` | string | `"ground"` | Layer checked by `validGroundTags`. |
@@ -93,6 +94,7 @@ Levels may override specific config fields per system via `systemOverrides`. Ove
 3. Check ground layer — reject if `void`.
 4. If `validGroundTags` is non-empty, reject unless the `groundLayer` cell at the target carries one of those tags. This is how a game makes some non-void terrain unwalkable — landed debris, deep water, a roof you may stand beside but not on.
 5. Check the `solid` tag on each layer in `solidLayers`, in order:
+   - If the blocking entity's layer is listed in `yieldingLayers` and it resolves to a `follower_npcs` `patrol`/`clockwise` NPC that is predicted to move off this cell this turn, treat the cell as if it were empty and fall through to step 6.
    - `"block"`: reject move.
    - `"delegate"`: mark the move as pending. Emit `move_blocked` with the target position and blocker kind. Later phases (push) or rules (`resolve_move` effect) may complete or reject the pending move.
 6. If not blocked, move avatar to target. Emit `avatar_exited` for old position, `avatar_entered` for new position.
@@ -869,10 +871,11 @@ checked.
 | `type` | string | — | `toward_avatar`, `toward_tag`, `toward_color`, `patrol`, or `clockwise`. |
 | `frequency` | integer | `1` | Act only when `turnCount % frequency == 0`. The counter is incremented after this phase, so the first turn always acts. The turn counter is not part of the state key, so while an NPC with `frequency > 1` is on the board the system reports that its behaviour depends on the counter (`depends_on_turn_count` / `dependsOnTurnCount`); the benchmark's valid-action probe then counts a turn that only advanced the beat (e.g. an off-beat `wait`) as effectful. |
 | `solidBlocking` | boolean | `true` | Whether entities tagged `solid` on the `objects` layer block the NPC. |
+| `movementBlockingLayers` | array of strings | `[]` | `solidBlocking` only: extra layers, beyond the hardcoded `objects` layer, also checked for a `solid`-tagged entity that blocks the NPC. Additive — `objects` is always checked regardless of this field, so an empty list (the default) reproduces exactly today's behavior. Lets a level give a `patrol`/`clockwise` NPC an obstacle that blocks only that NPC (a marker on a level-specific layer the avatar never treats as solid), distinct from `requiresLineOfSight`'s own `blockingLayers` field below, which governs sight rather than movement. |
 | `targetTag` | string | — | `toward_tag` only: seek the nearest entity with this tag on the `objects` or `markers` layer. |
 | `targetColor` | string | — | `toward_color` only: seek the nearest entity whose `color` param matches, on the `objects` or `actors` layer. |
 | `requiresLineOfSight` | boolean | `false` | `toward_avatar` only: move only while the avatar is visible, using the same relation [`line_of_sight`](#213-line_of_sight) detects. Losing sight freezes the NPC where it stands. |
-| `blockingLayers` | array of strings | `["objects"]` | `requiresLineOfSight` only: layers checked for sight blockers. |
+| `blockingLayers` | array of strings | `["objects"]` | `requiresLineOfSight` only: layers checked for sight blockers. Governs sight, not movement — distinct from `solidBlocking`'s own `blockingLayers` field above. |
 | `blockingTags` | array of strings | `["solid"]` | `requiresLineOfSight` only: tags that break the sightline. Empty means every entity on those layers blocks. |
 | `multiCellObjectsBlock` | boolean | `true` | `requiresLineOfSight` only: whether a multi-cell object standing between the NPC and the avatar breaks the sightline. Both systems trace the line through one shared implementation, so this means here exactly what it means for [`line_of_sight`](#213-line_of_sight); the two used to answer differently for the same pair of cells. |
 | `lethalContact` | boolean | `false` | Allow the NPC to step onto the avatar. On contact it increments `contactVariable` and emits `avatar_caught`. When `false` the avatar's cell is impassable, so a seeking NPC with no other distance-reducing step stands still and a `patrol` or `clockwise` NPC turns around — which makes the avatar's body a usable, movable blocker. Applies to every behavior, so a patrolling hazard has to declare its lethality rather than inherit it. |
@@ -894,9 +897,10 @@ checked.
    heading is persistent state.
 4. A cell is impassable when out of bounds, `void` ground, occupied by another
    NPC's post-move position, blocked by a `solid` object under
-   `solidBlocking`, or occupied by the avatar unless `lethalContact` is set.
-   Every behavior shares this one test, so passability cannot drift between
-   them.
+   `solidBlocking` (on the `objects` layer, plus any layers named in
+   `movementBlockingLayers`), or occupied by the avatar unless `lethalContact` is
+   set. Every behavior shares this one test, so passability cannot drift
+   between them.
 5. Move the NPC and emit `npc_moved`. On lethal contact also bump
    `contactVariable` and emit `avatar_caught`.
 
