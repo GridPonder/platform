@@ -2286,6 +2286,128 @@ the pack names its own ground, water, gate and marker kinds.
 
 ---
 
+### 2.29 `trailing_body`
+
+**Purpose:** Make a mover drag a body of variable length behind it: the
+body always occupies exactly the mover's last `L`
+positions (`L` read fresh from a variable every turn), sliding forward each
+ordinary turn and growing by exactly one cell on a turn where the mover
+consumes a growth-triggering entity. Unlike a permanent-trail mechanic,
+cells behind the body's current tail end become walkable
+again as the mover advances — nothing is blocked for the rest of the level.
+
+**Phase:** `movement_resolution`, after the mover's own move has been
+resolved in `action_resolution`.
+
+Growth is detected **structurally**, not by comparing `lengthVariable`
+across turns. A pickup rule (Recipe A, [05_rules.md](05_rules.md)) that
+destroys the consumed entity and increments the length variable runs in
+`cascade_resolution` — one phase *after* this system. Reading
+`lengthVariable` in `movement_resolution` would therefore always be one
+phase stale within the pickup's own turn: the increment wouldn't be visible
+until the *following* turn, misattributing the growth to whatever ordinary
+move happens next. Instead, this system checks the board directly, at the
+mover's new cell, for an entity tagged `growthTriggerTag` on
+`growthKindSource` — still present, since the rule that will destroy it
+hasn't run yet this turn. `lengthVariable` is read fresh each turn only to
+reconcile drift between it and the structural trail (e.g. a level that
+starts the mover already carrying items) — never to detect this turn's own
+growth.
+
+**Events emitted:** `body_grown`, `body_segment_added`, `body_segment_freed`,
+`body_segment_unloaded` (one per segment spliced out of the chain this turn
+by landing on a matching unloader tile — see `unloadLayer` below), `tile_moved`
+(one per persisting segment that shifted exactly one cell this turn — every
+segment except a brand-new one joining, a lengthVariable-padded
+placeholder, or one pulled forward past a same-turn unload — so the generic
+rendering pipeline can glide the whole body in lockstep with the mover's own
+step animation instead of snapping it to rest a phase late)
+
+**Config:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `moverLayer` | string | `"objects"` | Layer holding the tracked mover, when `moverTag` is not the reserved value `"avatar"`. |
+| `moverTag` | string | `"avatar"` | Tag identifying the mover entity. The reserved value `"avatar"` tracks `state.avatar` directly (ignoring `moverLayer`) — the common case, the player's own controlled character. Any other value scans `moverLayer` for the first entity carrying that tag, the same convention [`routed_motion`](#223-routed_motion) uses for its own movers, so a non-avatar actor (e.g. a scripted actor on the `actors` layer) can grow a trailing body too. |
+| `lengthVariable` | string | required | Variable holding the current required body length. Read fresh every turn — the system never stores its own copy of "how long should I be." Used to reconcile drift (see Phase note above), not to detect this turn's growth. |
+| `bodyLayer` | string | `"tail"` | Layer where segment entities are written/rewritten each turn. |
+| `growthKindSource` | string | required | Layer to inspect at the mover's new cell each turn for a growth-triggering entity. |
+| `growthTriggerTag` | string | `"pickup"` | Tag an entity on `growthKindSource` must carry to count as this turn's growth trigger. |
+| `growthColorParam` | string | `"color"` | Per-instance param read off the growth-trigger entity to become the new segment's `{color}`. Falls back to the trigger entity's own `kind` string when the param is absent, so a game with a single body color can skip authoring it. |
+| `segmentKindTemplate` | string | `"segment"` | Template combining a segment's fixed color with its per-turn recomputed shape into the entity kind written to `bodyLayer`, via the literal placeholders `{color}` and `{shape}`, e.g. `"tail_segment_{color}_{shape}"`. `shape` is one of `horizontal`, `vertical`, `corner_up_right`, `corner_right_down`, `corner_down_left`, `corner_left_up` — the six-sprite convention this system was designed against — but the template can point at any kind-naming scheme a pack likes, or omit `{shape}` entirely for a game that only needs one look per color. |
+| `defaultSegmentKind` | string | none | Fallback **full kind string** (not a color) for a segment created without a structural growth event — used only to pad the body up to `lengthVariable` when the two disagree (typically a level that starts the mover already carrying items; unused when the mover always starts empty). Positions for this fallback are a best-effort placeholder (the mover's own starting cell, or the current tail's position for a mid-game reconcile) since no real trail exists to source them from. |
+| `unloadLayer` | string | none | Layer to check each segment's new position against for a matching unloader tile. Omitted (the default) disables unloading entirely — a pack that never sets this pays nothing here and every segment behaves exactly as if the fields below didn't exist. |
+| `unloadTag` | string | `"unloader"` | Tag an entity on `unloadLayer` must carry to act as an unloader. |
+| `unloadColorParam` | string | `"color"` | Per-instance param read off a candidate unloader entity and compared against the segment's own color. A segment only unloads at a tile whose value here equals its own color. |
+
+**Behavior**, each turn (only when the mover's position actually changed
+this turn):
+
+1. Resolve the mover's current position and the position it held at the
+   start of this turn (tracked internally in state: the cell the mover
+   just left).
+2. Check `growthKindSource` at the mover's *new* position for an entity
+   tagged `growthTriggerTag`. If found, this is a growth turn; the new
+   segment's color comes from `growthColorParam` on that entity (or its
+   `kind` as a fallback).
+3. Shift positions: prepend the cell the mover just left to the ordered
+   position list. On a growth turn, keep every existing position (nothing
+   drops — "the body doesn't slide" on the turn it grows) and append the
+   new color to the *end* of the color list, so the earliest-picked-up
+   item stays closest to the mover and each later pickup joins further
+   back — a new segment is appended at the back, it doesn't shove
+   its way to the front. On an ordinary turn, drop the farthest (last)
+   position, and leave the color list untouched — each existing segment's
+   fixed color moves forward into the position the segment ahead of it
+   just vacated, each segment pulling into the spot the segment ahead
+   just left.
+4. When `unloadLayer` is configured, check each segment's freshly-computed
+   position against it: if an entity there carries `unloadTag` and its
+   `unloadColorParam` value equals that segment's own color, splice the
+   segment out of the chain entirely (not merely off the tail end) and emit
+   `body_segment_unloaded` at that position. Every segment behind the
+   spliced one is pulled forward to close the gap — each takes the position
+   slot the removed segment (or, transitively, whatever was between it and
+   them) would have occupied, so the chain stays contiguous: with
+   Red → Yellow → Blue, unloading Yellow leaves Red → Blue connected
+   directly, not Red<gap>Blue. This is purely structural — reconnection
+   doesn't touch `lengthVariable` or any other variable, and does not by
+   itself turn the unloader tile into anything else; a pack that wants the
+   tile to do something once triggered (revert to a loader, become
+   impassable, whatever) reacts to `body_segment_unloaded` with an ordinary
+   rule, the same way `activate_dropoff`-style rules already react to other
+   trailing_body events.
+5. Reconcile the resulting length against `lengthVariable` — pad with
+   `defaultSegmentKind` or trim from the tail — but only on a non-growth
+   turn (see Phase note above for why).
+6. Recompute every segment's shape from its up-to-two current neighbors
+   (the mover, for the segment closest to it) and rewrite its entity kind
+   via `segmentKindTemplate`, even for a segment whose position didn't
+   change this turn — its shape can still change because a neighbor moved.
+   A segment with only one real neighbor (the tail end) gets the straight
+   shape (`horizontal`/`vertical`) matching that one connection. Every
+   segment that persisted from before this turn *and* landed exactly one
+   cell from its own previous position emits `tile_moved` from its own old
+   position to its new one. A brand-new segment has no old position to
+   emit from; a segment pulled forward past a same-turn unload has one, but
+   it isn't one cell away, so neither animates — both simply appear at
+   rest.
+7. Clear `bodyLayer` at every position that fell out of the window this
+   turn — the natural tail-end drop, and any position an unload just
+   vacated.
+
+**Interaction with `avatar_navigation`:** add `bodyLayer` to
+[`avatar_navigation`](#21-avatar_navigation)'s `solidLayers`, and tag every
+segment kind `solid`, so the mover cannot step onto its own body. No new
+collision logic — this reuses `avatar_navigation`'s existing
+`solidLayers` extension point.
+
+**Reuse:** any game wanting a body or chain that trails a mover with a
+length tied to a resource or pickup count, without a permanent-trail
+mechanic's semantics.
+
+---
+
 ## 3. System Summary Table
 
 | System | Type | Phase | Primary Action |
@@ -2301,6 +2423,7 @@ the pack names its own ground, water, gate and marker kinds.
 | Slide Merge | `slide_merge` | `action_resolution` | `move` |
 | Queued Emitters | `queued_emitters` | `cascade_resolution` | (event-triggered) |
 | Gravity | `gravity` | `cascade_resolution` | (automatic after state changes) |
+| Trailing Body | `trailing_body` | `movement_resolution` | (automatic on mover movement) |
 | Overlay Cursor | `overlay_cursor` | `action_resolution` | `move` |
 | Region Transform | `region_transform` | `action_resolution` | `rotate`, `flip`, `diagonal_swap` |
 | Flood Fill | `flood_fill` | `action_resolution` | `flood` |

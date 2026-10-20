@@ -18,6 +18,7 @@ import 'follower_npcs_system.dart';
 import 'line_of_sight_system.dart';
 import 'overlay_cursor_system.dart';
 import 'portals_system.dart';
+import 'trailing_body_system.dart';
 import 'push_objects_system.dart';
 import 'queued_emitters_system.dart';
 import 'region_transform_system.dart';
@@ -51,6 +52,7 @@ class SystemRegistry {
     'individual_actors': (id, _) => IndividualActorsSystem(id: id),
     'push_objects': (id, _) => PushObjectsSystem(id: id),
     'portals': (id, _) => PortalsSystem(id: id),
+    'trailing_body': (id, config) => TrailingBodySystem(id: id, config: config),
     'follower_npcs': (id, _) => FollowerNpcsSystem(id: id),
     'slide_merge': (id, _) => SlideMergeSystem(id: id),
     'queued_emitters': (id, _) => QueuedEmittersSystem(id: id),
