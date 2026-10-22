@@ -2312,6 +2312,7 @@ the pack names its own ground, water, gate and marker kinds.
 | Cell Rotation | `cell_rotation` | `action_resolution` | `rotate_cell` (configurable) |
 | Routed Motion | `routed_motion` | `npc_resolution` | (automatic once per accepted turn) |
 | Turn Cycle | `turn_cycle` | `action_resolution` + `npc_resolution` | configured accepted actions |
+| Fill Spill | `fill_spill` | `action_resolution` (gates) + `npc_resolution` (settle) | `move` into a gate or running siphon; water settles every turn and at load |
 
 **Demoted to rule recipes** (see [05_rules.md §9](05_rules.md)): single-slot inventory, consumable interactions, liquid transitions. These use the standard event–condition–effect primitives and no longer require dedicated engine systems.
 
@@ -2364,4 +2365,3 @@ These types are reserved for future built-in systems:
 - `rule_tiles` — Baba-Is-You-style mutable rule objects
 - `rotate_flip_board` — rotate/flip the entire board (not just an overlay region)
 - `spawners` — periodic entity spawning
-| Fill Spill | `fill_spill` | `action_resolution` (gates) + `npc_resolution` (settle) | `move` into a gate or running siphon; water settles every turn and at load |
