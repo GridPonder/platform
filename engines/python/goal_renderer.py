@@ -1,5 +1,6 @@
 """Goal renderer — Python port of goal description logic in llm_agent.dart."""
 from __future__ import annotations
+import json
 from typing import Any
 
 from ._goal import balance_connected_counts, balance_counts
@@ -391,6 +392,7 @@ def _render_target_grid(
     null_used = False
     grid_kinds: list[tuple[str, str]] = []  # (symbol, kind) in first-seen order
     also: list[str] = []
+    parameters: list[str] = []
     for y in range(height):
         for x in range(width):
             cells_here: list[tuple[str, object]] = []
@@ -402,6 +404,18 @@ def _render_target_grid(
                 kind_id = _target_cell_kind(cell)
                 if kind_id is not None:
                     cells_here.append((kind_id, cell))
+                    if match_params:
+                        # Grid symbols are lossy. Describe every selected value,
+                        # including targets hidden underneath another layer.
+                        values = cell if isinstance(cell, dict) else {}
+                        required = {key: values[key] for key in match_params if key in values}
+                        missing = sorted(match_params - values.keys())
+                        layer_name = f"layer {layer_order.index(layer_id) + 1}" if anon else layer_id
+                        detail = (f"({x},{y}) {layer_name} {symbol_for(kind_id, cell)} "
+                                  f"{json.dumps(required, sort_keys=True)}")
+                        if missing:
+                            detail += f" (missing required: {json.dumps(missing)})"
+                        parameters.append(detail)
             if not cells_here:
                 null_used = True
                 continue
@@ -428,6 +442,8 @@ def _render_target_grid(
     lines.append("Target legend: " + ", ".join(legend))
     if also:
         lines.append("Also required: " + ", ".join(also))
+    if parameters:
+        lines.append("Target parameters: " + "; ".join(parameters))
     return "\n".join(lines)
 
 

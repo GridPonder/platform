@@ -1121,6 +1121,7 @@ Choose the action most likely to reach the goal in fewest total actions (summed 
     var nullUsed = false;
     final gridKinds = <(String, String)>[];
     final also = <String>[];
+    final parameters = <String>[];
     for (int y = 0; y < height; y++) {
       for (int x = 0; x < width; x++) {
         final cellsHere = <(String, Object?)>[];
@@ -1131,7 +1132,29 @@ Choose the action most likely to reach the goal in fewest total actions (summed 
           if (x >= row.length) continue;
           final cell = row[x];
           final kind = _targetCellKind(cell);
-          if (kind != null) cellsHere.add((kind, cell));
+          if (kind != null) {
+            cellsHere.add((kind, cell));
+            if (matchParams.isNotEmpty) {
+              // Symbols cannot express every required value or stacked target.
+              final values = cell is Map ? cell : const {};
+              final required = {
+                for (final key in matchParams)
+                  if (values.containsKey(key)) key: values[key],
+              };
+              final missing = matchParams
+                  .where((key) => !values.containsKey(key))
+                  .toList()
+                ..sort();
+              final layerName =
+                  anon ? 'layer ${layerOrder.indexOf(layerId) + 1}' : layerId;
+              var detail = '($x,$y) $layerName ${symbolFor(kind, cell)} '
+                  '${pyJsonDumps(required)}';
+              if (missing.isNotEmpty) {
+                detail += ' (missing required: ${pyJsonDumps(missing)})';
+              }
+              parameters.add(detail);
+            }
+          }
         }
         if (cellsHere.isEmpty) {
           nullUsed = true;
@@ -1160,6 +1183,9 @@ Choose the action most likely to reach the goal in fewest total actions (summed 
     final lines = [for (final row in grid) row.join()];
     lines.add('Target legend: ${legend.join(', ')}');
     if (also.isNotEmpty) lines.add('Also required: ${also.join(', ')}');
+    if (parameters.isNotEmpty) {
+      lines.add('Target parameters: ${parameters.join('; ')}');
+    }
     return lines.join('\n');
   }
 
