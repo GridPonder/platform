@@ -210,13 +210,26 @@ class FillSpillSystem(GameSystem):
     the lowest surface beside it, taking only water above its sill and never
     leaving the far side higher than the near side.
 
+    Optional ``siphons`` are pipes over a bank: an ``empty`` siphon starts
+    (turns ``running``) whenever the highest pool beside it stands above its
+    crest, the ground height under it; a running siphon keeps drawing up to
+    ``rate`` units a turn from that pool, down to its intake floor, and turns
+    ``empty`` on the first turn it moves nothing. The avatar walking into a
+    running siphon vents it. Siphons act after the seeps.
+
+    Markers may add an ``over`` kind and a ``maxDepth``: such a marker is
+    ``wet`` only while the water on it stands more than 0 and at most
+    ``maxDepth`` deep, and ``over`` when deeper.
+
     Tolerance contract (both engines must agree): a missing or non-dict
     ``heights`` makes the system inert. Ground kinds absent from ``heights``
     are banks. A water cell whose ``units`` param is missing or not an
     integer contributes nothing; a pool whose units sum to zero or less
     vanishes. Gate and marker entries that are not dicts with string kinds are
     ignored. A non-dict ``seeps`` entry or a ``rate`` that is not a positive
-    integer disables seeps.
+    integer disables seeps; the same holds for ``siphons``, which also need
+    string ``empty`` and ``running`` kinds. A marker pair with an ``over``
+    kind but no positive integer ``maxDepth`` ignores ``over``.
     """
 
     def __init__(self, sys_id: str):
@@ -229,7 +242,8 @@ class FillSpillSystem(GameSystem):
         if not isinstance(config.get("heights"), dict):
             return []
         gates = [g for g in config_list(config, "gates", []) if _valid_gate(g)]
-        if not gates:
+        siphon_layer, siphon_empty, siphon_running, _ = _siphon_config(config)
+        if not gates and siphon_running is None:
             return []
         if action.get("actionId") != config.get("gateAction", "move"):
             return []
@@ -244,6 +258,11 @@ class FillSpillSystem(GameSystem):
         target = Pos(avatar.position.x + dx, avatar.position.y + dy)
         if not state.board.is_in_bounds(target):
             return []
+        if siphon_running is not None:
+            entity = state.board.get_entity(siphon_layer, target)
+            if entity is not None and entity.kind == siphon_running:
+                state.board.set_entity(siphon_layer, target, Entity(siphon_empty, dict(entity.params)))
+                return [ev.cell_transformed(target, siphon_running, siphon_empty, siphon_layer)]
         for gate in gates:
             layer = gate.get("layer", "objects")
             entity = state.board.get_entity(layer, target)
@@ -288,9 +307,11 @@ class FillSpillSystem(GameSystem):
             barrier_layer = barriers.get("layer", "objects")
             barrier_kinds = {k for k in config_list(barriers, "kinds", []) if isinstance(k, str)}
         seep_layer, seep_kinds, seep_rate = _seep_config(config)
+        siphon_layer, siphon_empty, siphon_running, siphon_rate = _siphon_config(config)
 
         heights: dict[tuple[int, int], int] = {}
         seep_sills: list[tuple[tuple[int, int], int]] = []
+        siphons: list[tuple[tuple[int, int], int, bool]] = []
         for y in range(board.height):
             for x in range(board.width):
                 ground = board.get_entity(ground_layer, Pos(x, y))
@@ -305,6 +326,10 @@ class FillSpillSystem(GameSystem):
                 seep = board.get_entity(seep_layer, Pos(x, y)) if seep_kinds else None
                 if seep is not None and seep.kind in seep_kinds:
                     seep_sills.append(((x, y), h))
+                    continue
+                pipe = board.get_entity(siphon_layer, Pos(x, y)) if siphon_running else None
+                if pipe is not None and pipe.kind in (siphon_empty, siphon_running):
+                    siphons.append(((x, y), h, pipe.kind == siphon_running))
                     continue
                 heights[(x, y)] = h
 
@@ -343,8 +368,20 @@ class FillSpillSystem(GameSystem):
             for cell, sill in sorted(seep_sills, key=lambda s: (s[0][1], s[0][0])):
                 settler = _seep(settler, heights, cell, sill, seep_rate)
 
+        siphon_events = []
+        if turn:
+            for cell, crest, running in siphons:  # collected in reading order
+                settler, now = _siphon(settler, heights, cell, crest, siphon_rate, running)
+                if now != running:
+                    old, new = (siphon_running, siphon_empty) if running else (siphon_empty, siphon_running)
+                    pos = Pos(*cell)
+                    entity = board.get_entity(siphon_layer, pos)
+                    board.set_entity(siphon_layer, pos, Entity(new, dict(entity.params)))
+                    siphon_events.append(ev.cell_transformed(pos, old, new, siphon_layer))
+
         # Write the water layer back.
         new_water: dict[tuple[int, int], Entity] = {}
+        depth: dict[tuple[int, int], tuple[int, int]] = {}
         for pool in settler.pools:
             if not pool.cells or pool.units <= 0:
                 continue
@@ -353,6 +390,7 @@ class FillSpillSystem(GameSystem):
             for cell in pool.cells:
                 # depth = num/den - h ; band = ceil(depth) - 1, clamped
                 depth_num = num - heights[cell] * den
+                depth[cell] = (depth_num, den)
                 band = (depth_num + den - 1) // den - 1
                 kind = water_kinds[max(0, min(band, len(water_kinds) - 1))]
                 params = {"units": pool.units} if cell == seed else {}
@@ -365,13 +403,13 @@ class FillSpillSystem(GameSystem):
                 board.set_entity(water_layer, Pos(*cell), new)
                 changed = True
 
-        events = self._apply_markers(config, state, set(new_water))
+        events = siphon_events + self._apply_markers(config, state, depth)
         self._apply_flood(config, state, set(new_water))
         if changed:
             events.insert(0, ev.water_settled(len(new_water)))
         return events
 
-    def _apply_markers(self, config: dict, state: GameState, wet: set) -> list[dict]:
+    def _apply_markers(self, config: dict, state: GameState, depth: dict) -> list[dict]:
         markers = config.get("markers")
         if not isinstance(markers, dict):
             return []
@@ -384,9 +422,20 @@ class FillSpillSystem(GameSystem):
         events = []
         for pos, entity in list(layer.entries()):
             for pair in pairs:
-                if entity.kind not in (pair["dry"], pair["wet"]):
+                over, max_depth = pair.get("over"), pair.get("maxDepth")
+                banded = (isinstance(over, str) and isinstance(max_depth, int)
+                          and not isinstance(max_depth, bool) and max_depth > 0)
+                if entity.kind not in (pair["dry"], pair["wet"]) and not (banded and entity.kind == over):
                     continue
-                wanted = pair["wet"] if (pos.x, pos.y) in wet else pair["dry"]
+                d = depth.get((pos.x, pos.y))
+                if not banded:
+                    wanted = pair["wet"] if d is not None else pair["dry"]
+                elif d is None or d[0] <= 0:
+                    wanted = pair["dry"]
+                elif d[0] <= max_depth * d[1]:
+                    wanted = pair["wet"]
+                else:
+                    wanted = over
                 if wanted != entity.kind:
                     state.board.set_entity(layer_id, pos, Entity(wanted, dict(entity.params)))
                     events.append(ev.cell_transformed(pos, entity.kind, wanted, layer_id))
@@ -426,6 +475,19 @@ def _seep_config(config: dict) -> tuple[str, set, int]:
     if not isinstance(rate, int) or isinstance(rate, bool) or rate <= 0:
         return layer, set(), 0
     return layer, kinds, rate
+
+
+def _siphon_config(config: dict) -> tuple[str, Optional[str], Optional[str], int]:
+    siphons = config.get("siphons")
+    if not isinstance(siphons, dict):
+        return "objects", None, None, 0
+    layer = siphons.get("layer", "objects")
+    empty, running = siphons.get("empty"), siphons.get("running")
+    rate = siphons.get("rate", 1)
+    if (not isinstance(empty, str) or not isinstance(running, str) or not isinstance(rate, int)
+            or isinstance(rate, bool) or rate <= 0):
+        return layer, None, None, 0
+    return layer, empty, running, rate
 
 
 def _pour_all(heights: dict, sources: list) -> _Settler:
@@ -495,3 +557,118 @@ def _seep(settler: _Settler, heights: dict, cell, sill: int, rate: int) -> _Sett
 def _valid_gate(gate) -> bool:
     return (isinstance(gate, dict) and isinstance(gate.get("closed"), str)
             and isinstance(gate.get("open"), str))
+
+
+def _components(cells: set) -> list[set]:
+    """Connected parts of a cell set, each found from its first cell in
+    reading order; parts listed in reading order of those cells."""
+    left, parts = set(cells), []
+    for start in sorted(cells, key=lambda c: (c[1], c[0])):
+        if start not in left:
+            continue
+        part, queue = {start}, deque([start])
+        left.discard(start)
+        while queue:
+            x, y = queue.popleft()
+            for dx, dy in _NEIGHBOURS:
+                other = (x + dx, y + dy)
+                if other in left:
+                    left.discard(other)
+                    part.add(other)
+                    queue.append(other)
+        parts.append(part)
+    return parts
+
+
+def _draw(heights: dict, cells: set, units: int, mouths: set, want: int):
+    """Take up to `want` units out of one pool through a siphon whose mouths
+    (the siphon's neighbours) touch it. Only the part of the pool joined to a
+    mouth falls: when the falling surface reaches an inner height x that
+    divides the pool, every part that no longer touches a mouth is left
+    standing at exactly x. The draw stops when the lowest mouth cell would
+    run dry. Returns (parts, drawn): parts are (cells, units), the drawing
+    part last."""
+    trapped, drawn = [], 0
+    while drawn < want:
+        inlet = [c for c in mouths if c in cells]
+        if not inlet:
+            break
+        floor = min(heights[c] for c in inlet)
+        top = units + sum(heights[c] for c in cells)   # level * len(cells)
+        n = len(cells)
+        split = None
+        for x in sorted({heights[c] for c in cells if heights[c] > floor}, reverse=True):
+            if x * n >= top:
+                continue
+            parts = _components({c for c in cells if heights[c] < x})
+            if len(parts) > 1:
+                split = (x, parts)
+                break
+        stop = split[0] if split else floor
+        at_stop = sum(stop - heights[c] for c in cells if heights[c] < stop)
+        take = min(want - drawn, units - at_stop)
+        if take > 0:
+            units -= take
+            drawn += take
+        if drawn >= want or split is None:
+            break
+        x, parts = split
+        mouth_parts = [p for p in parts if p & mouths]
+        if not mouth_parts:
+            break
+        keep = min(mouth_parts, key=lambda p: min((heights[c], c[1], c[0]) for c in p & mouths))
+        for p in parts:
+            if p is not keep:
+                trapped.append((p, sum(x - heights[c] for c in p)))
+        cells = keep
+        units = sum(x - heights[c] for c in keep)
+    return trapped + [(cells, units)], drawn
+
+
+def _siphon(settler: _Settler, heights: dict, cell, crest: int, rate: int, running: bool):
+    """One siphon's turn. Returns (settler, running afterwards)."""
+    x, y = cell
+    beside = [(x + dx, y + dy) for dx, dy in _NEIGHBOURS]
+    beside = [c for c in beside if c in heights]
+    wet = [c for c in beside if c in settler.owner]
+    if not wet:
+        return settler, False
+    source = wet[0]
+    for c in wet[1:]:
+        s, b = settler.surface(c), settler.surface(source)
+        if _lt(b, s) or (_eq(s, b) and (c[1], c[0]) < (source[1], source[0])):
+            source = c
+    level = settler.surface(source)
+    if not running and not _lt((crest, 1), level):
+        return settler, False
+    index = settler.owner[source]
+    others = [c for c in beside if settler.owner.get(c) != index]
+    if not others:
+        return settler, False
+    target = settler._lowest(others)
+    if not _lt(settler.surface(target), level):
+        return settler, False
+    pool = settler.pools[index]
+    mouths = {c for c in beside if settler.owner.get(c) == index}
+    rest = []
+    for i, p in enumerate(settler.pools):
+        if i != index and p.cells and p.units > 0:
+            rest.append((min(p.cells, key=lambda c: (heights[c], c[1], c[0])), p.units))
+    want = rate
+    while want > 0:
+        parts, drawn = _draw(heights, set(pool.cells), pool.units, mouths, want)
+        if drawn <= 0:
+            return settler, False
+        sources = list(rest)
+        for cells, units in parts:
+            if units > 0:
+                sources.append((min(cells, key=lambda c: (heights[c], c[1], c[0])), units))
+        sources.append((target, drawn))
+        after = _pour_all(heights, sources)
+        drawing = parts[-1][0]
+        mouth = min(mouths & drawing, key=lambda c: (heights[c], c[1], c[0]))
+        # No overshoot: the outlet side must not end up above the intake side.
+        if not _lt(after.surface(mouth), after.surface(target)):
+            return after, True
+        want = drawn - 1
+    return settler, False

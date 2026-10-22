@@ -33,6 +33,11 @@ def _make_game(config: dict | None = None) -> GameDef:
     kinds["gate_shut"] = {"layer": "objects", "tags": ["solid"], "symbol": "|"}
     kinds["gate_open"] = {"layer": "objects", "tags": ["solid"], "symbol": "="}
     kinds["seep"] = {"layer": "objects", "tags": ["solid"], "symbol": "~"}
+    kinds["pipe"] = {"layer": "objects", "tags": ["solid"], "symbol": "n"}
+    kinds["pipe_full"] = {"layer": "objects", "tags": ["solid"], "symbol": "N"}
+    kinds["bed"] = {"layer": "objects", "tags": [], "symbol": "b"}
+    kinds["bed_ok"] = {"layer": "objects", "tags": [], "symbol": "B"}
+    kinds["bed_deep"] = {"layer": "objects", "tags": [], "symbol": "D"}
     kinds["basin"] = {"layer": "objects", "tags": [], "symbol": "f"}
     kinds["basin_full"] = {"layer": "objects", "tags": [], "symbol": "F"}
     data = {
@@ -190,6 +195,84 @@ def test_without_seeps_config_a_seep_kind_is_plain_ground():
     eng = TurnEngine(_make_game(),
                      _level(SEEP_ROWS, [(1, 1, 3)], [(2, 1, "seep")], [3, 2]))
     assert (2, 1) in _water(eng)
+
+
+SIPHON_CONFIG = {**CONFIG,
+                 "siphons": {"layer": "objects", "empty": "pipe", "running": "pipe_full", "rate": 1},
+                 "markers": {"layer": "objects", "pairs": [
+                     {"dry": "basin", "wet": "basin_full"},
+                     {"dry": "bed", "wet": "bed_ok", "over": "bed_deep", "maxDepth": 1}]}}
+# A reservoir (far hollow at 1, inner ridge at 2, near hollow at 0), a pipe
+# with its crest at 3, and a sink of nine cells at 0.
+SIPHON_ROWS = ["###############", "#1203000000000#", "####5##########", "###############"]
+
+
+def _kind(engine: TurnEngine, x: int, y: int) -> str:
+    return engine.state.board.get_entity("objects", _pos(x, y)).kind
+
+
+def _pipe_level(objects=None) -> dict:
+    return _level(SIPHON_ROWS, [(3, 1, 9)], [(4, 1, "pipe")] + (objects or []), [4, 2])
+
+
+def test_a_siphon_waits_at_load_and_starts_above_its_crest():
+    eng = TurnEngine(_make_game(SIPHON_CONFIG), _pipe_level())
+    assert sum(v[1] or 0 for v in _water(eng).values()) == 9
+    assert _kind(eng, 4, 1) == "pipe"                    # level 4, but nothing runs at load
+    eng.execute_turn("move", {"direction": "down"})
+    assert _kind(eng, 4, 1) == "pipe_full"
+    assert _water(eng)[(3, 1)] == ("water_3", 8)          # 8 units left: level 11/3
+    assert sum(v[1] or 0 for k, v in _water(eng).items() if k[0] >= 5) == 1
+
+
+def test_a_siphon_draws_below_its_crest_and_leaves_the_cut_off_hollow_standing():
+    eng = TurnEngine(_make_game(SIPHON_CONFIG), _pipe_level())
+    for _ in range(7):
+        eng.execute_turn("move", {"direction": "down"})
+    w = _water(eng)
+    # At level 2 the ridge cut the reservoir in two: the far hollow keeps its
+    # unit at exactly 2, the near hollow went on falling.
+    assert w[(1, 1)] == ("water_1", 1)
+    assert w[(3, 1)] == ("water_1", 1)
+    assert sum(v[1] or 0 for k, v in w.items() if k[0] >= 5) == 7
+    assert _kind(eng, 4, 1) == "pipe_full"
+    eng.execute_turn("move", {"direction": "down"})       # one more would overshoot
+    assert _kind(eng, 4, 1) == "pipe"
+    assert _water(eng) == w
+
+
+def test_a_vent_holds_only_once_the_pool_is_down_to_the_crest():
+    eng = TurnEngine(_make_game(SIPHON_CONFIG), _pipe_level())
+    eng.execute_turn("move", {"direction": "down"})
+    eng.execute_turn("move", {"direction": "up"})          # vent at level 11/3: it starts again
+    assert _kind(eng, 4, 1) == "pipe_full"
+    assert _water(eng)[(3, 1)] == ("water_3", 7)
+    eng.execute_turn("move", {"direction": "down"})
+    eng.execute_turn("move", {"direction": "down"})        # 5 left: level 8/3
+    eng.execute_turn("move", {"direction": "down"})        # 4 left: level 7/3
+    eng.execute_turn("move", {"direction": "down"})        # 3 left: level 2
+    eng.execute_turn("move", {"direction": "up"})          # vent below the crest: it holds
+    assert _kind(eng, 4, 1) == "pipe"
+    before = _water(eng)
+    eng.execute_turn("move", {"direction": "down"})
+    assert _kind(eng, 4, 1) == "pipe" and _water(eng) == before
+
+
+def test_a_depth_marker_goes_deep_and_comes_back():
+    eng = TurnEngine(_make_game(SIPHON_CONFIG), _pipe_level([(3, 2, "basin"), (1, 1, "bed")]))
+    assert _kind(eng, 1, 1) == "bed_deep"                 # depth 3 over ground 1
+    for _ in range(5):
+        eng.execute_turn("move", {"direction": "down"})   # level 7/3: depth 4/3
+    assert _kind(eng, 1, 1) == "bed_deep"
+    eng.execute_turn("move", {"direction": "down"})       # level 2: depth 1
+    assert _kind(eng, 1, 1) == "bed_ok"
+
+
+def test_without_siphons_config_a_pipe_kind_is_plain_ground():
+    eng = TurnEngine(_make_game(), _pipe_level())
+    # The crest is plain ground at 3: at load everything above it spills over.
+    assert _water(eng)[(3, 1)] == ("water_3", 6)
+    assert sum(v[1] or 0 for k, v in _water(eng).items() if k[0] >= 5) == 3
 
 
 def _pos(x, y):
