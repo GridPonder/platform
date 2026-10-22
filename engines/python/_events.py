@@ -106,6 +106,102 @@ def cell_transformed(pos: Pos, from_kind: str, to_kind: str, layer: str) -> dict
     }
 
 
+def cell_charged(
+    pos: Pos,
+    before_charge: int,
+    after_charge: int,
+    delta: int,
+    wave: int,
+    source: str,
+    layer: str,
+    param: str = "charge",
+    source_positions: list[Pos] | None = None,
+) -> dict:
+    event = {
+        "type": "cell_charged",
+        "position": pos,
+        "beforeCharge": before_charge,
+        "afterCharge": after_charge,
+        "delta": delta,
+        "wave": wave,
+        "source": source,
+        "layer": layer,
+    }
+    if param != "charge":
+        event["param"] = param
+    if source_positions:
+        event["sourcePositions"] = source_positions
+    return event
+
+
+def cascade_wave_started(wave: int, positions: list[Pos]) -> dict:
+    return {
+        "type": "cascade_wave_started",
+        "wave": wave,
+        "positions": positions,
+    }
+
+
+def cell_exploded(
+    pos: Pos,
+    before_charge: int,
+    after_charge: int,
+    threshold: int,
+    kernel: str,
+    wave: int,
+    layer: str,
+    param: str = "charge",
+) -> dict:
+    event = {
+        "type": "cell_exploded",
+        "position": pos,
+        "beforeCharge": before_charge,
+        "afterCharge": after_charge,
+        "threshold": threshold,
+        "kernel": kernel,
+        "wave": wave,
+        "layer": layer,
+    }
+    if param != "charge":
+        event["param"] = param
+    return event
+
+
+def cascade_kernel_switched(
+    pos: Pos,
+    before_kernel: str,
+    after_kernel: str,
+    wave: int,
+    layer: str,
+    param: str,
+    source_positions: list[Pos],
+    used_param: str,
+) -> dict:
+    return {
+        "type": "cascade_kernel_switched",
+        "position": pos,
+        "beforeKernel": before_kernel,
+        "afterKernel": after_kernel,
+        "wave": wave,
+        "layer": layer,
+        "param": param,
+        "sourcePositions": source_positions,
+        "usedParam": used_param,
+    }
+
+
+def cascade_wave_completed(wave: int, positions: list[Pos]) -> dict:
+    return {
+        "type": "cascade_wave_completed",
+        "wave": wave,
+        "positions": positions,
+    }
+
+
+def cascade_settled(waves: int) -> dict:
+    return {"type": "cascade_settled", "waves": waves}
+
+
 def entity_fell(pos: Pos, kind: str, layer: str) -> dict:
     """A body was on a cell whose ground gave way beneath it.
 

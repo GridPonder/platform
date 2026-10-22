@@ -364,8 +364,8 @@ class LlmAgent implements GridPonderAgent {
     final Map<String, String> actionForward;
     if (anonymize) {
       final sorted = List<GameAction>.from(obs.validActions)
-        ..sort(
-            (a, b) => pyJsonDumps(a.toJson()).compareTo(pyJsonDumps(b.toJson())));
+        ..sort((a, b) =>
+            pyJsonDumps(a.toJson()).compareTo(pyJsonDumps(b.toJson())));
       actionForward = {
         for (int i = 0; i < sorted.length; i++)
           pyJsonDumps(sorted[i].toJson()): 'a${i + 1}',
@@ -488,10 +488,15 @@ ${obs.boardText}$inventoryLine$movesLine''';
             ? '\n${obs.game.description}\n'
             : '');
 
+    final guide = obs.level.guide ?? '';
+    final guideSection = !anonymize && obs.game.ui.showGuide && guide.isNotEmpty
+        ? '\nCURRENT LEVEL GUIDE:\n$guide\n'
+        : '';
+
     final header = '''$titleLine
 Minimize total actions — give up early if stuck rather than wasting moves.
 Attempt ${obs.attemptNumber} | Total actions across all attempts: ${obs.totalActionsAllAttempts}
-$descriptionSection$memorySection
+$descriptionSection$guideSection$memorySection
 GOAL: $goalDescriptions
 $lastActionSection
 
@@ -507,7 +512,8 @@ $actionsDesc
       ex2 = n > 1 ? '{"action": "a$n"}' : ex1;
     } else {
       final va = obs.validActions;
-      ex1 = va.isNotEmpty ? pyJsonDumps(va.first.toJson()) : '{"action": "..."}';
+      ex1 =
+          va.isNotEmpty ? pyJsonDumps(va.first.toJson()) : '{"action": "..."}';
       ex2 = va.length > 1 ? pyJsonDumps(va.last.toJson()) : ex1;
     }
 
@@ -738,9 +744,8 @@ Choose the action most likely to reach the goal in fewest total actions (summed 
     bool anonymize = false,
     Map<String, String> kindToLabel = const {},
   }) {
-    String nameOf(String kind) => anonymize
-        ? (kindToLabel[kind] ?? kind)
-        : game.observationName(kind);
+    String nameOf(String kind) =>
+        anonymize ? (kindToLabel[kind] ?? kind) : game.observationName(kind);
 
     final lines = <String>[];
     Map<String, dynamic>? config;
@@ -765,9 +770,9 @@ Choose the action most likely to reach the goal in fewest total actions (summed 
     if (config != null) {
       final selectedKind = state.variables[
           config['selectedVariable'] as String? ?? 'selectedActorKind'];
-      final rawPos = state.variables[config['selectedPositionVariable']
-              as String? ??
-          'selectedActorPosition'];
+      final rawPos = state.variables[
+          config['selectedPositionVariable'] as String? ??
+              'selectedActorPosition'];
       final noSelection = selectedKind == null ||
           selectedKind == false ||
           selectedKind == 0 ||
@@ -810,9 +815,13 @@ Choose the action most likely to reach the goal in fewest total actions (summed 
       if (!state.variables.containsKey(readout.variable)) continue;
       final value = state.variables[readout.variable];
       final blank = readout.blankWhen;
-      final shown = (blank != null && value is num && value == blank)
+      var shown = (blank != null && value is num && value == blank)
           ? '-'
           : formatValue(value);
+      final maximum = state.variables[readout.maxVariable];
+      if (value is num && value != blank && maximum is num) {
+        shown += '/${formatValue(maximum)}';
+      }
       final label = anonymize ? 'Readout ${i + 1}' : readout.label;
       lines.add('$label: $shown');
     }
@@ -1141,7 +1150,8 @@ Choose the action most likely to reach the goal in fewest total actions (summed 
     }
 
     final legend = <String>[];
-    if (nullUsed) legend.add(exact ? '.=must be empty' : '?=any (unconstrained)');
+    if (nullUsed)
+      legend.add(exact ? '.=must be empty' : '?=any (unconstrained)');
     for (final (sym, kind) in gridKinds) {
       final entry = anon ? sym : '$sym=${_kindName(game, kind)}';
       if (!legend.contains(entry)) legend.add(entry);

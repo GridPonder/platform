@@ -1,0 +1,325 @@
+"""Parity tests for the generic synchronous cascade_cells system."""
+from __future__ import annotations
+
+import sys
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(ROOT))
+
+from engines.python._game_def import GameDef
+from engines.python._models import Pos
+from engines.python._turn_engine import TurnEngine
+
+
+def _cell(charge: int, *, threshold: int = 4, kernel: str = "plus") -> dict:
+    return {
+        "kind": "cascade_cell",
+        "charge": charge,
+        "threshold": threshold,
+        "kernel": kernel,
+    }
+
+
+def _game(config=None) -> GameDef:
+    config = config or {}
+    charge_param = config.get("chargeParam", "charge")
+    threshold_param = config.get("thresholdParam", "threshold")
+    kernel_param = config.get("kernelParam", "kernel")
+    data = {
+        "layers": [
+            {"id": "ground", "occupancy": "exactly_one", "default": "floor"},
+            {"id": "objects", "occupancy": "zero_or_one"},
+        ],
+        "entityKinds": {
+            "floor": {"layer": "ground", "tags": ["walkable"], "symbol": "."},
+            "cascade_cell": {
+                "layer": "objects",
+                "tags": ["cascade_cell"],
+                "symbol": "C",
+                "symbolParam": charge_param,
+                "params": {
+                    charge_param: {"type": "integer", "required": True},
+                    threshold_param: {"type": "integer", "required": True},
+                    kernel_param: {"type": "string", "required": True},
+                },
+            },
+        },
+        "actions": [
+            {"id": "tap_cell", "params": {"position": {"type": "position"}}}
+        ],
+        "systems": [
+            {"id": "cascade", "type": "cascade_cells", "config": config}
+        ],
+        "defaults": {"avatar": {"enabled": False}},
+    }
+    return GameDef.from_dict(data)
+
+
+def _level(objects, *, goals=None, lose=None) -> dict:
+    height = len(objects)
+    width = len(objects[0])
+    return {
+        "id": "cascade_test",
+        "board": {"size": [width, height], "layers": {"objects": objects}},
+        "state": {"avatar": {"enabled": False}},
+        "goals": goals or [],
+        "loseConditions": lose or [],
+    }
+
+
+def _charges(engine: TurnEngine) -> list[list[int]]:
+    return [
+        [
+            engine.state.board.get_entity("objects", Pos(x, y)).param("charge")
+            for x in range(engine.state.board.width)
+        ]
+        for y in range(engine.state.board.height)
+    ]
+
+
+class CascadeCellsTests(unittest.TestCase):
+    def test_center_click_resolves_three_waves_and_matches_charge_target(self):
+        initial = [
+            [_cell(1), _cell(3), _cell(1)],
+            [_cell(3), _cell(3), _cell(3)],
+            [_cell(1), _cell(3), _cell(1)],
+        ]
+        target = [
+            [{"kind": "cascade_cell", "charge": 3}, {"kind": "cascade_cell", "charge": 1}, {"kind": "cascade_cell", "charge": 3}],
+            [{"kind": "cascade_cell", "charge": 1}, {"kind": "cascade_cell", "charge": 0}, {"kind": "cascade_cell", "charge": 1}],
+            [{"kind": "cascade_cell", "charge": 3}, {"kind": "cascade_cell", "charge": 1}, {"kind": "cascade_cell", "charge": 3}],
+        ]
+        goals = [{
+            "id": "target",
+            "type": "board_match",
+            "config": {
+                "targetLayers": {"objects": target},
+                "matchMode": "exact",
+                "matchParams": ["charge"],
+            },
+        }]
+        engine = TurnEngine(_game(), _level(initial, goals=goals))
+
+        result = engine.execute_turn("tap_cell", {"position": [1, 1]})
+
+        self.assertTrue(result.accepted)
+        self.assertTrue(result.is_won)
+        self.assertEqual(_charges(engine), [[3, 1, 3], [1, 0, 1], [3, 1, 3]])
+        self.assertEqual(
+            [event["wave"] for event in result.events if event["type"] == "cascade_wave_started"],
+            [1, 2, 3],
+        )
+        self.assertEqual(engine.state.action_count, 1)
+
+    def test_each_builtin_kernel_hits_only_its_offsets(self):
+        expected = {
+            "plus": {(2, 1), (3, 2), (2, 3), (1, 2)},
+            "x": {(1, 1), (3, 1), (3, 3), (1, 3)},
+            "h": {(1, 2), (3, 2)},
+            "v": {(2, 1), (2, 3)},
+        }
+        for kernel, destinations in expected.items():
+            with self.subTest(kernel=kernel):
+                board = [[_cell(0) for _ in range(5)] for _ in range(5)]
+                board[2][2] = _cell(3, kernel=kernel)
+                engine = TurnEngine(_game(), _level(board))
+                result = engine.execute_turn("tap_cell", {"position": [2, 2]})
+                self.assertTrue(result.accepted)
+                incoming_events = [
+                    event
+                    for event in result.events
+                    if event["type"] == "cell_charged"
+                    and event["source"] == "cascade"
+                ]
+                self.assertEqual(len(incoming_events), len(destinations))
+                for event in incoming_events:
+                    self.assertEqual(event["sourcePositions"], [Pos(2, 2)])
+                for y in range(5):
+                    for x in range(5):
+                        expected_charge = 1 if (x, y) in destinations else 0
+                        self.assertEqual(
+                            engine.state.board.get_entity(
+                                "objects", Pos(x, y)
+                            ).param("charge"),
+                            expected_charge,
+                            (kernel, x, y),
+                        )
+
+    def test_overflow_can_make_one_cell_explode_in_consecutive_waves(self):
+        config = {
+            "kernels": {
+                "burst": [[1, 0], [1, 0], [1, 0], [1, 0], [1, 0]],
+                "none": [],
+            }
+        }
+        engine = TurnEngine(
+            _game(config),
+            _level([[_cell(3, kernel="burst"), _cell(3, kernel="none")]]),
+        )
+
+        result = engine.execute_turn("tap_cell", {"position": [0, 0]})
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(_charges(engine), [[0, 0]])
+        exploded = [
+            (event["position"], event["wave"])
+            for event in result.events
+            if event["type"] == "cell_exploded"
+        ]
+        self.assertEqual(
+            exploded,
+            [(Pos(0, 0), 1), (Pos(1, 0), 2), (Pos(1, 0), 3)],
+        )
+
+    def test_aggregated_charge_records_every_source_in_deterministic_order(self):
+        engine = TurnEngine(
+            _game(),
+            _level([[
+                _cell(3, kernel="h"),
+                _cell(3, kernel="plus"),
+                _cell(3, kernel="h"),
+            ]]),
+        )
+
+        result = engine.execute_turn("tap_cell", {"position": [1, 0]})
+
+        center_incoming = next(
+            event
+            for event in result.events
+            if event["type"] == "cell_charged"
+            and event["wave"] == 2
+            and event["position"] == Pos(1, 0)
+        )
+        self.assertEqual(center_incoming["delta"], 2)
+        self.assertEqual(
+            center_incoming["sourcePositions"],
+            [Pos(0, 0), Pos(2, 0)],
+        )
+
+    def test_configured_parameter_names_flow_through_state_and_events(self):
+        config = {
+            "chargeParam": "energy",
+            "thresholdParam": "capacity",
+            "kernelParam": "pattern",
+        }
+        engine = TurnEngine(
+            _game(config),
+            _level([[
+                {
+                    "kind": "cascade_cell",
+                    "energy": 3,
+                    "capacity": 4,
+                    "pattern": "h",
+                }
+            ]]),
+        )
+
+        result = engine.execute_turn("tap_cell", {"position": [0, 0]})
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(
+            engine.state.board.get_entity("objects", Pos(0, 0)).param("energy"),
+            0,
+        )
+        self.assertEqual(
+            {
+                event["param"]
+                for event in result.events
+                if event["type"] in ("cell_charged", "cell_exploded")
+            },
+            {"energy"},
+        )
+
+    def test_invalid_click_is_vetoed_without_counting(self):
+        engine = TurnEngine(_game(), _level([[_cell(0), None]]))
+        before = engine.state.to_key()
+
+        result = engine.execute_turn("tap_cell", {"position": [1, 0]})
+
+        self.assertFalse(result.accepted)
+        self.assertEqual(engine.state.to_key(), before)
+        self.assertEqual(engine.state.action_count, 0)
+
+    def test_wave_limit_veto_rolls_back_the_complete_transition(self):
+        config = {
+            "maxWaves": 2,
+            "kernels": {"loop": [[0, 0], [0, 0], [0, 0], [0, 0]]},
+        }
+        engine = TurnEngine(
+            _game(config), _level([[_cell(3, kernel="loop")]])
+        )
+        before = engine.state.to_key()
+
+        result = engine.execute_turn("tap_cell", {"position": [0, 0]})
+
+        self.assertFalse(result.accepted)
+        self.assertEqual([event["type"] for event in result.events], ["action_vetoed"])
+        self.assertEqual(engine.state.to_key(), before)
+        self.assertEqual(engine.state.action_count, 0)
+
+    def test_one_shot_switch_makes_click_order_matter(self):
+        config = {"kernelSwitch": {}, "kernels": {"none": [], "h": [[-1, 0], [1, 0]], "v": [[0, -1], [0, 1]]}}
+        board = [
+            [None, _cell(0, kernel="none"), None],
+            [_cell(3, kernel="none") | {"switchTarget": [1, 1], "switchKernel": "v", "switchUsed": False},
+             _cell(3, kernel="h"), _cell(0, kernel="none")],
+            [None, _cell(0, kernel="none"), None],
+        ]
+        def run(actions):
+            engine = TurnEngine(_game(config), _level(board))
+            results = [engine.execute_turn("tap_cell", {"position": pos}) for pos in actions]
+            self.assertTrue(all(result.accepted for result in results))
+            return engine, results
+
+        switched, results = run([[0, 1], [1, 1]])
+        unswitched, _ = run([[1, 1], [0, 1]])
+        self.assertEqual(switched.state.board.get_entity("objects", Pos(1, 1)).param("kernel"), "v")
+        self.assertTrue(switched.state.board.get_entity("objects", Pos(0, 1)).param("switchUsed"))
+        self.assertEqual(switched.state.board.get_entity("objects", Pos(1, 0)).param("charge"), 1)
+        self.assertEqual(unswitched.state.board.get_entity("objects", Pos(1, 0)).param("charge"), 0)
+        self.assertEqual(sum(event["type"] == "cascade_kernel_switched" for result in results for event in result.events), 1)
+
+    def test_same_wave_uses_old_kernel_then_switches(self):
+        config = {"kernelSwitch": {}, "kernels": {"none": [], "h": [[-1, 0]], "v": [[0, -1]]}}
+        board = [
+            [None, _cell(0, kernel="none")],
+            [_cell(4, kernel="none") | {"switchTarget": [1, 1], "switchKernel": "v"}, _cell(3, kernel="h")],
+        ]
+        engine = TurnEngine(_game(config), _level(board))
+        result = engine.execute_turn("tap_cell", {"position": [1, 1]})
+        self.assertTrue(result.accepted)
+        self.assertEqual(engine.state.board.get_entity("objects", Pos(1, 0)).param("charge"), 0)
+        self.assertEqual(engine.state.board.get_entity("objects", Pos(0, 1)).param("charge"), 1)
+        self.assertEqual(engine.state.board.get_entity("objects", Pos(1, 1)).param("kernel"), "v")
+        self.assertEqual([event["wave"] for event in result.events if event["type"] == "cascade_kernel_switched"], [1])
+
+    def test_conflicting_same_wave_switches_veto_transactionally(self):
+        config = {"kernelSwitch": {}, "kernels": {"none": [], "h": [[-1, 0], [1, 0]], "v": [[0, -1]]}}
+        board = [[
+            _cell(3, kernel="none") | {"switchTarget": [1, 0], "switchKernel": "v"},
+            _cell(3, kernel="h"),
+            _cell(3, kernel="none") | {"switchTarget": [1, 0], "switchKernel": "none"},
+        ]]
+        engine = TurnEngine(_game(config), _level(board))
+        before = engine.state.to_key()
+        result = engine.execute_turn("tap_cell", {"position": [1, 0]})
+        self.assertFalse(result.accepted)
+        self.assertEqual(engine.state.to_key(), before)
+        self.assertEqual([event["type"] for event in result.events], ["action_vetoed"])
+
+    def test_per_cell_threshold_is_respected(self):
+        engine = TurnEngine(
+            _game(),
+            _level([[_cell(1, threshold=2, kernel="h"), _cell(0)]]),
+        )
+
+        result = engine.execute_turn("tap_cell", {"position": [0, 0]})
+
+        self.assertTrue(result.accepted)
+        self.assertEqual(_charges(engine), [[0, 1]])
+
+
+if __name__ == "__main__":
+    unittest.main()

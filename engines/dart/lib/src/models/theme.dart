@@ -5,7 +5,8 @@ class GestureBinding {
       gesture; // swipe_cardinal, swipe_diagonal, tap_cell, button, key_press
   final String action;
   final String? buttonId;
-  final String? key; // for key_press: single character (e.g. "c") or "up"/"down"/"left"/"right"
+  final String?
+      key; // for key_press: single character (e.g. "c") or "up"/"down"/"left"/"right"
   final Map<String, String>? paramMapping;
   final Map<String, dynamic>? params;
   final bool showSelection;
@@ -108,12 +109,17 @@ class AvatarSpriteEntry {
 class AvatarThemeDef {
   final bool visible;
   final String? sprite; // fallback
+  /// Optional one-step gait applied while the avatar travels between cells.
+  final double walkBob;
+  final double walkTiltDegrees;
   final Map<String, Map<String, AvatarSpriteEntry>>
       sprites; // state → dir → entry
 
   const AvatarThemeDef({
     this.visible = true,
     this.sprite,
+    this.walkBob = 0,
+    this.walkTiltDegrees = 0,
     this.sprites = const {},
   });
 
@@ -128,6 +134,8 @@ class AvatarThemeDef {
     return AvatarThemeDef(
       visible: (j['visible'] as bool?) ?? true,
       sprite: j['sprite'] as String?,
+      walkBob: (j['walkBob'] as num?)?.toDouble() ?? 0,
+      walkTiltDegrees: (j['walkTiltDegrees'] as num?)?.toDouble() ?? 0,
       sprites: sprites,
     );
   }
@@ -158,6 +166,14 @@ class CellEffectDef {
   /// Draw scale relative to one board cell (1.0 = exactly one cell).
   final double scale;
 
+  /// `strip` uses horizontal frames; `pulse` animates one static sprite.
+  final String animation;
+  final String? color;
+
+  /// Optional entity location to play at instead of the event's own cell.
+  final String? atKind;
+  final String? atLayer;
+
   /// Optional payload filter. When present the effect only plays for events
   /// whose payload matches every key here (compared as strings), which is how
   /// two effects can share one event type — e.g. `cell_transformed` with
@@ -165,12 +181,20 @@ class CellEffectDef {
   /// backfill. Absent means "any event of this type".
   final Map<String, String>? when;
 
+  /// Optional live-variable filter applied after the event payload filter.
+  final Map<String, dynamic>? whenVariables;
+
   const CellEffectDef({
     required this.sheet,
     this.frames = 1,
     this.durationMs = 300,
     this.scale = 1.0,
+    this.animation = 'strip',
+    this.color,
+    this.atKind,
+    this.atLayer,
     this.when,
+    this.whenVariables,
   });
 
   factory CellEffectDef.fromJson(Map<String, dynamic> j) => CellEffectDef(
@@ -178,16 +202,31 @@ class CellEffectDef {
         frames: (j['frames'] as num?)?.toInt() ?? 1,
         durationMs: (j['durationMs'] as num?)?.toInt() ?? 300,
         scale: (j['scale'] as num?)?.toDouble() ?? 1.0,
+        animation: j['animation'] as String? ?? 'strip',
+        color: j['color'] as String?,
+        atKind: j['atKind'] as String?,
+        atLayer: j['atLayer'] as String?,
         when: (j['when'] as Map?)
             ?.map((k, v) => MapEntry(k.toString(), v.toString())),
+        whenVariables: (j['whenVariables'] as Map?)
+            ?.map((k, v) => MapEntry(k.toString(), v)),
       );
 
-  /// Whether this effect should play for [payload].
-  bool matches(Map<String, dynamic> payload) {
+  /// Whether this effect should play for [payload] and the current variables.
+  bool matches(Map<String, dynamic> payload,
+      {Map<String, dynamic> variables = const {}}) {
     final filter = when;
-    if (filter == null) return true;
-    for (final entry in filter.entries) {
-      if (payload[entry.key]?.toString() != entry.value) return false;
+    if (filter != null) {
+      for (final entry in filter.entries) {
+        if (payload[entry.key]?.toString() != entry.value) return false;
+      }
+    }
+    final variableFilter = whenVariables;
+    if (variableFilter != null) {
+      for (final entry in variableFilter.entries) {
+        if (!variables.containsKey(entry.key) ||
+            variables[entry.key] != entry.value) return false;
+      }
     }
     return true;
   }

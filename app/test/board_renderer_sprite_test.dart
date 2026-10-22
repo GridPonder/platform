@@ -187,6 +187,128 @@ void main() {
     ]);
   });
 
+  test('resolves param-driven display connections to emitter vectors', () {
+    final display = <String, dynamic>{
+      'connections': '@param:kernel',
+      'connectionMap': {
+        'h': [
+          [-1, 0],
+          [1, 0],
+        ],
+        'x': [
+          [-2, -2],
+          [2, 2],
+        ],
+      },
+    };
+
+    expect(
+      resolveDisplayConnectionVectors(
+        display,
+        const EntityInstance('cell', {'kernel': 'h'}),
+      ),
+      const [Offset(-1, 0), Offset(1, 0)],
+    );
+    expect(
+      resolveDisplayConnectionVectors(
+        display,
+        const EntityInstance('cell', {'kernel': 'x'}),
+      ),
+      const [Offset(-1, -1), Offset(1, 1)],
+    );
+  });
+
+  test('resolves optional visual link target from an entity parameter', () {
+    const display = <String, dynamic>{'linkTarget': '@param:switchTarget'};
+    expect(
+      resolveDisplayLinkTarget(
+        display,
+        const EntityInstance('cell', {
+          'switchTarget': [2, 1],
+        }),
+      ),
+      const Position(2, 1),
+    );
+    expect(
+      resolveDisplayLinkTarget(display, const EntityInstance('cell')),
+      isNull,
+    );
+  });
+
+  test('stringifies numeric parameters for display-map keys', () {
+    expect(
+      resolveDisplayMapKey(
+        '@param:threshold',
+        const EntityInstance('cell', {'threshold': 5}),
+      ),
+      '5',
+    );
+    expect(
+      resolveDisplayMapKey('fixed', const EntityInstance('cell')),
+      'fixed',
+    );
+  });
+
+  test('ignores malformed or missing display connections', () {
+    final display = <String, dynamic>{
+      'connections': '@param:kernel',
+      'connectionMap': {
+        'bad': [
+          [0, 0],
+          [1],
+          ['right', 0],
+        ],
+      },
+    };
+
+    expect(
+      resolveDisplayConnectionVectors(
+        display,
+        const EntityInstance('cell', {'kernel': 'bad'}),
+      ),
+      isEmpty,
+    );
+    expect(
+      resolveDisplayConnectionVectors(
+        display,
+        const EntityInstance('cell', {'kernel': 'missing'}),
+      ),
+      isEmpty,
+    );
+  });
+
+  test('resolves param-driven procedural display sizes', () {
+    final display = <String, dynamic>{
+      'size': '@param:threshold',
+      'sizeMap': {'4': 0.6, '5': 0.7},
+    };
+
+    expect(
+      resolveDisplaySizeFactor(
+        display,
+        const EntityInstance('cell', {'threshold': 4}),
+        fallback: 0.5,
+      ),
+      0.6,
+    );
+    expect(
+      resolveDisplaySizeFactor(
+        display,
+        const EntityInstance('cell', {'threshold': 5}),
+        fallback: 0.5,
+      ),
+      0.7,
+    );
+    expect(
+      resolveDisplaySizeFactor(
+        display,
+        const EntityInstance('cell', {'threshold': 6}),
+        fallback: 0.5,
+      ),
+      0.5,
+    );
+  });
+
   test('elastic face reaches a crate before the crate starts moving', () {
     expect(
       elasticPushObjectTravel(

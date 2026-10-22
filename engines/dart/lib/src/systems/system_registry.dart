@@ -5,6 +5,8 @@ import 'avatar_navigation_system.dart';
 import 'balance_regions_system.dart';
 import 'beam_system.dart';
 import 'cell_rotation_system.dart';
+import 'cascade_cells_system.dart';
+import 'proximity_effects_system.dart';
 import 'coupled_actors_system.dart';
 import 'elastic_block_system.dart';
 import 'flank_capture_system.dart';
@@ -40,9 +42,11 @@ class SystemRegistry {
     'balance_regions': (id, _) => BalanceRegionsSystem(id: id),
     'beam': (id, config) => BeamSystem(id: id, config: config),
     'cell_rotation': (id, _) => CellRotationSystem(id: id),
+    'cascade_cells': (id, config) => CascadeCellsSystem(id: id, config: config),
+    'proximity_effects': (id, config) =>
+        ProximityEffectsSystem(id: id, config: config),
     'coupled_actors': (id, _) => CoupledActorsSystem(id: id),
-    'elastic_block': (id, config) =>
-        ElasticBlockSystem(id: id, config: config),
+    'elastic_block': (id, config) => ElasticBlockSystem(id: id, config: config),
     'individual_actors': (id, _) => IndividualActorsSystem(id: id),
     'push_objects': (id, _) => PushObjectsSystem(id: id),
     'portals': (id, _) => PortalsSystem(id: id),

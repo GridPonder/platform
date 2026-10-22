@@ -1976,6 +1976,141 @@ weight whatever entities it likes; nothing here knows about a particular game.
 
 ---
 
+### `cascade_cells`
+
+**Purpose:** Add charge to one tapped cell, then resolve a deterministic series
+of synchronous threshold waves. Every cell carries its mutable charge, trigger
+threshold, and propagation-kernel name as entity parameters. Kernels are
+configured lists of local `[dx,dy]` offsets, so the same system supports
+orthogonal, diagonal, horizontal, vertical, and future finite neighbourhoods
+without game-specific branches.
+
+**Phase:** `action_resolution`. The click and every wave resolve atomically in
+one system call. The system deliberately does not spend one outer rules-engine
+cascade pass per wave: gameplay depth must not depend on `maxCascadeDepth`, and
+an over-limit transition must be able to emit `action_vetoed` and roll back the
+whole turn rather than accept a partially settled board.
+
+**Events emitted:** `cell_charged` for the click and each aggregated incoming
+update, `cascade_wave_started`, `cell_exploded`, optional
+`cascade_kernel_switched`, `cascade_wave_completed`, and `cascade_settled`. Same-wave positions are sorted
+row-major only for deterministic logs; that order has no gameplay meaning.
+`cell_charged` includes the row-major `sourcePositions` that contributed to an
+aggregated cascade update. Charge and explosion events include `param` when a
+non-default `chargeParam` is configured, allowing renderers to replay the
+transition without assuming that the mutable field is named `charge`.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `action` | string | `"tap_cell"` | Position-carrying action that charges a cell. |
+| `cellLayer` | string | `"objects"` | Layer containing cascade cells. |
+| `cellTag` | string | `"cascade_cell"` | Tag identifying legal cells and propagation destinations. |
+| `chargeParam` | string | `"charge"` | Mutable non-negative integer entity parameter. |
+| `thresholdParam` | string | `"threshold"` | Positive integer entity parameter. |
+| `kernelParam` | string | `"kernel"` | String entity parameter naming one configured kernel. |
+| `clickDelta` | integer | `1` | Positive charge added by a legal click. |
+| `kernels` | object | PLUS/X/H/V map below | Kernel name to a finite list of integer `[dx,dy]` offsets. |
+| `kernelSwitch` | object or absent | absent | Enable one-use kernel changes. Optional `targetParam`, `nextKernelParam`, and `usedParam` names default to `switchTarget`, `switchKernel`, and `switchUsed`. |
+| `maxWaves` | integer | `1000` | Defensive positive wave limit. Reaching it vetoes and rolls back the action. |
+
+Default kernels:
+
+```json
+{
+  "plus": [[0,-1], [1,0], [0,1], [-1,0]],
+  "x": [[-1,-1], [1,-1], [1,1], [-1,1]],
+  "h": [[-1,0], [1,0]],
+  "v": [[0,-1], [0,1]]
+}
+```
+
+**Wave algorithm:** after the click, take one snapshot and collect every cell
+with `charge >= threshold`. Each collected cell explodes once: subtract its
+threshold and emit `+1` through every configured offset. Sum all incoming
+charges by destination, then commit all subtractions and additions together.
+If `kernelSwitch` is enabled, an exploding unused source with a target position
+and next-kernel parameter changes that target's kernel and marks itself used
+after the charge commit. A target exploding in the same wave still emits from
+its pre-wave kernel; the new kernel applies from the following wave. Multiple
+same-wave switches to one target must agree on its new kernel or the complete
+action is vetoed. An empty configured kernel is valid and emits nothing.
+Cells made unstable by this commit wait until the next wave. A cell that remains
+unstable after subtraction may explode again in that next wave. Propagation to
+an out-of-bounds or non-`cellTag` destination dissipates.
+
+Malformed participating cells (negative/non-integer charge, non-positive or
+non-integer threshold, or an unknown kernel), malformed configuration, an
+invalid click target, and a wave-limit hit all veto the action transactionally.
+
+**Goal pairing:** use `board_match` with `matchParams: ["charge"]` for an exact
+stable charge target. Thresholds remain static; with switches enabled, current
+kernels and used flags are mutable transition state even when the goal does
+not compare them.
+
+**Reuse:** Any finite, deterministic threshold-propagation puzzle: energy
+networks, pressure release, population toppling, signal avalanches, or local
+automata driven by a single-cell input.
+
+---
+
+### `proximity_effects`
+
+**Purpose:** Apply one or more configured effects when the avatar *successfully
+enters* a cell orthogonally adjacent to an entity. It is a general arrival
+reaction, not a path or line-of-sight test. The system consumes
+`avatar_entered` in `cascade_resolution` and emits `proximity_triggered` for
+each matching entity and reaction.
+
+```json
+{
+  "id": "nearby",
+  "type": "proximity_effects",
+  "config": {
+    "layer": "objects",
+    "reactions": [
+      {"tag": "gauge", "effect": "cycle", "param": "count", "modulus": 3},
+      {"tag": "bomb", "effect": "threshold", "param": "count",
+       "thresholdParam": "threshold", "triggerVariable": "dead"},
+      {"tag": "hazard", "effect": "damage", "variable": "hp",
+       "amount": 1, "triggerVariable": "dead"}
+    ]
+  }
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `layer` | Layer containing reactive entities; defaults to `objects`. |
+| `reactions` | Ordered list of tag-matched reactions. Multiple adjacent entities all trigger on one arrival. |
+| `tag` | Entity tag that selects a reaction. The entity's own cell may be solid; the avatar never enters it. |
+| `effect: cycle` | Increment integer `param` (default `count`) modulo integer `modulus` (default 3, minimum 2). |
+| `effect: threshold` | Increment integer `param`; when it reaches the entity's positive integer `thresholdParam` (default `threshold`), set `triggerVariable` to 1. The counter does not wrap. |
+| `effect: damage` | Subtract positive integer `amount` (default 1) from integer state `variable`; set `triggerVariable` to 1 when the result is 0 or less. |
+
+The destination is checked against the four cardinal neighbors in **up,
+right, down, left** order. Each matching reaction fires once per arrival. A
+move from one nearby cell to another nearby cell triggers again if the new
+cell is adjacent. No reaction fires at level load, when leaving a nearby
+cell, or on a blocked move. Reactions can overlap: each reads state left by
+earlier reactions on that entity. Bad counter, threshold, damage, or modulus
+values raise a configuration error instead of silently changing the puzzle.
+
+`proximity_triggered` carries `position` (the entity), `avatarPosition`
+(the destination), `kind`, `effect`, `value` (the resulting counter or
+variable), and `delta` (negative damage amount; null for counter reactions).
+The app can render a damage number over the avatar from that event. Counters
+are entity params, so undo, state identity, and text
+rendering see the same values as the engine. The system itself does not set
+win/loss flags. Pair a fatal `triggerVariable` with a `variable_threshold`
+lose condition **and** a safety goal (`dead == 0`) so death on the exit step
+cannot win during goal evaluation.
+
+Fragile ground needs no new system: a rule on `avatar_exited`, filtered by a
+ground tag, can transform the vacated cell to `void`. Pair it with
+`avatar_navigation` and a marker-based `reach_target` goal for an exit.
+
+---
+
 ## 3. System Summary Table
 
 | System | Type | Phase | Primary Action |

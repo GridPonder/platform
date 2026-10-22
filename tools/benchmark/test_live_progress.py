@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import bench
 from live_progress import (
@@ -159,9 +160,46 @@ def test_run_level_reports_live_actions() -> None:
     assert snapshots[-1]["actions_total"] == result["actions_total"]
 
 
+def test_model_errors_are_not_counted_as_gameplay_failures() -> None:
+    class AuthenticationError(Exception):
+        status_code = 401
+
+    secret = "fixture-secret-api-key"
+    for error, attempts in (
+        (AuthenticationError(f"Invalid credentials: {secret}"), 1),
+        (TimeoutError("Model request timed out"), 3),
+    ):
+        snapshots: list[dict] = []
+        with (
+            patch.object(bench, "call_llm", side_effect=error) as call,
+            patch.object(bench.time, "sleep"),
+            patch.dict(bench.os.environ, {"FIXTURE_API_KEY": secret}),
+        ):
+            result = bench.run_level(
+                "box_builder", "bb_001",
+                {"id": "fixture", "model": "fixture", "connector": "fake", "local": False},
+                {"suffix": "", "reasoning": False},
+                attempt_multiplier=1, total_multiplier=1,
+                action_timeout=5, mode="single", runner="python",
+                packs_dir=Path(__file__).parent.parent.parent / "packs",
+                progress_callback=snapshots.append,
+            )
+        assert call.call_count == attempts
+        assert result["llm_calls"] == result["actions_total"] == 0
+        assert result["gold_path_length"] > 0
+        assert result["resets"] == result["voluntary_resets"] == 0
+        assert result["model_error_type"] == type(error).__name__
+        assert result["llm_attempts"] == attempts
+        assert result["cost_usd"] is None
+        assert secret not in result["error"]
+        assert snapshots[-1]["status"] == "error"
+        assert not result["success"]
+
+
 if __name__ == "__main__":
     test_atomic_snapshot_and_eta()
     test_live_summary_ignores_completed_snapshot()
     test_live_summary_marks_old_snapshot_stale()
     test_run_level_reports_live_actions()
-    print("4 passed")
+    test_model_errors_are_not_counted_as_gameplay_failures()
+    print("5 passed")
