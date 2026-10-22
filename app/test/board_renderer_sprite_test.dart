@@ -169,6 +169,31 @@ void main() {
     ));
   });
 
+  test('a cell state swaps the resting sprite and falls back to idle', () {
+    final theme = AvatarThemeDef.fromJson({
+      'cellStates': {'water_1': 'wading'},
+      'sprites': {
+        'idle': {
+          'right': 'assets/avatar/idle_right.png',
+          'up': 'assets/avatar/idle_up.png',
+        },
+        'wading': {'right': 'assets/avatar/wading_right.png'},
+      },
+    });
+
+    expect(theme.cellStates, {'water_1': 'wading'});
+    expect(resolveAvatarSpriteChoice(theme, 'right', cellState: 'wading'), (
+      visible: true,
+      path: 'assets/avatar/wading_right.png',
+      mirrorHorizontally: false,
+    ));
+    expect(resolveAvatarSpriteChoice(theme, 'up', cellState: 'wading'), (
+      visible: true,
+      path: 'assets/avatar/idle_up.png',
+      mirrorHorizontally: false,
+    ));
+  });
+
   test('renders board layers in the order declared by the pack', () {
     final game = GameDefinition.fromJson({
       'layers': [
