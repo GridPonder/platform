@@ -100,6 +100,14 @@ void main() {
     expect(text, contains('"rank": 12'));
   });
 
+  test('single Unicode code point remains a target symbol', () {
+    for (final anon in [false, true]) {
+      final text = targetText('🔷', symbolParam: true, anon: anon);
+      expect(text.split('\n'), contains('🔷'));
+      expect(text, contains(r'"rank": "\ud83d\udd37"'));
+    }
+  });
+
   test('every layer at a coordinate has its own values', () {
     for (final anon in [false, true]) {
       final text = targetText(2, lower: {'rank': 9}, anon: anon);

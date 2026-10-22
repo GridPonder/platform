@@ -1100,7 +1100,8 @@ Choose the action most likely to reach the goal in fewest total actions (summed 
           : null;
       if (paramValue != null) {
         final rendered = paramValue.toString();
-        return rendered.length == 1 ? rendered : 'N';
+        // Count Unicode code points, matching Python len(str(value)).
+        return rendered.runes.length == 1 ? rendered : 'N';
       }
       if (anon && kindToLabel.containsKey(kindId)) return kindToLabel[kindId]!;
       final sym = game.publicSymbol(kindId);

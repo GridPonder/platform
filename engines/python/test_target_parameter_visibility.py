@@ -60,6 +60,12 @@ class TargetParameterVisibilityTests(unittest.TestCase):
                       '"path": [1, 12], "rank": 2}', text)
         self.assertNotEqual(target_text(2), target_text("2"))
 
+    def test_single_unicode_code_point_remains_a_target_symbol(self):
+        for anon in (False, True):
+            text = target_text("🔷", symbol_param=True, anon=anon)
+            self.assertIn("🔷", text.splitlines())
+            self.assertIn('"rank": "\\ud83d\\udd37"', text)
+
     def test_overrides_keep_required_values(self):
         text = target_text(12, override=True)
         self.assertTrue(text.startswith("Match the required values.\n"))
