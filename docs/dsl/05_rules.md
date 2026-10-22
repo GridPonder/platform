@@ -699,6 +699,45 @@ Increment a numeric variable.
 { "increment_variable": { "name": "gemsCollected", "amount": 1 } }
 ```
 
+### `cycle_variable`
+
+Advance an existing integer variable and wrap it into `0..modulus-1`.
+`modulus` must be at least 2. `amount` defaults to 1.
+
+```json
+{ "cycle_variable": { "name": "phase", "modulus": 3 } }
+```
+
+### `exchange_parameters`
+
+Atomically exchange one parameter between two existing entities. Their kinds,
+positions, and other parameters are preserved. Both values are read before
+either is changed. Optional variable names mirror the resulting values in the
+same operation, before any resulting events are processed.
+
+```json
+{ "exchange_parameters": {
+  "firstPosition": [1, 0], "secondPosition": [3, 0],
+  "firstLayer": "objects", "secondLayer": "objects", "param": "value",
+  "firstVariable": "leftValue", "secondVariable": "rightValue"
+} }
+```
+
+Both layers default to `objects`; `param` defaults to `value`. Positions,
+layers, parameter name, and optional variable names accept value references,
+so a control entity can carry its own endpoint configuration. Distinct
+controls can refer to independent or overlapping pairs. Optional mirror
+variable names must be distinct. Missing endpoints or missing parameters
+leave all values unchanged and emit no events; exchanging a cell with itself
+is also a no-op.
+
+Emits `parameters_exchanged` with `firstPosition`, `secondPosition`,
+`firstLayer`, `secondLayer`, `param`, and the **pre-exchange** `firstValue`
+and `secondValue`. The triggering position is retained when present. Any
+configured mirror variables additionally emit `variable_changed`. A pack
+that wants a single-use control can separately transform or remove that
+control in the same rule. Undo/reset restore the whole turn normally.
+
 ### `set_inventory`
 Set the avatar's inventory slot.
 

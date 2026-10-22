@@ -286,8 +286,8 @@ Games without directional movement (e.g., `slide_merge`-only games) can use simp
 
 ## Cell effects
 
-Optional. Maps an **engine event type** to a sprite-strip animation played at
-that event's position. Purely presentational — the engine never reads this, and
+Optional. Maps an **engine event type** to a sprite-strip or pulse animation
+played at that event's position. Purely presentational — the engine never reads this, and
 a client that does not implement effects ignores it.
 
 ```json
@@ -303,12 +303,39 @@ a client that does not implement effects ignores it.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `sheet` | string | — | Horizontal sprite strip, pack-relative. Frames are equal width, laid out left to right. |
-| `frames` | int | `1` | Number of frames in the strip. |
+| `sheet` | string | — | Pack-relative image. Horizontal strip for `animation: "strip"`; single static sprite for `animation: "pulse"`. |
+| `animation` | string | `"strip"` | `"strip"` selects frames from the sheet; `"pulse"` grows and shrinks one static sprite; `"exchange"` moves the two values of a `parameters_exchanged` event between its endpoints. |
+| `frames` | int | `1` | Strip frame count or number of pulse steps. |
 | `durationMs` | int | `300` | Total play time for one pass through the strip. |
-| `scale` | number | `1.0` | Draw size relative to one board cell; values above 1 let a burst spill past the tile it fires on. |
+| `scale` | number | `1.0` | Strip draw size relative to one cell, or peak size for a pulse. |
+| `when` | object | absent | Match each listed event payload key before playing the effect. |
+| `whenVariables` | object | absent | Also require these live state variables to equal the listed values. Useful when an effect needs several conditions at once. |
+| `atKind` | string | absent | Play at the first entity of this kind in the current board instead of the event cell. |
+| `atLayer` | string | absent | Restrict `atKind` lookup to this layer. |
+| `color` | string | absent | Palette color for `exchange` feedback; defaults to purple. |
+
+For `animation: "exchange"`, `frames` and `durationMs` control two value
+labels travelling in opposite arcs between `firstPosition` and
+`secondPosition`. The displayed values are the event's pre-exchange
+`firstValue` and `secondValue`. The endpoints' committed labels are covered
+during travel and revealed after landing; the entity sprites stay in place.
+The `sheet` field remains required by the theme model but is not painted in
+this mode (it can be an empty string). This presentation never changes engine
+state and can be omitted by other clients.
 
 Every matching event in a turn plays the effect at its own position
 simultaneously, so a capture that flips five cells flashes all five. Useful
 event types include `cell_transformed` (a cell changed kind), `object_removed`,
 and `cell_claimed`.
+
+
+## Additional avatar and feedback options
+
+`avatar.walkBob` and `avatar.walkTiltDegrees` apply a one-step gait while
+the avatar moves. Both default to zero.
+
+The renderer can replay synchronous threshold events as charge, explosion,
+transfer, and switch phases. These are presentation only; each engine turn
+is still atomic. Theme palette keys `cascade_click`, `cascade_incoming`,
+`cascade_explosion`, `cascade_transfer`, and `cascade_switch_link` customize
+the feedback; absent entries use the renderer defaults.

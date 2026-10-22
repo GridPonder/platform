@@ -1,5 +1,6 @@
 """Goal renderer — Python port of goal description logic in llm_agent.dart."""
 from __future__ import annotations
+import json
 from typing import Any
 
 from ._goal import balance_connected_counts, balance_counts
@@ -24,9 +25,15 @@ def render_goals(
 
         # Per-game goal-text override (set in game.json `goalDescriptions`).
         # Skipped in anonymise mode since the override may name entities.
-        # Goal types with live progress keep it after the override text, so a
-        # hand-written description never hides how close the board is.
+        # Keep target grids and live progress visible with custom wording.
         if not anonymize and goal_id in overrides:
+            if goal_type == "board_match":
+                target_grid = _render_target_grid(game_def, config)
+                goal_parts.append(
+                    f"{overrides[goal_id]}\n{target_grid}"
+                    if target_grid else overrides[goal_id]
+                )
+                continue
             progress = _goal_progress(goal_type, goal_id, config, state, game_def)
             if progress is not None:
                 goal_parts.append(f"{overrides[goal_id]} (now: {progress})")
@@ -355,8 +362,24 @@ def _render_target_grid(
     exact = config.get("matchMode", "exact_non_null") == "exact"
     null_symbol = "." if exact else "?"
     anon = kind_to_label is not None
+    raw_match_params = config.get("matchParams", [])
+    match_params = (
+        {str(value) for value in raw_match_params}
+        if isinstance(raw_match_params, list)
+        else set()
+    )
 
-    def symbol_for(kind_id: str) -> str:
+    def symbol_for(kind_id: str, cell: object | None = None) -> str:
+        kind_def = game_def.entity_kinds.get(kind_id)
+        symbol_param = kind_def.get("symbolParam") if kind_def else None
+        if (
+            isinstance(cell, dict)
+            and isinstance(symbol_param, str)
+            and symbol_param in match_params
+            and cell.get(symbol_param) is not None
+        ):
+            rendered = str(cell[symbol_param])
+            return rendered if len(rendered) == 1 else "N"
         # Anonymous mode: the kind's alias; kinds without one (`.`/space
         # symbols) keep their own symbol, exactly as on the board.
         if anon and kind_id in kind_to_label:
@@ -369,29 +392,43 @@ def _render_target_grid(
     null_used = False
     grid_kinds: list[tuple[str, str]] = []  # (symbol, kind) in first-seen order
     also: list[str] = []
+    parameters: list[str] = []
     for y in range(height):
         for x in range(width):
-            kinds_here: list[str] = []
+            cells_here: list[tuple[str, object]] = []
             for layer_id in layer_order:
                 rows = target_layers.get(layer_id) or []
                 if y >= len(rows) or not isinstance(rows[y], list) or x >= len(rows[y]):
                     continue
-                kind_id = _target_cell_kind(rows[y][x])
+                cell = rows[y][x]
+                kind_id = _target_cell_kind(cell)
                 if kind_id is not None:
-                    kinds_here.append(kind_id)
-            if not kinds_here:
+                    cells_here.append((kind_id, cell))
+                    if match_params:
+                        # Grid symbols are lossy. Describe every selected value,
+                        # including targets hidden underneath another layer.
+                        values = cell if isinstance(cell, dict) else {}
+                        required = {key: values[key] for key in match_params if key in values}
+                        missing = sorted(match_params - values.keys())
+                        layer_name = f"layer {layer_order.index(layer_id) + 1}" if anon else layer_id
+                        detail = (f"({x},{y}) {layer_name} {symbol_for(kind_id, cell)} "
+                                  f"{json.dumps(required, sort_keys=True)}")
+                        if missing:
+                            detail += f" (missing required: {json.dumps(missing)})"
+                        parameters.append(detail)
+            if not cells_here:
                 null_used = True
                 continue
-            top = kinds_here[0]
-            sym = symbol_for(top)
+            top, top_cell = cells_here[0]
+            sym = symbol_for(top, top_cell)
             grid[y][x] = sym
             if (sym, top) not in grid_kinds:
                 grid_kinds.append((sym, top))
-            for other in kinds_here[1:]:
+            for other, other_cell in cells_here[1:]:
                 if anon:
-                    also.append(f"({x},{y}) {symbol_for(other)}")
+                    also.append(f"({x},{y}) {symbol_for(other, other_cell)}")
                 else:
-                    also.append(f"({x},{y}) {symbol_for(other)}={_kind_name(game_def, other)}")
+                    also.append(f"({x},{y}) {symbol_for(other, other_cell)}={_kind_name(game_def, other)}")
 
     legend: list[str] = []
     if null_used:
@@ -405,6 +442,8 @@ def _render_target_grid(
     lines.append("Target legend: " + ", ".join(legend))
     if also:
         lines.append("Also required: " + ", ".join(also))
+    if parameters:
+        lines.append("Target parameters: " + "; ".join(parameters))
     return "\n".join(lines)
 
 

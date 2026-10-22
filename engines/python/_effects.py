@@ -50,6 +50,10 @@ def execute(effect: dict, event: dict, state: GameState, game: GameDef) -> list[
             return _set_variable(data, r, state)
         case "increment_variable":
             return _increment_variable(data, state)
+        case "cycle_variable":
+            return _cycle_variable(data, state)
+        case "exchange_parameters":
+            return _exchange_parameters(data, r, state, event)
         case "set_inventory":
             return _set_inventory(data, r, state)
         case "clear_inventory":
@@ -220,6 +224,64 @@ def _increment_variable(data: dict, state: GameState) -> list[dict]:
     new_val = old + amount
     state.variables[name] = new_val
     return [ev.variable_changed(name, old, new_val)]
+
+
+def _cycle_variable(data: dict, state: GameState) -> list[dict]:
+    name = data.get("name")
+    modulus = data.get("modulus")
+    amount = data.get("amount", 1)
+    old = state.variables.get(name)
+    if not isinstance(name, str) or type(old) is not int:
+        raise ValueError("cycle_variable needs an existing integer variable")
+    if type(modulus) is not int or modulus < 2:
+        raise ValueError("cycle_variable modulus must be >= 2")
+    if type(amount) is not int:
+        raise ValueError("cycle_variable amount must be an integer")
+    new_val = (old + amount) % modulus
+    state.variables[name] = new_val
+    return [ev.variable_changed(name, old, new_val)]
+
+
+def _exchange_parameters(data: dict, r, state: GameState, event: dict) -> list[dict]:
+    """Exchange two live cell values atomically, preserving kinds/other params."""
+    first_pos = _resolve_pos(r(data.get("firstPosition")))
+    second_pos = _resolve_pos(r(data.get("secondPosition")))
+    first_layer = r(data.get("firstLayer", "objects"))
+    second_layer = r(data.get("secondLayer", "objects"))
+    param = r(data.get("param", "value"))
+    first_var = r(data.get("firstVariable"))
+    second_var = r(data.get("secondVariable"))
+    if first_pos is None or second_pos is None:
+        return []
+    if not all(isinstance(item, str) for item in (first_layer, second_layer, param)):
+        raise ValueError("exchange_parameters needs string layers and parameter")
+    if any(item is not None and not isinstance(item, str) for item in (first_var, second_var)):
+        raise ValueError("exchange_parameters variable names must be strings")
+    if first_var is not None and first_var == second_var:
+        raise ValueError("exchange_parameters variable names must be distinct")
+    if (first_layer, first_pos) == (second_layer, second_pos):
+        return []
+    first = state.board.get_entity(first_layer, first_pos)
+    second = state.board.get_entity(second_layer, second_pos)
+    if first is None or second is None or param not in first.params or param not in second.params:
+        return []
+    first_value, second_value = first.params[param], second.params[param]
+    old_vars = {name: state.variables.get(name) for name in (first_var, second_var) if name is not None}
+    state.board.set_entity(first_layer, first_pos, Entity(first.kind, {**first.params, param: second_value}))
+    state.board.set_entity(second_layer, second_pos, Entity(second.kind, {**second.params, param: first_value}))
+    if first_var is not None:
+        state.variables[first_var] = second_value
+    if second_var is not None:
+        state.variables[second_var] = first_value
+    exchanged = {
+        "type": "parameters_exchanged", "firstPosition": first_pos, "secondPosition": second_pos,
+        "firstLayer": first_layer, "secondLayer": second_layer, "param": param,
+        "firstValue": first_value, "secondValue": second_value,
+    }
+    if event.get("position") is not None:
+        exchanged["position"] = event["position"]
+    return [exchanged] + [ev.variable_changed(name, old_vars[name], state.variables[name])
+                          for name in (first_var, second_var) if name is not None]
 
 
 def _set_inventory(data: dict, r, state: GameState) -> list[dict]:

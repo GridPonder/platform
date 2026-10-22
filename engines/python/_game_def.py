@@ -139,6 +139,8 @@ class GameDef:
         # play, in declaration order. Mirrors Dart's GameUiConfig.readouts —
         # non-object entries and entries without a variable are dropped.
         self.ui_readouts: list[dict] = self._parse_readouts(data.get("ui"))
+        raw_ui = data.get("ui")
+        self.ui_show_guide = isinstance(raw_ui, dict) and raw_ui.get("showGuide") is True
 
     @staticmethod
     def _parse_readouts(raw_ui) -> list[dict]:
@@ -163,6 +165,7 @@ class GameDef:
                 "label": label if isinstance(label, str) else "",
                 "color": entry.get("color") if isinstance(entry.get("color"), str) else None,
                 "blankWhen": int(blank) if blank is not None else None,
+                "maxVariable": entry.get("maxVariable") if isinstance(entry.get("maxVariable"), str) else None,
             })
         return readouts
 

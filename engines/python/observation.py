@@ -268,6 +268,10 @@ def build_prompt(
     else:
         description_section = ""
 
+    guide = level_def.get("guide") or ""
+    guide_section = (f"\nCURRENT LEVEL GUIDE:\n{guide}\n"
+                     if guide and game_def.ui_show_guide and not anonymize else "")
+
     # In text+image mode we explicitly anchor the image to the current board
     # so the model doesn't speculate about what the attachment depicts. (Pure
     # image mode already substitutes the board section with a note that
@@ -283,7 +287,7 @@ def build_prompt(
         f"{title_line}\n"
         f"Minimize total actions — give up early if stuck rather than wasting moves.\n"
         f"Attempt {attempt_number} | Total actions across all attempts: {total_actions}\n"
-        f"{description_section}{memory_section}\n"
+        f"{description_section}{guide_section}{memory_section}\n"
         f"GOAL: {goal_descriptions}\n"
         f"{last_action_section}{image_note}\n"
         f"\n"
@@ -427,6 +431,9 @@ def status_lines(
             shown = "-"
         else:
             shown = _format_value(value)
+            maximum = state.variables.get(readout.get("maxVariable"))
+            if type(value) in (int, float) and type(maximum) in (int, float):
+                shown += f"/{_format_value(maximum)}"
         label = f"Readout {i}" if anonymize else readout.get("label", "")
         lines.append(f"{label}: {shown}")
 

@@ -371,11 +371,13 @@ def test_override_keeps_connected_progress():
                     "unit_b territory 2/2, unit_c territory 0/0 — 5 of 9 claimed)"), text
 
 
-def test_override_on_a_goal_without_progress_is_unchanged():
+def test_board_match_override_keeps_target_grid():
     game = _make_game()
     game.goal_descriptions = {"match_goal": "Put unit_a in the middle."}
     state = _make_state(game, _PARTIAL)
-    assert render_goals(_board_match("terr_unit_a"), state, game) == "Put unit_a in the middle."
+    text = render_goals(_board_match("terr_unit_a"), state, game)
+    assert text.startswith("Put unit_a in the middle.\n"), text
+    assert "Target legend:" in text, text
 
 
 def test_override_on_sequence_match_appends_done_count():
