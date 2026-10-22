@@ -203,8 +203,12 @@ void main() {
         _makeGame(),
         _level(
           ['#######', '#01010#', '#######'],
-          [[3, 1, 3]],
-          objects: [[2, 1, 'basin']],
+          [
+            [3, 1, 3]
+          ],
+          objects: [
+            [2, 1, 'basin']
+          ],
           avatar: [6, 2],
         ),
       );
@@ -218,6 +222,7 @@ void main() {
         expect(_object(engine, 2, 1), 'basin');
         expect(engine.state.variables['flooded'], 0);
       }
+
       check();
       for (var turn = 0; turn < 3; turn++) {
         engine.executeTurn(_move('down'));
@@ -424,6 +429,90 @@ void main() {
       }
       expect(_water(engine),
           {'1,1': 'water_2/2', '3,1': 'water_1/1', '4,1': 'water_1/null'});
+    });
+
+    test('a seep cannot drain below a higher inlet at any rate', () {
+      for (final rate in [1, 3, 10]) {
+        final config = {
+          ...seepConfig,
+          'seeps': {
+            'layer': 'objects',
+            'kinds': ['seep'],
+            'rate': rate,
+          }
+        };
+        final engine = _engineFor(
+            _makeGame(config),
+            _level(
+              ['########', '#043000#', '####5###', '########'],
+              [
+                [1, 1, 6]
+              ],
+              objects: [
+                [3, 1, 'seep']
+              ],
+              avatar: [4, 2],
+            ));
+        for (var turn = 0; turn < 12; turn++) {
+          engine.executeTurn(_move('down'));
+          expect(
+              engine.state.board
+                  .getEntity('water', const Position(1, 1))!
+                  .params['units'],
+              greaterThanOrEqualTo(4));
+          expect(
+              engine.state.board.layers['water']!.entries().fold<int>(
+                  0, (sum, e) => sum + (e.value.params['units'] as int? ?? 0)),
+              6);
+        }
+        expect(_water(engine), {
+          '1,1': 'water_3/4',
+          '4,1': 'water_1/2',
+          '5,1': 'water_1/null',
+          '6,1': 'water_1/null',
+        });
+      }
+    });
+
+    test('a seep preserves a hollow cut off by an internal ridge', () {
+      for (final rate in [1, 6, 20]) {
+        final config = {
+          ...seepConfig,
+          'seeps': {
+            'layer': 'objects',
+            'kinds': ['seep'],
+            'rate': rate,
+          }
+        };
+        final engine = _engineFor(
+            _makeGame(config),
+            _level(
+              ['###########', '#040300000#', '#####5#####', '###########'],
+              [
+                [3, 1, 11]
+              ],
+              objects: [
+                [4, 1, 'seep']
+              ],
+              avatar: [5, 2],
+            ));
+        for (var turn = 0; turn < 12; turn++) {
+          engine.executeTurn(_move('down'));
+          expect(
+              engine.state.board.layers['water']!.entries().fold<int>(
+                  0, (sum, e) => sum + (e.value.params['units'] as int? ?? 0)),
+              11);
+        }
+        expect(_water(engine), {
+          '1,1': 'water_3/4',
+          '3,1': 'water_3/3',
+          '5,1': 'water_1/4',
+          '6,1': 'water_1/null',
+          '7,1': 'water_1/null',
+          '8,1': 'water_1/null',
+          '9,1': 'water_1/null',
+        });
+      }
     });
 
     test('without seeps config a seep kind is plain ground', () {

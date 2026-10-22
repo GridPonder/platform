@@ -523,21 +523,25 @@ _Settler _seep(_Settler settler, int cell, int sill, int rate) {
   final target = settler.lowest(others);
   if (!_Settler._lt(settler.surface(target), level)) return settler;
   final pool = settler.pools[index];
-  var above = pool.units + pool.heightSum;
-  for (final c in pool.cells) {
-    final h = heights[c]!;
-    above -= h > sill ? h : sill;
-  }
-  final amount = rate < above ? rate : above;
+  final mouths = <int>{
+    for (final c in beside)
+      if (settler.owner[c] == index) c,
+  };
+  final (parts, amount) = _draw(heights, settler.width, settler.height,
+      {...pool.cells}, pool.units, mouths, rate,
+      minimumLevel: sill);
   if (amount <= 0) return settler;
   final sources = <List<int>>[];
   for (var i = 0; i < settler.pools.length; i++) {
     final p = settler.pools[i];
-    if (p.cells.isEmpty || p.units <= 0) continue;
+    if (i == index || p.cells.isEmpty || p.units <= 0) continue;
     sources.add([
       _lowestGround(p.cells, heights),
-      i == index ? p.units - amount : p.units,
+      p.units,
     ]);
+  }
+  for (final (cells, units) in parts) {
+    if (units > 0) sources.add([_lowestGround(cells, heights), units]);
   }
   sources.add([target, amount]);
   final after = _pourAll(heights, settler.width, settler.height, sources);
@@ -580,12 +584,12 @@ int _cmpGround(int a, int b, Map<int, int> heights) {
   return c != 0 ? c : a.compareTo(b);
 }
 
-/// Take up to [want] units out of one pool through a siphon whose [mouths]
-/// (the siphon's neighbours) touch it. Only the part of the pool joined to a
-/// mouth falls: when the falling surface reaches an inner height x that
+/// Take up to [want] units out of one pool through adjacent [mouths].
+/// Only the part joined to a mouth falls: when its surface reaches a height x that
 /// divides the pool, every part that no longer touches a mouth is left
 /// standing at exactly x. The draw stops when the lowest mouth cell would run
-/// dry. Returns (parts, drawn): parts are (cells, units), the drawing part
+/// dry, or at [minimumLevel] when a seep's sill is higher.
+/// Returns (parts, drawn): parts are (cells, units), the drawing part
 /// last.
 (List<(Set<int>, int)>, int) _draw(
   Map<int, int> heights,
@@ -594,8 +598,9 @@ int _cmpGround(int a, int b, Map<int, int> heights) {
   Set<int> startCells,
   int startUnits,
   Set<int> mouths,
-  int want,
-) {
+  int want, {
+  int? minimumLevel,
+}) {
   var cells = startCells;
   var units = startUnits;
   final trapped = <(Set<int>, int)>[];
@@ -610,6 +615,7 @@ int _cmpGround(int a, int b, Map<int, int> heights) {
     for (final c in inlet) {
       if (heights[c]! < floor) floor = heights[c]!;
     }
+    if (minimumLevel != null && minimumLevel > floor) floor = minimumLevel;
     var top = units; // level * cells.length
     for (final c in cells) {
       top += heights[c]!;

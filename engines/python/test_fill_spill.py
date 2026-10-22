@@ -207,6 +207,37 @@ def test_a_seep_passes_only_water_above_its_sill():
                            (4, 1): ("water_1", None)}
 
 
+def test_a_seep_cannot_drain_below_a_higher_inlet_at_any_rate():
+    for rate in (1, 3, 10):
+        config = {**SEEP_CONFIG, "seeps": {**SEEP_CONFIG["seeps"], "rate": rate}}
+        eng = TurnEngine(_make_game(config), _level(
+            ["########", "#043000#", "####5###", "########"],
+            [(1, 1, 6)], [(3, 1, "seep")], [4, 2]))
+        for _ in range(12):
+            eng.execute_turn("move", {"direction": "down"})
+            assert _water(eng)[(1, 1)][1] >= 4
+            assert sum(v[1] or 0 for v in _water(eng).values()) == 6
+        assert _water(eng) == {
+            (1, 1): ("water_3", 4), (4, 1): ("water_1", 2),
+            (5, 1): ("water_1", None), (6, 1): ("water_1", None)}
+
+
+def test_a_seep_preserves_a_hollow_cut_off_by_an_internal_ridge():
+    for rate in (1, 6, 20):
+        config = {**SEEP_CONFIG, "seeps": {**SEEP_CONFIG["seeps"], "rate": rate}}
+        eng = TurnEngine(_make_game(config), _level(
+            ["###########", "#040300000#", "#####5#####", "###########"],
+            [(3, 1, 11)], [(4, 1, "seep")], [5, 2]))
+        for _ in range(12):
+            eng.execute_turn("move", {"direction": "down"})
+            assert sum(v[1] or 0 for v in _water(eng).values()) == 11
+        assert _water(eng) == {
+            (1, 1): ("water_3", 4), (3, 1): ("water_3", 3),
+            (5, 1): ("water_1", 4), (6, 1): ("water_1", None),
+            (7, 1): ("water_1", None), (8, 1): ("water_1", None),
+            (9, 1): ("water_1", None)}
+
+
 def test_without_seeps_config_a_seep_kind_is_plain_ground():
     eng = TurnEngine(_make_game(),
                      _level(SEEP_ROWS, [(1, 1, 3)], [(2, 1, "seep")], [3, 2]))

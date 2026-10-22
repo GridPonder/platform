@@ -2188,8 +2188,12 @@ every seep, in reading order, moves up to `rate` units across itself. The
 source is the highest pool beside it (ties in reading order), and only water
 standing above the seep's sill, the ground height under it, can leave; the
 target is the lowest surface beside it outside that pool (ties in reading
-order), and it must be lower than the source's level. The units are taken off
-the source pool and poured at the target cell, and the board is settled again.
+order), and it must be lower than the source's level. Only water connected to
+the seep's inlet cells can leave. Drainage stops at the higher of the sill and
+the lowest inlet's ground height; if an internal ridge becomes dry first,
+disconnected hollows retain their water at that ridge height while the
+connected part continues draining. The transferred units are poured at the
+target cell, and the board is settled again.
 A seep moves nothing when that would leave the target side higher than the
 source side, so two nearly level pools never trade a unit back and forth.
 Blocking the target cell (for example with a pushable barrier) turns the seep

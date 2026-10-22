@@ -548,16 +548,21 @@ def _seep(settler: _Settler, heights: dict, cell, sill: int, rate: int) -> _Sett
     if not _lt(settler.surface(target), level):
         return settler
     pool = settler.pools[index]
-    above = pool.units + pool.height_sum - sum(max(heights[c], sill) for c in pool.cells)
-    amount = min(rate, above)
+    mouths = {c for c in beside if settler.owner.get(c) == index}
+    parts, amount = _draw(
+        heights, set(pool.cells), pool.units, mouths, rate, minimum_level=sill
+    )
     if amount <= 0:
         return settler
     sources = []
     for i, p in enumerate(settler.pools):
-        if not p.cells or p.units <= 0:
+        if i == index or not p.cells or p.units <= 0:
             continue
         seed = min(p.cells, key=lambda c: (heights[c], c[1], c[0]))
-        sources.append((seed, p.units - amount if i == index else p.units))
+        sources.append((seed, p.units))
+    for cells, units in parts:
+        if units > 0:
+            sources.append((min(cells, key=lambda c: (heights[c], c[1], c[0])), units))
     sources.append((target, amount))
     after = _pour_all(heights, sources)
     # No overshoot: the far side must not end up higher than the near side,
@@ -593,13 +598,14 @@ def _components(cells: set) -> list[set]:
     return parts
 
 
-def _draw(heights: dict, cells: set, units: int, mouths: set, want: int):
-    """Take up to `want` units out of one pool through a siphon whose mouths
-    (the siphon's neighbours) touch it. Only the part of the pool joined to a
-    mouth falls: when the falling surface reaches an inner height x that
+def _draw(heights: dict, cells: set, units: int, mouths: set, want: int,
+          *, minimum_level: int | None = None):
+    """Take up to `want` units out of one pool through adjacent mouths.
+    Only the part joined to a mouth falls: when its surface reaches a height x that
     divides the pool, every part that no longer touches a mouth is left
     standing at exactly x. The draw stops when the lowest mouth cell would
-    run dry. Returns (parts, drawn): parts are (cells, units), the drawing
+    run dry, or at `minimum_level` when a seep's sill is higher.
+    Returns (parts, drawn): parts are (cells, units), the drawing
     part last."""
     trapped, drawn = [], 0
     while drawn < want:
@@ -607,6 +613,8 @@ def _draw(heights: dict, cells: set, units: int, mouths: set, want: int):
         if not inlet:
             break
         floor = min(heights[c] for c in inlet)
+        if minimum_level is not None:
+            floor = max(floor, minimum_level)
         top = units + sum(heights[c] for c in cells)   # level * len(cells)
         n = len(cells)
         split = None
