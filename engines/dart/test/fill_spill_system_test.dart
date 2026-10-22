@@ -198,6 +198,33 @@ void main() {
       expect(w.containsKey('3,1'), isFalse);
     });
 
+    test('spilling at an existing ridge keeps it dry and splits volume', () {
+      final engine = _engineFor(
+        _makeGame(),
+        _level(
+          ['#######', '#01010#', '#######'],
+          [[3, 1, 3]],
+          objects: [[2, 1, 'basin']],
+          avatar: [6, 2],
+        ),
+      );
+      final expected = {
+        '1,1': 'water_1/1',
+        '3,1': 'water_1/1',
+        '5,1': 'water_1/1',
+      };
+      void check() {
+        expect(_water(engine), expected);
+        expect(_object(engine, 2, 1), 'basin');
+        expect(engine.state.variables['flooded'], 0);
+      }
+      check();
+      for (var turn = 0; turn < 3; turn++) {
+        engine.executeTurn(_move('down'));
+        check();
+      }
+    });
+
     test('pools over a ridge become one', () {
       final engine = _engineFor(
           _makeGame(),

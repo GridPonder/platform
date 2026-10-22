@@ -176,7 +176,20 @@ class _Settler:
 
             if lips:
                 kept = x * count - height_sum
-                pool.units = kept
+                # A previously submerged ridge can be dry at the spill level.
+                # Split there and store each remaining volume on its own pool.
+                cells = {c for c in pool.cells if self.heights[c] < x}
+                for cell in pool.cells:
+                    del self.owner[cell]
+                pool.cells = set()
+                pool.units = 0
+                pool.height_sum = 0
+                for part in _components(cells):
+                    part_height = sum(self.heights[c] for c in part)
+                    part_index = len(self.pools)
+                    self.pools.append(_Pool(part, x * len(part) - part_height, part_height))
+                    for cell in part:
+                        self.owner[cell] = part_index
                 return units - kept, self._lowest(lips)
 
             for cell in plateau:

@@ -948,7 +948,26 @@ class _Settler {
 
       if (lips.isNotEmpty) {
         final kept = x * count - heightSum;
-        pool.units = kept;
+        // A previously submerged ridge can be dry at the spill level.
+        // Split there and store each remaining volume on its own pool.
+        final cells = {
+          for (final cell in pool.cells)
+            if (heights[cell]! < x) cell,
+        };
+        for (final cell in pool.cells) {
+          owner.remove(cell);
+        }
+        pool.cells = {};
+        pool.units = 0;
+        pool.heightSum = 0;
+        for (final part in _components(cells, width, height)) {
+          final partHeight = part.fold<int>(0, (sum, c) => sum + heights[c]!);
+          final partIndex = pools.length;
+          pools.add(_Pool(part, x * part.length - partHeight, partHeight));
+          for (final cell in part) {
+            owner[cell] = partIndex;
+          }
+        }
         return [units - kept, lowest(lips)];
       }
 

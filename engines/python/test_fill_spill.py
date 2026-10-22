@@ -99,6 +99,22 @@ def test_water_stops_at_the_lip_and_spills_the_rest():
     assert (3, 1) not in w                  # the ridge is exactly at the brim: dry
 
 
+def test_spilling_at_an_existing_ridge_keeps_it_dry_and_splits_volume():
+    eng = TurnEngine(_make_game(), _level(
+        ["#######", "#01010#", "#######"], [(3, 1, 3)],
+        [(2, 1, "basin")], [6, 2]))
+    expected = {(1, 1): ("water_1", 1), (3, 1): ("water_1", 1),
+                (5, 1): ("water_1", 1)}
+    assert _water(eng) == expected
+    assert _kind(eng, 2, 1) == "basin"
+    assert eng.state.variables["flooded"] == 0
+    for _ in range(3):
+        eng.execute_turn("move", {"direction": "down"})
+        assert _water(eng) == expected
+        assert _kind(eng, 2, 1) == "basin"
+        assert eng.state.variables["flooded"] == 0
+
+
 def test_pools_over_a_ridge_become_one():
     eng = TurnEngine(_make_game(), _level(["#######", "#00200#", "#######"], [(1, 1, 9)]))
     w = _water(eng)
