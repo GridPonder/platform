@@ -106,7 +106,7 @@ class FastInfo:
     neighbors: List[List[int]]          # neighbors[pos] = [up, down, left, right]
     htable: _tw._HeuristicTable
     level_id: Optional[str] = None
-    # Flat cost table: cost_table[plot_pos * cells_len + basket_pos] = Dijkstra cost.
+    # Flat cost table: relaxed move-command count from basket to plot.
     # Stored as array.array('d') for O(1) C-level access from Cython.
     cost_table: object = None           # array.array('d', ...)
     # Flat neighbor list for Cython (cells_len * 4 ints, order: up/down/left/right)
@@ -231,7 +231,7 @@ def _slide_obj(cells: bytearray, pos: int, obj: int, dir_idx: int,
         if ng == GROUND_VOID or ng not in _WALKABLE:
             break
         no = (cells[nxt] >> 3) & 7
-        if no != OBJ_NONE:      # blocked by another object
+        if no in _SOLID:
             break
         # Move object
         cells[pos] &= 7         # clear object at current pos
@@ -257,9 +257,10 @@ def _slide_obj(cells: bytearray, pos: int, obj: int, dir_idx: int,
 
 def _slide_avatar(cells: bytearray, pos: int, dir_idx: int,
                   neighbors: List[List[int]], inventory: int,
-                  cells_len: int) -> Tuple[int, int]:
-    """Slide avatar on ice in dir_idx direction. Returns (new_pos, new_inventory)."""
-    while True:
+                  cells_len: int,
+                  pending_slide: Optional[Tuple[int, int]] = None) -> Tuple[int, int]:
+    """Resolve avatar sliding before the most recent pushed object's slide."""
+    while (cells[pos] & 7) == GROUND_ICE:
         nxt = neighbors[pos][dir_idx]
         if nxt < 0:
             break
@@ -268,35 +269,31 @@ def _slide_avatar(cells: bytearray, pos: int, dir_idx: int,
             break
         no = (cells[nxt] >> 3) & 7
         if no in _SOLID:
-            # Try to push solid object during slide (only if pushable)
-            if no in _PUSHABLE:
-                push_dest = neighbors[nxt][dir_idx]
-                if push_dest < 0:
-                    break
-                pdg = cells[push_dest] & 7
-                if pdg == GROUND_VOID or pdg not in _WALKABLE:
-                    break
-                pdo = (cells[push_dest] >> 3) & 7
-                if pdo != OBJ_NONE:
-                    break
-                # Push
-                cells[push_dest] = (cells[push_dest] & 7) | (no << 3)
-                cells[nxt] &= 7
-                pos = nxt
-                # Cascade rules for pushed object
-                pg = cells[push_dest] & 7
-                if no == OBJ_SEED_BASKET and pg == GROUND_GARDEN_PLOT:
-                    cells[push_dest] = (cells[push_dest] & ~7) | GROUND_PLANTED
-                    cells[push_dest] &= 7
-                elif no == OBJ_SEED_BASKET and pg == GROUND_WATER:
-                    cells[push_dest] &= 7   # basket drowns during ice-slide push
-                elif no == OBJ_METAL_CRATE and pg == GROUND_WATER:
-                    cells[push_dest] = (cells[push_dest] & ~7) | GROUND_WATER_CRATE
-                    cells[push_dest] &= 7
-                elif pg == GROUND_ICE:
-                    _slide_obj(cells, push_dest, no, dir_idx, neighbors)
-            break   # stop sliding (hit solid, push succeeded or not)
-        # Walk to next cell
+            if no not in _PUSHABLE:
+                break
+            push_dest = neighbors[nxt][dir_idx]
+            if push_dest < 0:
+                break
+            pdg = cells[push_dest] & 7
+            if pdg == GROUND_VOID or pdg not in _WALKABLE:
+                break
+            if (cells[push_dest] >> 3) & 7 != OBJ_NONE:
+                break
+            cells[push_dest] = (cells[push_dest] & 7) | (no << 3)
+            cells[nxt] &= 7
+            pending_slide = None
+            if no == OBJ_SEED_BASKET and pdg == GROUND_GARDEN_PLOT:
+                cells[push_dest] = GROUND_PLANTED
+            elif no == OBJ_SEED_BASKET and pdg == GROUND_WATER:
+                cells[push_dest] = GROUND_WATER
+            elif no == OBJ_METAL_CRATE and pdg == GROUND_WATER:
+                cells[push_dest] = GROUND_WATER_CRATE
+            elif pdg == GROUND_ICE:
+                pending_slide = (push_dest, no)
+        else:
+            # The engine continues with this new avatar-entered event;
+            # an earlier object-placed event is no longer pending.
+            pending_slide = None
         pos = nxt
         pg = cells[pos] & 7
         if pg == GROUND_ICE:
@@ -312,8 +309,9 @@ def _slide_avatar(cells: bytearray, pos: int, dir_idx: int,
         if no in _PICKUP:
             inventory = INV_TORCH if no == OBJ_TORCH else INV_PICKAXE
             cells[pos] &= 7
-        if pg != GROUND_ICE:
-            break
+    if pending_slide is not None:
+        object_pos, obj = pending_slide
+        _slide_obj(cells, object_pos, obj, dir_idx, neighbors)
     return pos, inventory
 
 
@@ -328,6 +326,7 @@ def _apply_move(state: bytes, dir_idx: int, info: FastInfo) -> Tuple[bytes, bool
     clone_pos  = state[cells_len + 1]
     inventory  = state[cells_len + 2]
     neighbors  = info.neighbors
+    pending_slide = None
 
     target = neighbors[avatar_pos][dir_idx]
     if target < 0:
@@ -376,7 +375,7 @@ def _apply_move(state: bytes, dir_idx: int, info: FastInfo) -> Tuple[bytes, bool
                 cells[push_dest] = (cells[push_dest] & ~7) | GROUND_WATER_CRATE
                 cells[push_dest] &= 7           # crate consumed into water_crate ground
             elif pg == GROUND_ICE:
-                _slide_obj(cells, push_dest, to, dir_idx, neighbors)
+                pending_slide = (push_dest, to)
         else:
             return state, False, []  # blocked (e.g. rock without pickaxe)
 
@@ -402,9 +401,8 @@ def _apply_move(state: bytes, dir_idx: int, info: FastInfo) -> Tuple[bytes, bool
             tg_now = GROUND_EMPTY
     if tg_now == GROUND_WATER and inventory != INV_NONE:
         inventory = INV_NONE
-    if tg_now == GROUND_ICE:
-        avatar_pos, inventory = _slide_avatar(
-            cells, avatar_pos, dir_idx, neighbors, inventory, cells_len)
+    avatar_pos, inventory = _slide_avatar(
+        cells, avatar_pos, dir_idx, neighbors, inventory, cells_len, pending_slide)
 
     # Win: no garden_plot cells remain
     won = not any((cells[i] & 7) == GROUND_GARDEN_PLOT for i in range(cells_len))
@@ -464,44 +462,9 @@ def heuristic(state: bytes, info: FastInfo) -> float:
         if o == OBJ_SEED_BASKET:
             baskets.append((i % width, i // width))
 
-    if not baskets:
-        return 0.0
-    if not plots:
-        return float("inf")
-    if len(baskets) < len(plots):
-        return float("inf")    # drowned basket(s) — can't fill all remaining plots
-
     return info.htable.min_cost_assignment(baskets, plots)
 
 
 def can_prune(state: bytes, info: FastInfo, depth: int, max_depth: int) -> bool:
-    """Prune if any remaining basket has no path to any remaining plot."""
-    cells_len = info.cells_len
-    width     = info.width
-    htable    = info.htable
-    inf       = float("inf")
-
-    plots: List[Tuple[int, int]] = []
-    for i in range(cells_len):
-        if (state[i] & 7) == GROUND_GARDEN_PLOT:
-            plots.append((i % width, i // width))
-
-    if not plots:
-        return False
-
-    baskets_count = sum(1 for i in range(cells_len) if ((state[i] >> 3) & 7) == OBJ_SEED_BASKET)
-    if baskets_count < len(plots):
-        return True  # drowned basket(s) — dead state
-
-    for i in range(cells_len):
-        if ((state[i] >> 3) & 7) != OBJ_SEED_BASKET:
-            continue
-        bx, by = i % width, i // width
-        reachable = any(
-            htable.push_dist.get(plot, {}).get((bx, by), inf) < inf
-            for plot in plots
-        )
-        if not reachable:
-            return True  # this basket can never reach any plot
-
-    return False
+    """Prune only if the relaxed assignment cannot fill all remaining plots."""
+    return heuristic(state, info) == float("inf")

@@ -157,7 +157,8 @@ def test_readouts_parsing_drops_malformed_entries():
         {"variable": "", "label": "empty"},
     ]}})
     assert game.ui_readouts == [
-        {"variable": "a", "label": "A", "color": None, "blankWhen": 0}]
+        {"variable": "a", "label": "A", "color": None, "blankWhen": 0,
+         "maxVariable": None}]
     assert GameDef.from_dict({}).ui_readouts == []
 
 

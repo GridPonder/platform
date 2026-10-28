@@ -24,10 +24,12 @@ from __future__ import annotations
 import importlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from engine_adapter import gold_path_actions
 from game_configs import GAME_CONFIGS
 
 _SOLVER_DIR = Path(__file__).parent
@@ -38,27 +40,37 @@ def _parse_gold_actions(gold_raw: list, module: Any) -> list[str]:
     """
     Convert raw goldPath entries to a flat list of action strings.
 
-    Handles two known formats:
-      - carrot_quest:  [{"direction": "left"}, ...]
-      - box_builder:     [{"action": "move", "direction": "left"}, ...]
-
-    Entries whose "action" key is something other than "move" are skipped
-    (e.g. future non-move actions).
+    Use the same decoder as the solver, then adapt movement names for legacy
+    simulators such as Box Builder. Every stored action must be replayed:
+    dropping an unrecognized action invalidates the remaining-path bound.
     """
     valid = set(module.ACTIONS)
     actions: list[str] = []
-    for entry in gold_raw:
-        if isinstance(entry, str):
-            if entry in valid:
-                actions.append(entry)
-        elif isinstance(entry, dict):
-            action_type = entry.get("action")
-            if action_type is not None and action_type != "move":
-                continue
-            direction = entry.get("direction")
-            if direction in valid:
-                actions.append(direction)
+    decoded = gold_path_actions({"solution": {"goldPath": gold_raw}})
+    if len(decoded) != len(gold_raw):
+        raise ValueError("Gold-path decoding dropped an action")
+    for action in decoded:
+        if action not in valid and action.startswith("move_"):
+            action = action.removeprefix("move_")
+        if action not in valid:
+            raise ValueError(f"Unsupported gold-path action {action!r}")
+        actions.append(action)
     return actions
+
+
+@pytest.mark.parametrize("raw,valid,expected", [
+    (["right", "clone", "left"],
+     ["move_right", "move_left", "clone"], ["move_right", "clone", "move_left"]),
+    ([{"direction": "left"}, {"action": "move", "direction": "right"}],
+     ["left", "right"], ["left", "right"]),
+])
+def test_gold_actions_preserve_moves_and_non_moves(raw, valid, expected):
+    assert _parse_gold_actions(raw, SimpleNamespace(ACTIONS=valid)) == expected
+
+
+def test_gold_actions_reject_unknown_actions_instead_of_dropping_them():
+    with pytest.raises(ValueError, match="Unsupported gold-path action"):
+        _parse_gold_actions(["right", "unknown"], SimpleNamespace(ACTIONS=["move_right"]))
 
 
 def _collect_cases() -> list:
@@ -89,8 +101,6 @@ def _collect_cases() -> list:
             if not gold_raw:
                 continue
             gold_actions = _parse_gold_actions(gold_raw, module)
-            if not gold_actions:
-                continue
             cases.append(
                 pytest.param(
                     game_key,
@@ -126,6 +136,7 @@ def test_heuristic_admissibility(
     n = len(gold_actions)
 
     state = initial
+    won = False
     for i, action in enumerate(gold_actions):
         remaining = n - i
         h = heuristic(state, info)
@@ -133,9 +144,10 @@ def test_heuristic_admissibility(
             f"{game_key}/{level_id}: at step {i} (action={action!r}), "
             f"h={h} > remaining={remaining} — heuristic is inadmissible here"
         )
-        state, _won, _events = module.apply(state, action, info)
+        state, won, _events = module.apply(state, action, info)
 
     # At the goal state, the heuristic must return 0
+    assert won, f"{game_key}/{level_id}: the complete gold path did not win"
     h_goal = heuristic(state, info)
     assert h_goal == 0.0, (
         f"{game_key}/{level_id}: h(goal state) = {h_goal}, expected 0.0"
