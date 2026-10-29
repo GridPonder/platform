@@ -486,6 +486,7 @@ resolveAvatarSpriteChoice(
   String direction, {
   bool moving = false,
   double progress = 0,
+  String? cellState,
 }) {
   if (theme?.visible == false) {
     return (visible: false, path: null, mirrorHorizontally: false);
@@ -497,7 +498,7 @@ resolveAvatarSpriteChoice(
           theme?.sprites['moving']?[requestedDirection] ??
           theme?.resolve('idle', requestedDirection);
     }
-    return theme?.resolve('idle', requestedDirection);
+    return theme?.resolve(cellState ?? 'idle', requestedDirection);
   }
 
   var entry = resolve(direction);
@@ -1690,11 +1691,13 @@ class BoardRenderer extends StatelessWidget {
     AvatarMotion? motion,
   }) {
     final direction = avatar.facing.toJson();
+    final avatarTheme = packService.theme?.avatar;
     final themed = resolveAvatarSpriteChoice(
-      packService.theme?.avatar,
+      avatarTheme,
       direction,
       moving: motion != null,
       progress: motion?.progress ?? 0,
+      cellState: _avatarCellState(avatarTheme, avatar.position),
     );
     if (!themed.visible) return const SizedBox.shrink();
 
@@ -1754,6 +1757,19 @@ class BoardRenderer extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// The theme's `cellStates` entry for the topmost entity kind on the
+  /// avatar's cell, if any (e.g. an avatar standing in water → wading).
+  String? _avatarCellState(AvatarThemeDef? theme, Position? pos) {
+    final cellStates = theme?.cellStates;
+    if (cellStates == null || cellStates.isEmpty || pos == null) return null;
+    for (final layerId in resolveBoardLayerOrder(game).reversed) {
+      final kind = state.board.getEntity(layerId, pos)?.kind;
+      final cellState = cellStates[kind];
+      if (cellState != null) return cellState;
+    }
+    return null;
   }
 
   Widget _buildFallbackAvatar(String assetPath, double size) {
@@ -2313,6 +2329,10 @@ class _Cell extends StatelessWidget {
             : badgeRaw;
         final isOverlay = display['overlay'] == true;
         if (isOverlay) {
+          // A badge whose label resolves to nothing (an `@param:` this
+          // instance does not carry) is not drawn, so one kind can badge only
+          // the cells that hold the value.
+          if (labelText.isEmpty) return const SizedBox.shrink();
           return Align(
             alignment: Alignment.bottomRight,
             child: Container(

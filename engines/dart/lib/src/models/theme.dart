@@ -115,12 +115,18 @@ class AvatarThemeDef {
   final Map<String, Map<String, AvatarSpriteEntry>>
       sprites; // state → dir → entry
 
+  /// Entity kind → sprite state used while the avatar's cell holds that kind
+  /// (e.g. any water kind → `wading`). Checked at rest only; the first
+  /// matching layer from the top of the stack wins.
+  final Map<String, String> cellStates;
+
   const AvatarThemeDef({
     this.visible = true,
     this.sprite,
     this.walkBob = 0,
     this.walkTiltDegrees = 0,
     this.sprites = const {},
+    this.cellStates = const {},
   });
 
   factory AvatarThemeDef.fromJson(Map<String, dynamic> j) {
@@ -137,6 +143,8 @@ class AvatarThemeDef {
       walkBob: (j['walkBob'] as num?)?.toDouble() ?? 0,
       walkTiltDegrees: (j['walkTiltDegrees'] as num?)?.toDouble() ?? 0,
       sprites: sprites,
+      cellStates: ((j['cellStates'] as Map?) ?? const {})
+          .map((k, v) => MapEntry(k as String, v as String)),
     );
   }
 

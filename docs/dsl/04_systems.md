@@ -2111,6 +2111,181 @@ ground tag, can transform the vacated cell to `void`. Pair it with
 
 ---
 
+### 2.26 `fill_spill`
+
+**Phase:** `action_resolution` (gates) + `npc_resolution` (settle); also settles
+once at level load.
+
+Standing water with a fixed volume, settled over a height map. Water is never
+created or destroyed. It runs downhill, fills the lowest hollow first and rises
+evenly; when it reaches the lowest lip of its hollow it stops exactly there and
+the rest pours over into the next hollow. Water trapped below a lip stays
+trapped, and two pools that meet become one pool with one level. Suits
+irrigation, locks and canals, flooding, cisterns, tide pools, or any puzzle
+about a conserved quantity finding its own level.
+
+**Model.** Every ground kind listed in `heights` is passable to water at that
+integer height; any other ground kind, and any cell holding one of the
+`barriers.kinds`, is a bank. A *pool* is a connected set of water cells on
+`waterLayer`. Its volume is an integer number of *units* — one unit fills one
+cell by one height step — stored as a `units` param on the pool's lowest cell
+(ties broken in reading order: row, then column). Every other cell of the pool
+carries no params. The pool's level is `(units + Σ heights) / cells`, kept as
+an exact fraction by both engines, never a float. A cell is under water only
+when the level stands strictly **above** its ground: water exactly at a cell's
+height leaves it dry.
+
+**Settle.** Every settle takes each pool's volume and re-pours it at the pool's
+lowest cell, pools in reading order of those cells:
+
+1. **Run downhill.** From the pour cell, step to the lowest neighbour whose
+   surface (level if wet, height if dry) is strictly lower, until none is. A
+   wet cell adds the water to that pool; a dry pit starts a new pool.
+2. **Rise.** Find the lowest surface on the pool's rim (its orthogonal
+   neighbours). If the volume cannot lift the pool to it, the pool settles
+   below it — done.
+3. **Merge** any rim pool whose level equals that lowest surface, and rise
+   again.
+4. Otherwise the lowest rim surface is a dry height *x*. Take every dry rim
+   cell at height *x*, plus the flat plateau of height-*x* cells they lead to.
+   If any of those cells touches a surface lower than *x*, that is a **lip**:
+   the pool stops at exactly level *x* (keeping `x·cells − Σ heights` units)
+   and the rest is poured, from step 1, at the lowest such lower cell (ties in
+   reading order). Otherwise the pool takes in the plateau, merges any pool
+   that stands level with it, and rises again.
+
+Re-pouring leaves a settled board unchanged, so the system can run every turn;
+it only moves water when something changed, such as a gate opening. Because a
+pool is only ever divided at a lip, and lips are whole heights, every volume
+stays a whole number.
+
+**Gates** are cells the avatar works by walking into them. A `closed` gate is
+listed in `barriers.kinds`, so it holds water like a bank; walking into it turns
+it `open`, and the water on either side can then pass over the gate's sill,
+which is simply the ground height under it. Walking into an `open` gate closes
+it again, **but only while no water stands on it** — a board cannot be dropped
+against running water, and this is what keeps volumes whole. Gates should be
+tagged `solid` so the avatar never enters them, and the system must be declared
+**before** `avatar_navigation`, so it reads the avatar's position before the
+move resolves.
+
+**Markers** swap between a `dry` and a `wet` kind as water arrives and leaves
+their cell, emitting `cell_transformed` (for example a `basin` that must be
+filled, as the goal `all_cleared: basin`). **Flood** counting increments a
+variable once for the avatar and once per `flood.kinds` entity standing under
+water after a settle, so an ordinary `variable_threshold` lose condition ends
+the level; pair it with a `variable_threshold` goal of `eq 0` when a win on the
+same turn must not count. A marker pair may also name an `over` kind and a
+positive integer `maxDepth`, making it a **banded** marker: it is `dry` while
+the water on its cell stands at depth ≤ 0 (or the cell is dry), `wet` while
+0 < depth ≤ `maxDepth`, and `over` when deeper, and it recovers to `wet` or
+`dry` as the water falls back (for example a `bed` that must be watered but not
+drowned, `bed` / `bed_ok` / `bed_deep`).
+
+**Seeps** (optional) are slow leaks: cells holding a `seeps.kinds` entity
+block the flood like a bank, but after each **turn's** settle (never at load)
+every seep, in reading order, moves up to `rate` units across itself. The
+source is the highest pool beside it (ties in reading order), and only water
+standing above the seep's sill, the ground height under it, can leave; the
+target is the lowest surface beside it outside that pool (ties in reading
+order), and it must be lower than the source's level. Only water connected to
+the seep's inlet cells can leave. Drainage stops at the higher of the sill and
+the lowest inlet's ground height; if an internal ridge becomes dry first,
+disconnected hollows retain their water at that ridge height while the
+connected part continues draining. The transferred units are poured at the
+target cell, and the board is settled again.
+A seep moves nothing when that would leave the target side higher than the
+source side, so two nearly level pools never trade a unit back and forth.
+Blocking the target cell (for example with a pushable barrier) turns the seep
+to its next-lowest neighbour, or stops it. Every turn is a tick, including a
+move that bumps into a wall, so a seep makes the board change on its own.
+
+**Siphons** (optional) are pipes over a bank that, once started, keep drawing a
+pool down below their own crest. A cell holding a `siphons.empty` or
+`siphons.running` entity is a bank — water never stands on it — and its
+**crest** is the ground height under it; siphon kinds should be tagged `solid`.
+After every seep has acted on a **turn** (every turn, including bumps; never at
+load), each siphon acts in reading order. Its source is the highest pool
+beside it (ties in reading order), its target the lowest surface beside it
+outside that pool (ties in reading order), which must be lower than the
+source's level. An `empty` siphon **starts** — turns `running` — whenever the
+source pool stands strictly above its crest, and draws on that same turn. A
+`running` siphon draws up to `rate` units a turn from the source to the target,
+but only down to its **intake floor**, the lowest ground among its neighbours
+in that pool. Only the part of the pool joined to the siphon's mouths (its
+neighbours) falls: when the falling surface reaches an inner height that
+divides the pool, the parts cut off from the mouths stay standing at exactly
+that height and the joined part goes on falling. The drawn units are poured at
+the target and the board is settled again. If the full amount would leave the
+outlet side higher than the intake side, the siphon steps down to the next
+smaller amount, and so on. A siphon turns `empty` on the first turn it moves
+nothing. Walking into a `running` siphon (with `gateAction`, before gates are
+checked) **vents** it, turning it `empty`; the vent holds only once the pool is
+at or below the crest — otherwise the siphon starts again in that same turn's
+settle.
+
+**Events emitted:** [`water_settled`](05_rules.md#water_settled) when a settle
+changed the water layer, `cell_transformed` for gates, siphons and markers
+(siphon changes are listed before marker changes).
+
+**Config:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `heights` | object | — | **Required.** Ground kind → integer height. Kinds absent from the map are banks. |
+| `groundLayer` | string | `"ground"` | Layer holding the height map. |
+| `waterLayer` | string | `"water"` | Layer holding water entities. |
+| `waterKinds` | array | `["water"]` | Water kinds by depth band: the first for depth up to 1, the next for depth up to 2, and so on; the last covers everything deeper. |
+| `barriers` | object | — | `{"layer": string, "kinds": [kind]}` — entities that block water like a bank. |
+| `gates` | array | `[]` | Each `{"layer": string, "closed": kind, "open": kind}`. |
+| `gateAction` | string | `"move"` | The action whose direction names the gate cell. |
+| `markers` | object | — | `{"layer": string, "pairs": [{"dry": kind, "wet": kind}]}`. |
+| `markers.pairs[].over` / `.maxDepth` | string / int | — | Optional, together: the kind for water deeper than `maxDepth` (a positive integer), making the pair a banded marker (see **Markers**). |
+| `flood` | object | — | `{"variable": string, "layer": string, "kinds": [kind], "avatar": bool}` (`avatar` defaults to `true`). |
+| `seeps` | object | — | `{"layer": string, "kinds": [kind], "rate": int}`: slow leaks (see **Seeps**). `layer` defaults to `"objects"`, `rate` to `1`. |
+| `siphons` | object | — | `{"layer": string, "empty": kind, "running": kind, "rate": int}`: pipes that draw a pool below their crest (see **Siphons**). `layer` defaults to `"objects"`, `rate` to `1`. |
+
+```json
+{
+  "id": "water",
+  "type": "fill_spill",
+  "config": {
+    "heights": {"ground_0": 0, "ground_1": 1, "ground_2": 2, "ground_3": 3},
+    "waterLayer": "water",
+    "waterKinds": ["water_1", "water_2", "water_3"],
+    "barriers": {"layer": "objects", "kinds": ["gate_closed"]},
+    "gates": [{"layer": "objects", "closed": "gate_closed", "open": "gate_open"}],
+    "markers": {"layer": "objects", "pairs": [{"dry": "basin", "wet": "basin_full"}]},
+    "flood": {"variable": "flooded", "layer": "objects", "kinds": ["crate"], "avatar": true}
+  }
+}
+```
+
+A level places water as entities on `waterLayer`; the load settle spreads them,
+so authoring one entity with the pool's whole volume at the source is enough:
+`{"position": [1, 1], "kind": "water_1", "units": 18}`.
+
+**Tolerance contract** (both engines must agree): a missing or non-object
+`heights` makes the system **inert**. Height values that are not integers make
+their ground kind a bank. A water cell whose `units` is missing or not an
+integer contributes nothing, and a pool whose units sum to zero or less
+vanishes. Gate, marker and flood entries without string kinds are ignored. A `seeps` entry that is not an object, or whose `rate` is not a positive
+integer, disables seeps; seep kinds that are not strings are ignored. A
+`siphons` entry that is not an object, whose `empty` or `running` kind is not a
+string, or whose `rate` is not a positive integer (booleans do not count)
+disables siphons; their kinds are then plain objects and do not block water. A
+marker pair whose `over` is not a string, or whose `maxDepth` is not a positive
+integer (booleans do not count), behaves as a plain `dry`/`wet` pair and ignores
+`over`.
+Water left on a cell that has become a bank cannot occur through gates, which
+only close when dry; if a level authors it, that water's cell is skipped when
+the pool's lowest cell is chosen.
+
+**Reuse:** Game-agnostic. Nothing here knows about a particular game:
+the pack names its own ground, water, gate and marker kinds.
+
+---
+
 ## 3. System Summary Table
 
 | System | Type | Phase | Primary Action |
@@ -2141,6 +2316,7 @@ ground tag, can transform the vacated cell to `void`. Pair it with
 | Cell Rotation | `cell_rotation` | `action_resolution` | `rotate_cell` (configurable) |
 | Routed Motion | `routed_motion` | `npc_resolution` | (automatic once per accepted turn) |
 | Turn Cycle | `turn_cycle` | `action_resolution` + `npc_resolution` | configured accepted actions |
+| Fill Spill | `fill_spill` | `action_resolution` (gates) + `npc_resolution` (settle) | `move` into a gate or running siphon; water settles every turn and at load |
 
 **Demoted to rule recipes** (see [05_rules.md §9](05_rules.md)): single-slot inventory, consumable interactions, liquid transitions. These use the standard event–condition–effect primitives and no longer require dedicated engine systems.
 
