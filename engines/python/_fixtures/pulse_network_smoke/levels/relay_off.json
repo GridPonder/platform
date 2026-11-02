@@ -1,0 +1,22 @@
+{
+  "id": "relay_off",
+  "board": {
+    "size": [3, 1],
+    "layers": {
+      "lights": [["dark", "lit", "dark"]],
+      "objects": [["button", "junction", null]],
+      "controls": [["ready", null, null]],
+      "signals": [["idle", "idle", "idle"]]
+    }
+  },
+  "state": {"avatar": {"enabled": false}, "variables": {"queued": 0}},
+  "goals": [
+    {
+      "id": "target",
+      "type": "board_match",
+      "config": {"matchMode": "exact", "targetLayers": {"lights": [["lit", "dark", "dark"]]}}
+    }
+  ],
+  "loseConditions": [{"type": "max_actions", "config": {"limit": 1}}],
+  "solution": {"goldPath": [{"action": "tap", "position": [0, 0]}]}
+}

@@ -475,6 +475,13 @@ A state variable was modified.
 | `oldValue` | any | Previous value. |
 | `newValue` | any | New value. |
 
+### `pulse_trace`
+
+Optional diagnostic output from `pulse_network` (DSL 0.12). `record` is a
+string describing a direct hit, source, arrival or collision; `wave` is an
+integer. It records the already-resolved reaction without writing variables
+or changing the board. Enable it with the system's `trace` option.
+
 ### `turn_ended`
 All phases completed for this turn.
 

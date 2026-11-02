@@ -31,6 +31,7 @@ from .line_of_sight import LineOfSightSystem
 from .overlay_cursor import OverlayCursorSystem
 from .portals import PortalsSystem
 from .push_objects import PushObjectsSystem
+from .pulse_network import PulseNetworkSystem
 from .queued_emitters import QueuedEmittersSystem
 from .region_transform import RegionTransformSystem
 from .routed_motion import RoutedMotionSystem
@@ -56,6 +57,7 @@ _REGISTRY: dict[str, SystemFactory] = {
     "cascade_cells": lambda sys_id, config: CascadeCellsSystem(sys_id, config),
     "proximity_effects": lambda sys_id, config: ProximityEffectsSystem(sys_id, config),
     "push_objects": lambda sys_id, _: PushObjectsSystem(sys_id),
+    "pulse_network": lambda sys_id, _: PulseNetworkSystem(sys_id),
     "portals": lambda sys_id, _: PortalsSystem(sys_id),
     "ice_slide": lambda sys_id, _: IceSlideSystem(sys_id),
     "flood_fill": lambda sys_id, _: FloodFillSystem(sys_id),

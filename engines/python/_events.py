@@ -482,6 +482,10 @@ def npc_moved(npc_id: str, from_pos: Pos, to_pos: Pos) -> dict:
 # Accessor helpers
 # ---------------------------------------------------------------------------
 
+def pulse_trace(record: str, wave: int) -> dict:
+    return {"type": "pulse_trace", "record": record, "wave": wave}
+
+
 def event_position(event: dict) -> Optional[Pos]:
     p = event.get("position")
     if p is None:

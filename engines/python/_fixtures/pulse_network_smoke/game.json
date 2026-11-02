@@ -1,0 +1,198 @@
+{
+  "layers": [
+    {
+      "id": "ground",
+      "occupancy": "exactly_one",
+      "default": "floor"
+    },
+    {
+      "id": "objects",
+      "occupancy": "zero_or_one"
+    },
+    {
+      "id": "lights",
+      "occupancy": "zero_or_one"
+    },
+    {
+      "id": "controls",
+      "occupancy": "zero_or_one"
+    },
+    {
+      "id": "signals",
+      "occupancy": "zero_or_one"
+    }
+  ],
+  "entityKinds": {
+    "floor": {
+      "layer": "ground",
+      "symbol": "A"
+    },
+    "dark": {
+      "layer": "lights",
+      "symbol": "B"
+    },
+    "lit": {
+      "layer": "lights",
+      "symbol": "C"
+    },
+    "rising": {
+      "layer": "lights",
+      "symbol": "D"
+    },
+    "falling": {
+      "layer": "lights",
+      "symbol": "E"
+    },
+    "button": {
+      "layer": "objects",
+      "symbol": "F"
+    },
+    "junction": {
+      "layer": "objects",
+      "symbol": "G"
+    },
+    "charge": {
+      "layer": "objects",
+      "symbol": "H"
+    },
+    "charged": {
+      "layer": "objects",
+      "symbol": "I"
+    },
+    "wait": {
+      "layer": "objects",
+      "symbol": "J"
+    },
+    "fuse": {
+      "layer": "objects",
+      "symbol": "K"
+    },
+    "spent": {
+      "layer": "objects",
+      "symbol": "L"
+    },
+    "write_on": {
+      "layer": "objects",
+      "symbol": "M"
+    },
+    "write_off": {
+      "layer": "objects",
+      "symbol": "N"
+    },
+    "ready": {
+      "layer": "controls",
+      "symbol": "O"
+    },
+    "pressed": {
+      "layer": "controls",
+      "symbol": "P"
+    },
+    "idle": {
+      "layer": "signals",
+      "symbol": "Q"
+    },
+    "hit": {
+      "layer": "signals",
+      "symbol": "R"
+    },
+    "cancelled": {
+      "layer": "signals",
+      "symbol": "S"
+    },
+    "burst": {
+      "layer": "signals",
+      "symbol": "T"
+    }
+  },
+  "actions": [
+    {
+      "id": "tap",
+      "params": {
+        "position": {
+          "type": "position"
+        }
+      }
+    }
+  ],
+  "systems": [
+    {
+      "id": "activate",
+      "type": "terrain_edit",
+      "config": {
+        "action": "tap",
+        "layer": "controls",
+        "fromKind": "ready",
+        "kind": "pressed"
+      }
+    },
+    {
+      "id": "network",
+      "type": "pulse_network",
+      "config": {
+        "controlsLayer": "controls",
+        "pressedKind": "pressed",
+        "readyKind": "ready",
+        "lightsLayer": "lights",
+        "offKind": "dark",
+        "onKind": "lit",
+        "risingKind": "rising",
+        "fallingKind": "falling",
+        "objectsLayer": "objects",
+        "signalsLayer": "signals",
+        "idleKind": "idle",
+        "hitKind": "hit",
+        "cancelledKind": "cancelled",
+        "burstKind": "burst",
+        "relayKind": "junction",
+        "flipKinds": [
+          "button",
+          "junction",
+          "fuse"
+        ],
+        "fuseKinds": {
+          "fuse": "spent"
+        },
+        "writeKinds": {
+          "write_on": "lit",
+          "write_off": "dark"
+        },
+        "delayKinds": {
+          "charge": "charged"
+        },
+        "queuedVariable": "queued",
+        "trace": true,
+        "collisions": true
+      }
+    }
+  ],
+  "levelSequence": [
+    {
+      "type": "level",
+      "ref": "relay_on"
+    },
+    {
+      "type": "level",
+      "ref": "relay_off"
+    },
+    {
+      "type": "level",
+      "ref": "delay"
+    },
+    {
+      "type": "level",
+      "ref": "cancel"
+    },
+    {
+      "type": "level",
+      "ref": "burst"
+    },
+    {
+      "type": "level",
+      "ref": "fuse"
+    },
+    {
+      "type": "level",
+      "ref": "no_burst"
+    }
+  ]
+}

@@ -109,8 +109,10 @@ class _ControlsWidgetState extends State<ControlsWidget> {
   @override
   Widget build(BuildContext context) {
     final actions = _buttonActions.map((a) => _actionButton(a)).toList();
-    final controls = Row(
-      mainAxisAlignment: MainAxisAlignment.center,
+    final controls = Wrap(
+      alignment: WrapAlignment.center,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      runSpacing: 4,
       children: [
         if (widget.hintStatuses.isNotEmpty)
           _HintBtn(statuses: widget.hintStatuses, onTap: widget.onHint),

@@ -418,4 +418,8 @@ class GameEvent {
 
   @override
   String toString() => '$type($payload)';
+
+  /// Diagnostic pulse record; it never writes a gameplay variable.
+  static GameEvent pulseTrace(String record, int wave) =>
+      GameEvent('pulse_trace', {'record': record, 'wave': wave});
 }

@@ -19,6 +19,7 @@ import 'line_of_sight_system.dart';
 import 'overlay_cursor_system.dart';
 import 'portals_system.dart';
 import 'push_objects_system.dart';
+import 'pulse_network_system.dart';
 import 'queued_emitters_system.dart';
 import 'region_transform_system.dart';
 import 'routed_motion_system.dart';
@@ -50,6 +51,7 @@ class SystemRegistry {
     'elastic_block': (id, config) => ElasticBlockSystem(id: id, config: config),
     'individual_actors': (id, _) => IndividualActorsSystem(id: id),
     'push_objects': (id, _) => PushObjectsSystem(id: id),
+    'pulse_network': (id, _) => PulseNetworkSystem(id: id),
     'portals': (id, _) => PortalsSystem(id: id),
     'follower_npcs': (id, _) => FollowerNpcsSystem(id: id),
     'slide_merge': (id, _) => SlideMergeSystem(id: id),

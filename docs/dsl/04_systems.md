@@ -1,5 +1,49 @@
 # Gridponder DSL — System Catalog
 
+## `pulse_network` (DSL 0.12)
+
+A reusable cascade system for synchronous orthogonal pulse puzzles. It replaces
+per-cell rule expansion with one bounded wave algorithm. It consumes a
+`cell_transformed` event on `controlsLayer` whose `toKind` is `pressedKind`,
+only while that cell still holds `pressedKind`, and restores `readyKind`.
+Use a normal `terrain_edit` action to press controls. Levels can enable the
+network through `systemOverrides`; disabled networks do nothing.
+
+Configuration is pack vocabulary, not fixed engine entity names:
+
+| Fields | Meaning |
+|---|---|
+| `controlsLayer`, `pressedKind`, `readyKind` | Accepted trigger and its reset state. |
+| `lightsLayer`, `offKind`, `onKind` | The two stable light states. Only cells holding these kinds receive pulses. |
+| `risingKind`, `fallingKind` | Transient notification kinds emitted before settling a flipped light. |
+| `objectsLayer`, `relayKind` | A relay forwards only when a non-cancelled pulse changes it from OFF to ON. |
+| `signalsLayer`, `idleKind`, `hitKind`, `cancelledKind`, `burstKind` | Per-tap visual processing states, reset at the next accepted press. |
+| `flipKinds` | Controls that flip themselves and their four orthogonal neighbours. |
+| `fuseKinds` | Optional map from a one-use flip control to its spent kind. Its control-layer cell is removed after use. |
+| `writeKinds` | Optional control-kind map to `onKind` or `offKind`. Writes affect neighbours and protect them from further processing this tap. |
+| `delayKinds` | Optional map from an empty store to its loaded kind. Loaded stores release after the next press's direct changes. Pressing a loaded store releases without reloading. |
+| `queuedVariable` | Optional 0/1 variable indicating whether this press loaded a new store. |
+| `collisions` | Default `true`: same-wave opposites cancel; a perpendicular pair bursts. Cancellation takes precedence. `false` disables both effects. |
+| `bursts` | Default `true`. Set `false` to merge perpendicular arrivals into one flip without forwarding from ordinary cells. Opposite cancellation still follows `collisions`. |
+| `trace` | Default `false`: emit read-only `pulse_trace` diagnostic events. |
+
+A ready control outside `flipKinds`, `writeKinds`, and `delayKinds` simply
+advances time, allowing stores to release. Every pulse travels exactly one
+orthogonal edge. A relay turning ON or a perpendicular burst sends the next
+wave; ordinary single-hit lights do not forward. Each light processes at most
+once per press, including cancellation. Later arrivals are ignored.
+
+Directions are bit sets combined with OR, never arithmetic counts. Current
+and next waves use separate buffers, so arrivals from different waves cannot
+collide. Only the board, control availability, stores and optional queue flag
+persist; buffers and diagnostic bookkeeping are local to one execution.
+
+Events include the usual `cell_transformed`, fuse-removal and optional queue
+`variable_changed` notifications. `pulse_trace` has `record` (a diagnostic
+record name) and `wave` (integer), and never creates state variables. Records
+identify direct hits, relay seeds, store releases, writes, wave arrivals,
+ignored arrivals, relays and bursts. Trace output does not affect gameplay.
+
 The built-in engine systems, their execution order, and the per-system configuration reference.
 
 ## 1. System Architecture
