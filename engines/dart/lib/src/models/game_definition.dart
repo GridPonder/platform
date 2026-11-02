@@ -18,6 +18,7 @@ class ActionParamDef {
 /// A declared action type in game.json.
 class ActionDef {
   final String id;
+  final String? label;
   final Map<String, ActionParamDef> params;
 
   /// If set, this action is only offered when at least one of these entity
@@ -38,6 +39,7 @@ class ActionDef {
   const ActionDef({
     required this.id,
     required this.params,
+    this.label,
     this.entityKind,
     this.color,
   });
@@ -45,6 +47,7 @@ class ActionDef {
     final rawParams = j['params'] as Map<String, dynamic>? ?? {};
     return ActionDef(
       id: j['id'] as String,
+      label: j['label'] as String?,
       params: rawParams.map((k, v) =>
           MapEntry(k, ActionParamDef.fromJson(v as Map<String, dynamic>))),
       entityKind: switch (j['entityKind']) {
@@ -117,6 +120,13 @@ class GameReadout {
 
 /// UI display configuration for a game.
 class GameUiConfig {
+  /// Suppress free state inspection and solution assistance.
+  final bool restrictedInformation;
+
+  /// Optional undo policy, independent of omniscient assistance restrictions.
+  final bool? allowUndo;
+  bool get undoAllowed => allowUndo ?? !restrictedInformation;
+
   /// Whether to show the goal panel during play.
   final bool showGoal;
 
@@ -142,6 +152,8 @@ class GameUiConfig {
   final bool showMoves;
 
   const GameUiConfig({
+    this.restrictedInformation = false,
+    this.allowUndo,
     this.showGoal = false,
     this.showGuide = false,
     this.readouts = const [],
@@ -153,6 +165,8 @@ class GameUiConfig {
     if (j == null) return const GameUiConfig();
     final raw = j['readouts'];
     return GameUiConfig(
+      restrictedInformation: (j['restrictedInformation'] as bool?) ?? false,
+      allowUndo: j['allowUndo'] as bool?,
       showGoal: (j['showGoal'] as bool?) ?? false,
       showGuide: (j['showGuide'] as bool?) ?? false,
       readouts: raw is! List

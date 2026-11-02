@@ -351,6 +351,26 @@ def status_fingerprint(game_def, level_def: dict, state) -> str:
     )
 
 
+def readout_lines(game_def, state, *, anonymize: bool = False) -> list[str]:
+    """One `label: value` line per declared `ui.readouts` entry that has a value."""
+    lines: list[str] = []
+    for i, readout in enumerate(getattr(game_def, "ui_readouts", []) or [], start=1):
+        variable = readout["variable"]
+        if variable not in state.variables:
+            continue
+        value = state.variables[variable]
+        blank = readout.get("blankWhen")
+        if (blank is not None and not isinstance(value, bool)
+                and isinstance(value, (int, float)) and value == blank):
+            shown = "-"
+        else:
+            shown = _format_value(value)
+        label = f"Readout {i}" if anonymize else readout.get("label", "")
+        lines.append(f"{label}: {shown}")
+
+    return lines
+
+
 def status_lines(
     game_def,
     level_def: dict,
@@ -416,19 +436,7 @@ def status_lines(
                 parts.append(f"{name_of(str(kind))} {_format_value(value)}")
             lines.append("Moves left: " + ", ".join(parts))
 
-    for i, readout in enumerate(getattr(game_def, "ui_readouts", []) or [], start=1):
-        variable = readout["variable"]
-        if variable not in state.variables:
-            continue
-        value = state.variables[variable]
-        blank = readout.get("blankWhen")
-        if (blank is not None and not isinstance(value, bool)
-                and isinstance(value, (int, float)) and value == blank):
-            shown = "-"
-        else:
-            shown = _format_value(value)
-        label = f"Readout {i}" if anonymize else readout.get("label", "")
-        lines.append(f"{label}: {shown}")
+    lines.extend(readout_lines(game_def, state, anonymize=anonymize))
 
     return "".join(f"\n{line}" for line in lines)
 

@@ -29,7 +29,7 @@ if str(_REPO_ROOT) not in sys.path:
 from engines.python.loader import load_pack
 from engines.python._turn_engine import TurnEngine
 from engines.python.text_renderer import render as render_board
-from engines.python.observation import build_prompt, status_fingerprint
+from engines.python.observation import build_prompt, readout_lines, status_fingerprint
 from engines.python.goal_renderer import describe_loss, render_goals
 from engines.python.anon import (
     build_anon_action_shapes,
@@ -320,6 +320,8 @@ def main() -> None:
                     kind_to_label=kind_symbol_overrides,
                 ),
                 "inventory": str(inv) if inv is not None else "",
+                "readouts": readout_lines(
+                    game_def, engine.state, anonymize=anon),
                 "moves_this_attempt": engine.state.action_count,
                 "actions_total": total_now,
                 "attempt": attempt_number,

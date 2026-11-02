@@ -139,6 +139,11 @@ class GameDef:
         # play, in declaration order. Mirrors Dart's GameUiConfig.readouts —
         # non-object entries and entries without a variable are dropped.
         self.ui_readouts: list[dict] = self._parse_readouts(data.get("ui"))
+        # `ui.restrictedInformation`: the level guide is the player's only
+        # statement of the rules, so an agent harness must show it.
+        _ui = data.get("ui")
+        self.ui_restricted_information: bool = bool(
+            isinstance(_ui, dict) and _ui.get("restrictedInformation"))
 
     @staticmethod
     def _parse_readouts(raw_ui) -> list[dict]:

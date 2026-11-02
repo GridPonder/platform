@@ -725,3 +725,23 @@ Default values applied to levels when those fields are not specified. This reduc
   }
 }
 ```
+
+### Restricted observation interfaces (additive)
+
+`ui.restrictedInformation` defaults to `false`. When true, the app suppresses
+undo, hint replay, debug Solve and predictive action previews; the Undo control
+is replaced by a visible Restart. It does not hide
+arbitrary board entities or variables: systems/pack authors must explicitly
+project public observations and expose only public variables via `ui.readouts`.
+Readouts accept strings as well as numbers; text journals wrap in the app.
+Action definitions may set an optional `label` for human-facing control text;
+action ids remain the stable engine/agent API. Neither feature changes versions.
+
+### Undo policy
+
+Optional `ui.allowUndo` explicitly permits or disables UI undo independently
+of `restrictedInformation`. When omitted, undo remains allowed for ordinary
+games and disabled for restricted-information games, preserving the previous
+behavior. Enabling undo does not enable predictive previews, saved solutions
+or omniscient hints. It rewinds actual state; information the player has already
+observed is naturally retained in the player's memory.
