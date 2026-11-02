@@ -5,6 +5,7 @@ import 'package:gridponder_engine/engine.dart';
 import '../animation/actor_facing.dart';
 import '../animation/cascade_playback.dart';
 import '../services/pack_service.dart';
+import 'catalog_panel.dart' show CatalogIcon;
 
 /// Resolves a colour name (e.g. "red") to a Color. Pack themes can override
 /// or extend the built-in palette via theme.json's `palette` block; any name
@@ -31,7 +32,8 @@ Color cellNamedColor(String name, {Map<String, String>? palette}) {
   };
 }
 
-Color? _parsePaletteHex(String hex) {
+Color? _parsePaletteHex(String? hex) {
+  if (hex == null) return null;
   var s = hex.trim();
   if (s.startsWith('#')) s = s.substring(1);
   if (s.length == 6) s = 'FF$s';
@@ -807,10 +809,16 @@ class BoardRenderer extends StatelessWidget {
   /// The cell size [build] uses for a board of [cols] x [rows] laid out in
   /// [constraints]. Exposed so a parent that transforms the board (the play
   /// screen's zoom camera) can locate cells without re-deriving the rule.
-  static double cellSizeFor(BoxConstraints constraints, int cols, int rows) {
+  static double cellSizeFor(
+    BoxConstraints constraints,
+    int cols,
+    int rows, {
+    double maxCellSize = 70,
+  }) {
     return (constraints.maxWidth / cols)
-        .clamp(15.0, 70.0)
-        .clamp(0.0, constraints.maxHeight / rows);
+        .clamp(15.0, max(15.0, maxCellSize))
+        .clamp(0.0, constraints.maxHeight / rows)
+        .toDouble();
   }
 
   @override
@@ -822,7 +830,14 @@ class BoardRenderer extends StatelessWidget {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final cellSize = cellSizeFor(constraints, cols, rows);
+        final cellSize = cellSizeFor(
+          constraints,
+          cols,
+          rows,
+          maxCellSize:
+              (packService.presentation?['maxCellSize'] as num?)?.toDouble() ??
+              70,
+        );
 
         final gridWidth = cellSize * cols;
         final gridHeight = cellSize * rows;
@@ -1951,6 +1966,55 @@ class _ActionPreviewPainter extends CustomPainter {
       oldDelegate.cellSize != cellSize;
 }
 
+/// Single cell dividers, with outer bevels around a solid region's perimeter.
+Border cellSurfaceBorder(
+  LevelState state,
+  Position pos,
+  Map<String, dynamic> style, {
+  Map<String, String>? palette,
+}) {
+  final solidKind = style['solidKind'] as String?;
+  bool solid(int x, int y) =>
+      solidKind != null &&
+      state.board.getEntity('ground', Position(x, y))?.kind == solidKind;
+  Color color(String key, String fallback) =>
+      _parsePaletteHex((style[key] as String?) ?? palette?[key] ?? fallback)!;
+  final edgeWidth = (style['edgeWidth'] as num?)?.toDouble() ?? 2.5;
+  final light = BorderSide(
+    color: color('edgeLight', '#CCCCCC'),
+    width: edgeWidth,
+  );
+  final dark = BorderSide(
+    color: color('edgeDark', '#444444'),
+    width: edgeWidth,
+  );
+  final grout = BorderSide(
+    color: color('lineColor', '#888888'),
+    width: (style['lineWidth'] as num?)?.toDouble() ?? 1.1,
+  );
+  final dividerWidth = (style['solidLineWidth'] as num?)?.toDouble() ?? 0;
+  final divider = dividerWidth > 0
+      ? BorderSide(
+          color: color('solidLineColor', '#666666'),
+          width: dividerWidth,
+        )
+      : BorderSide.none;
+  if (solid(pos.x, pos.y)) {
+    return Border(
+      top: solid(pos.x, pos.y - 1) ? BorderSide.none : light,
+      left: solid(pos.x - 1, pos.y) ? BorderSide.none : light,
+      right: solid(pos.x + 1, pos.y) ? divider : dark,
+      bottom: solid(pos.x, pos.y + 1) ? divider : dark,
+    );
+  }
+  return Border(
+    top: pos.y == 0 ? grout : BorderSide.none,
+    left: pos.x == 0 ? grout : BorderSide.none,
+    right: solid(pos.x + 1, pos.y) ? BorderSide.none : grout,
+    bottom: solid(pos.x, pos.y + 1) ? BorderSide.none : grout,
+  );
+}
+
 class _Cell extends StatelessWidget {
   final int x, y;
   final LevelState state;
@@ -2007,22 +2071,21 @@ class _Cell extends StatelessWidget {
       );
     }
     final layerOrder = resolveBoardLayerOrder(game);
+    final gridStyle =
+        packService.presentation?['grid'] as Map<String, dynamic>?;
+    final border = gridStyle != null
+        ? cellSurfaceBorder(state, pos, gridStyle, palette: packService.theme?.palette)
+        : const Border.fromBorderSide(
+            BorderSide(color: Colors.black12, width: 0.5),
+          );
     return Stack(
       fit: StackFit.expand,
       children: [
-        // Paint the grid between the ground and interactive layers. Keeping
-        // the border out of Container.decoration avoids its implicit inset,
-        // so edge-connected displays can meet exactly at cell boundaries and
-        // naturally cover the grid line where a connection passes through.
         for (final layerId in layerOrder)
           if (layerId == 'ground' && !skipGround) _layer(layerId, pos),
-        const IgnorePointer(
+        IgnorePointer(
           child: DecoratedBox(
-            decoration: BoxDecoration(
-              border: Border.fromBorderSide(
-                BorderSide(color: Colors.black12, width: 0.5),
-              ),
-            ),
+            decoration: BoxDecoration(border: border),
           ),
         ),
         for (final layerId in layerOrder)
@@ -2273,6 +2336,119 @@ class _Cell extends StatelessWidget {
     final type = display['type'] as String?;
     final color = _resolveDisplayColor(display['color'], entity);
     switch (type) {
+      // Legible labels and optional illustrations over a supplied sprite.
+      case 'image_label':
+        final label = _resolveDisplayString(display['label'], entity) ?? '';
+        final badge = _resolveDisplayString(display['badge'], entity) ?? '';
+        final badgeIcon = display['badgeIcon'] == 'check'
+            ? Icons.check_rounded
+            : null;
+        final badgeLabel = display['badgeLabel'] as String? ?? 'Completed';
+        final image = display['image'] as String?;
+        final labelOnTop = display['labelPosition'] == 'top';
+        final labelHeight = (cellSize * .18).clamp(10.0, 24.0);
+        final imageSize = (display['imageSize'] as num?)?.toDouble() ?? .48;
+        final palette = packService.theme?.palette;
+        final labelBgColor = _parsePaletteHex(
+              display['labelBgColor'] as String? ?? palette?['labelBackground'],
+            ) ??
+            Colors.black87.withValues(alpha: .75);
+        final labelTextColor = _parsePaletteHex(
+              display['labelTextColor'] as String? ?? palette?['labelText'],
+            ) ??
+            Colors.white;
+        final badgeBgColor = _parsePaletteHex(
+              display['badgeColor'] as String? ?? palette?['badgeBackground'],
+            ) ??
+            Colors.green.shade700;
+
+        return Stack(
+          children: [
+            if (image != null)
+              Positioned(
+                right:
+                    cellSize *
+                    ((display['imageRight'] as num?)?.toDouble() ?? .02),
+                top: max(
+                  cellSize * ((display['imageTop'] as num?)?.toDouble() ?? .19),
+                  labelOnTop ? labelHeight + cellSize * .07 : 0,
+                ),
+                child: CatalogIcon(
+                  key: ValueKey('icon-${entity.kind}'),
+                  pack: packService,
+                  image: image,
+                  size: cellSize * imageSize,
+                  held: display['heldImage'] == true,
+                ),
+              ),
+            Positioned(
+              left: cellSize * .02,
+              right: cellSize * .02,
+              top: labelOnTop ? cellSize * .02 : null,
+              bottom: labelOnTop ? null : cellSize * .025,
+              height: labelHeight,
+              child: Container(
+                key: ValueKey('label-${entity.kind}'),
+                padding: EdgeInsets.symmetric(
+                  horizontal: cellSize * .03,
+                  vertical: cellSize * .015,
+                ),
+                decoration: BoxDecoration(
+                  color: display['labelBackground'] == false
+                      ? Colors.transparent
+                      : labelBgColor,
+                  borderRadius: BorderRadius.circular(cellSize * .05),
+                ),
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: (cellSize * .12).clamp(8, 17),
+                      fontWeight: FontWeight.w700,
+                      color: labelTextColor,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            if (badge.isNotEmpty || badgeIcon != null)
+              Positioned(
+                right: cellSize * .03,
+                top: labelOnTop ? null : cellSize * .03,
+                bottom: labelOnTop ? cellSize * .03 : null,
+                child: Container(
+                  constraints: BoxConstraints(
+                    minWidth: cellSize * .23,
+                    minHeight: cellSize * .23,
+                  ),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: badgeBgColor,
+                    shape: BoxShape.circle,
+                  ),
+                  child: badgeIcon != null
+                      ? Semantics(
+                          label: badgeLabel,
+                          child: Icon(
+                            badgeIcon,
+                            key: ValueKey('badge-${entity.kind}'),
+                            color: Colors.white,
+                            size: cellSize * .18,
+                          ),
+                        )
+                      : Text(
+                          badge,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: cellSize * .14,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                ),
+              ),
+          ],
+        );
       // An entity that occupies state without being drawn. Used by games that
       // hide an objective the player must locate by other means (see the
       // `sonar` system): the cell still holds the entity, the renderer simply
@@ -2328,6 +2504,7 @@ class _Cell extends StatelessWidget {
             ? badgeMap[badgeRaw].toString()
             : badgeRaw;
         final isOverlay = display['overlay'] == true;
+        final badgeScale = (display['badgeScale'] as num?)?.toDouble() ?? 1;
         if (isOverlay) {
           // A badge whose label resolves to nothing (an `@param:` this
           // instance does not carry) is not drawn, so one kind can badge only
@@ -2337,10 +2514,17 @@ class _Cell extends StatelessWidget {
             alignment: Alignment.bottomRight,
             child: Container(
               margin: EdgeInsets.all(cellSize * 0.04),
-              width: cellSize * 0.46,
-              height: cellSize * 0.46,
+              width:
+                  cellSize *
+                  0.46 *
+                  badgeScale *
+                  (badgeScale < 1 && labelText.length > 2 ? 1.6 : 1),
+              height: cellSize * 0.46 * badgeScale,
               decoration: BoxDecoration(
-                shape: BoxShape.circle,
+                shape: badgeScale == 1 ? BoxShape.circle : BoxShape.rectangle,
+                borderRadius: badgeScale == 1
+                    ? null
+                    : BorderRadius.circular(cellSize),
                 color: Colors.black87,
                 border: Border.all(color: c, width: 1.5),
               ),
@@ -2354,7 +2538,7 @@ class _Cell extends StatelessWidget {
                     style: TextStyle(
                       color: Colors.white,
                       fontWeight: FontWeight.bold,
-                      fontSize: cellSize * 0.26,
+                      fontSize: cellSize * 0.26 * badgeScale,
                       shadows: const [
                         Shadow(color: Colors.black, blurRadius: 2),
                       ],
