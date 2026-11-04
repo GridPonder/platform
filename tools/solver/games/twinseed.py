@@ -5,31 +5,27 @@ Delegates game simulation to the Python engine via engine_adapter,
 adding a precomputed admissible heuristic for A* search.
 
 Heuristic (precomputed at load time):
-  For each garden plot, run Dijkstra over (basket_pos, last_push_dir) to find the
-  minimum cost to push a basket to that plot, where cost = push_count + 2 * direction_changes.
+  For each garden plot, compute the minimum number of relaxed move commands
+  needed to deliver a basket. Ignore avatar positioning and movable obstacles.
+  A previously placed clone can make repositioning cost only one action, so
+  direction changes do not carry an extra charge.
 
-  The direction_change penalty (2 per change) is a tight lower bound: after pushing in
-  direction D, repositioning to push in a perpendicular direction requires navigating around
-  the basket — at least 2 extra moves even in open space. Clone does not reduce this below 2.
+  One command can slide a basket or keep pushing it while the avatar slides.
+  Allow every intermediate stop and ignore blockers, retaining a lower bound.
 
-  Ice-aware (admissible): a single push can slide a basket across multiple ice cells.
-  We use expanded-reachability — the basket CAN stop at any intermediate ice cell (a real
-  object in the actual game could stop it there). This strictly underestimates push cost
-  when ice is present, preserving admissibility.
-
-  Assignment lower bound: with N baskets and N plots, we enumerate all N! assignments and
-  use the minimum total cost (optimal bipartite matching). For N ≤ 4 this is cheap; for
-  larger N we fall back to the sum-of-minima, which is still admissible.
+  Match every remaining plot to a distinct basket at minimum total cost.
+  Spare baskets need not be planted. For up to four plots enumerate assignments;
+  otherwise sum the per-plot minima, relaxing the distinct-basket requirement.
 
 Dead-end pruning:
-  If any remaining basket has push_dist = ∞ to every remaining plot, prune immediately.
-  This subsumes the old corner check and also catches ice-specific dead ends.
+  Prune only when the remaining plots cannot be supplied by the baskets.
+  A stranded spare basket does not make the state dead.
 """
 
 from __future__ import annotations
 
-import heapq
 import sys
+from collections import deque
 from dataclasses import dataclass, field
 from itertools import combinations, permutations
 from pathlib import Path
@@ -45,12 +41,12 @@ _PACK_DIR = Path(__file__).parent.parent.parent.parent / "packs" / "twinseed"
 
 ACTIONS: List[str] = ["move_up", "move_down", "move_left", "move_right", "clone"]
 
-# (dx, dy, direction_name) — direction the basket MOVES when pushed
-_PUSH_DIRS: List[Tuple[int, int, str]] = [
-    (1,  0, "right"),
-    (-1, 0, "left"),
-    (0,  1, "down"),
-    (0, -1, "up"),
+# (dx, dy) — direction the basket MOVES when pushed
+_PUSH_DIRS: List[Tuple[int, int]] = [
+    (1,  0),
+    (-1, 0),
+    (0,  1),
+    (0, -1),
 ]
 
 
@@ -61,8 +57,8 @@ _PUSH_DIRS: List[Tuple[int, int, str]] = [
 @dataclass
 class _HeuristicTable:
     """
-    push_dist[plot_xy][basket_xy] = Dijkstra cost (push_count + 2*direction_changes)
-    to move a basket from basket_xy to plot_xy on the static board.
+    push_dist[plot_xy][basket_xy] = relaxed move-command count to deliver a
+    basket from basket_xy to plot_xy on the static board.
 
     plot_positions: the set of initial garden plot positions (never changes after load).
     """
@@ -79,17 +75,15 @@ class _HeuristicTable:
         """
         Minimum-cost assignment of baskets to plots (admissible lower bound).
 
-        When n_baskets > n_plots some baskets will drown; we choose the cheapest
+        When n_baskets > n_plots spare baskets may remain; we choose the cheapest
         subset of k=n_plots baskets to fill each plot.  We enumerate all C(n,k)
         choices of which baskets to plant, then all k! plot permutations.
         For k > 4 we fall back to per-plot minimums (always admissible).
         """
         n = len(basket_positions)
         k = len(remaining_plots)
-        if n == 0:
-            return 0.0
         if k == 0:
-            return float("inf")
+            return 0.0
         if n < k:
             return float("inf")    # too few baskets — can't fill all plots
 
@@ -127,22 +121,18 @@ class _HeuristicTable:
 
 def _precompute_heuristic(board: Any, width: int, height: int) -> _HeuristicTable:
     """
-    Precompute push_dist tables using Dijkstra from each garden plot.
-
-    State:  (basket_x, basket_y, last_push_dir_or_None)
-    Cost:   push_count + 2 * direction_changes
+    Precompute push_dist tables using reverse BFS from each garden plot.
+    Each edge costs one move command, including its possible ice cascade.
 
     Transitions (reverse pushes):
       Basket arrived at (cx, cy) by a push in direction (dx, dy).
       Origin O = (cx - dx*j, cy - dy*j) for j ≥ 1.
-      For j > 1, all cells between O and (cx, cy) exclusive must be ice
-      (the basket slid through them). But we allow stopping at ANY intermediate
-      ice cell — meaning a real blocking object could stop the slide there.
-      This gives a strict underestimate → admissible.
-
-    Repositioning penalty:
-      If the next push (further back in the sequence) is in a different direction
-      than the current push, we pay +2 for avatar repositioning.
+      Object sliding can cross any number of intermediate ice cells.
+      If O is ice, the avatar can keep pushing until it steps off the ice.
+      That permits one non-ice intermediate cell before the basket's final
+      slide. Ignore blockers and allow early stops throughout this relaxed
+      move. Originally icy cells remain available for sliding even if they
+      are later melted, which only makes the estimate more optimistic.
     """
     from engines.python._models import Pos
 
@@ -166,54 +156,39 @@ def _precompute_heuristic(board: Any, width: int, height: int) -> _HeuristicTabl
     inf = float("inf")
 
     for (gx, gy) in plot_positions:
-        # Dijkstra over (basket_pos, last_push_dir_or_None)
-        dist: Dict[Tuple[Tuple[int, int], Optional[str]], float] = {}
-        counter = 0
+        dist = {(gx, gy): 0.0}
+        queue = deque([(gx, gy)])
 
-        start: Tuple[Tuple[int, int], Optional[str]] = ((gx, gy), None)
-        dist[start] = 0.0
-        pq: List = [(0.0, counter, (gx, gy), None)]
+        while queue:
+            cx, cy = queue.popleft()
+            new_cost = dist[(cx, cy)] + 1.0
 
-        while pq:
-            cost, _, (cx, cy), d_in = heapq.heappop(pq)
-            key = ((cx, cy), d_in)
-            if dist.get(key, inf) < cost:
-                continue
-
-            for dx, dy, d_new in _PUSH_DIRS:
-                # Repositioning cost: paid when THIS push direction differs from
-                # the direction of the NEXT push in the sequence (d_in).
-                reposition = 2 if (d_in is not None and d_new != d_in) else 0
-                new_cost = cost + 1.0 + reposition
+            for dx, dy in _PUSH_DIRS:
 
                 # Walk backwards from (cx, cy) in the anti-push direction.
                 j = 1
+                non_ice = 0
                 while True:
                     ox, oy = cx - dx * j, cy - dy * j
                     kind_o = cell_kind(ox, oy)
                     if kind_o in ("oob", "void"):
                         break
 
-                    new_key = ((ox, oy), d_new)
-                    if dist.get(new_key, inf) > new_cost:
-                        dist[new_key] = new_cost
-                        counter += 1
-                        heapq.heappush(pq, (new_cost, counter, (ox, oy), d_new))
+                    # With a non-ice cell in the interior, the basket must
+                    # start on ice so the avatar can push during its slide.
+                    if non_ice == 0 or kind_o == "ice":
+                        origin = (ox, oy)
+                        if dist.get(origin, inf) > new_cost:
+                            dist[origin] = new_cost
+                            queue.append(origin)
 
-                    # Extend j only if the current cell is ice — meaning the basket
-                    # could have slid THROUGH it from a farther-back origin.
-                    if kind_o == "ice":
-                        j += 1
-                    else:
+                    if kind_o != "ice":
+                        non_ice += 1
+                    if non_ice > 1:
                         break
+                    j += 1
 
-        # Aggregate over all last-directions: keep the minimum cost per position.
-        pos_dist: Dict[Tuple[int, int], float] = {}
-        for (pos, _d), c in dist.items():
-            if c < pos_dist.get(pos, inf):
-                pos_dist[pos] = c
-
-        push_dist[(gx, gy)] = pos_dist
+        push_dist[(gx, gy)] = dist
 
     return _HeuristicTable(plot_positions=plot_positions, push_dist=push_dist)
 
@@ -270,9 +245,8 @@ def heuristic(state: ea.EngineState, info: TwinseedInfo) -> float:
     """
     Admissible A* heuristic using the precomputed push_dist tables.
 
-    For each remaining basket, look up its cost to the nearest unplanted plot
-    in the precomputed table. Use optimal bipartite matching across baskets and
-    plots (exact for N ≤ 4). Returns inf if any basket has no path to any plot.
+    Match remaining plots to baskets using relaxed move-command costs.
+    Returns zero when all plots are planted, even if spare baskets remain.
     """
     gs = state.game_state
     board = gs.board
@@ -287,69 +261,20 @@ def heuristic(state: ea.EngineState, info: TwinseedInfo) -> float:
         for pos, entity in objects_layer.entries()
         if entity.kind == "seed_basket"
     ]
-    if not baskets:
-        return 0.0
-
     # Only consider plots that still exist in the current game state.
     remaining_plots = [
         (pos.x, pos.y)
         for pos, entity in ground_layer.entries()
         if entity.kind == "garden_plot"
     ]
-    if not remaining_plots:
-        return float("inf")
-
     return info.htable.min_cost_assignment(baskets, remaining_plots)
 
 
 def can_prune(
     state: ea.EngineState, info: TwinseedInfo, depth: int, max_depth: int
 ) -> bool:
-    """
-    Prune dead states.
-
-    Primary check (from precomputed table): if any remaining basket has
-    push_dist = ∞ to every remaining plot, the level is unsolvable from
-    this state — prune immediately. This subsumes the old corner check
-    and also catches ice-specific dead ends.
-
-    Secondary check: heuristic returns inf (catches cases like no plots
-    remaining with baskets still present).
-    """
-    gs = state.game_state
-    board = gs.board
-
-    objects_layer = board.layers.get("objects")
-    ground_layer = board.layers.get("ground")
-    if objects_layer is None or ground_layer is None:
-        return False
-
-    remaining_plots = [
-        (pos.x, pos.y)
-        for pos, entity in ground_layer.entries()
-        if entity.kind == "garden_plot"
-    ]
-
-    inf = float("inf")
-
-    for pos, entity in objects_layer.entries():
-        if entity.kind != "seed_basket":
-            continue
-
-        bx, by = pos.x, pos.y
-
-        # A basket sitting on a garden_plot: it hasn't been planted yet (that
-        # requires a push event), but it can still be pushed to any other plot.
-        # Push_dist for (bx,by) → same plot = 0, so it won't be pruned.
-
-        reachable = any(
-            info.htable.push_dist.get(plot, {}).get((bx, by), inf) < inf
-            for plot in remaining_plots
-        )
-        if not reachable:
-            return True
-
-    return False
+    """Prune only if the relaxed assignment cannot fill all remaining plots."""
+    return heuristic(state, info) == float("inf")
 
 
 def _wall_or_solid(board: Any, x: int, y: int) -> bool:

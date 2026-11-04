@@ -1,4 +1,3 @@
-import 'floor_wiring.dart';
 import '../engine/game_system.dart';
 import '../models/entity.dart';
 import '../models/event.dart';
@@ -24,12 +23,6 @@ class StateNetworkSystem extends GameSystem {
     final ids = nodes.map((n) => n['id']).toList();
     final known = {...ids, ...inputs};
     if (known.length != ids.length + inputs.length) invalid();
-    if (config['floor'] != null) {
-      final routes = floorSources(config['floor']);
-      if (routes.values.expand((v) => v).any((v) => !known.contains(v)))
-        invalid();
-      known.addAll(routes.keys);
-    }
     const arities = {
       'copy': 1,
       'toggle': 1,
@@ -204,13 +197,6 @@ class StateNetworkSystem extends GameSystem {
           ...outputs(r),
           ...Map<String, dynamic>.from(control['inputs']),
         };
-        if (config['floor'] != null) {
-          final routed = {
-            for (final e in floorSources(config['floor']).entries)
-              e.key: e.value.any((s) => signals[s] == 1) ? 1 : 0
-          };
-          signals.addAll(routed);
-        }
         final next = <String, int>{};
         for (final n in config['nodes']) {
           final args =
@@ -264,4 +250,24 @@ class StateNetworkSystem extends GameSystem {
     project(state);
     return const [GameEvent('network_updated', {})];
   }
+}
+
+/// A node's private counter is separate from its visible output bit.
+int nodeStep(String op, List<int> args, int old, Map counters, String id) {
+  if (op.startsWith('counter')) {
+    final period = int.parse(op.substring(7));
+    final count = ((counters[id] as int? ?? 0) + args[0]) % period;
+    counters[id] = count;
+    return args[0] == 1 && count == 0 ? 1 : 0;
+  }
+  return switch (op) {
+    'copy' => args[0],
+    'not' => 1 - args[0],
+    'toggle' => old ^ args[0],
+    'and' => args[0] & args[1],
+    'or' => args[0] | args[1],
+    'xor' => args[0] ^ args[1],
+    'latch' => args[1] == 1 ? 0 : (args[0] == 1 ? 1 : old),
+    _ => throw ArgumentError('Unknown node op'),
+  };
 }

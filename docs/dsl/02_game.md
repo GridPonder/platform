@@ -51,7 +51,7 @@ Visual presentation and input bindings are defined separately in `theme.json` �
 | `showGuide` | boolean | `false` | Show the level's `guide` text during play. |
 | `showGoalPreview` | boolean | `true` | Whether a `board_match` goal is drawn as a miniature target board. Turn it off for a game that uses `board_match` to say "this entity stands here" rather than to specify a pattern — a two-row board with one marked square explains less than the sentence does. The panel then falls back to `goalDescriptions`, listing every goal the level has. |
 | `showMoves` | boolean | `true` | Whether to show the generic "Moves: N" action counter. Turn it off for a game whose action count includes non-move actions (e.g. cell selection in a `beam`-based game) and so doesn't read as a meaningful tally — surface progress via `readouts` instead. |
-| `readouts` | array | `[]` | Live `state.variables` chips shown during play. Each entry: `{"variable": "...", "label": "...", "color": "..."?, "blankWhen": N?}`. Pack-agnostic — the app only knows how to draw a labelled number, never what it means. |
+| `readouts` | array | `[]` | Live `state.variables` chips shown during play. Each entry: `{"variable": "...", "label": "...", "color": "..."?, "blankWhen": N?, "maxVariable": "..."?}`. Pack-agnostic — the app only knows how to draw a labelled number, never what it means. |
 
 ---
 
@@ -384,6 +384,8 @@ A `display` block on an entity kind tells the renderer how to draw the entity pr
 | `color` | string | Optional. A palette name (`"red"`), `@param:<key>` (read colour name from instance param), or `@hue:<source>` (derive an HSL colour from a numeric string — useful for value-coloured tiles). See *substitution tokens* below. |
 | `value` | string | Optional. The glyph (for `emoji`) or icon name (for `icon`). |
 | `label` | string | Optional. Text shown by the `label` type. May use the substitution tokens below. |
+
+A `circle_label` display with `"overlay": true` keeps the kind's sprite and draws its label as a small badge in the corner; when the label resolves to nothing (an `@param:` the instance does not carry) no badge is drawn, so a kind can badge only the cells that hold the value.
 
 #### Substitution tokens
 
@@ -725,6 +727,24 @@ Default values applied to levels when those fields are not specified. This reduc
   }
 }
 ```
+
+### Additional generic display and readout fields
+
+`ui.readouts[].maxVariable` optionally names a live capacity variable. A
+numeric current reading is displayed as `current/maximum` when that capacity
+is numeric. The rule system enforces the cap; the display does not. Only
+authored HUD readouts are included in agent observations. Named prompts also
+include the current level guide when `ui.showGuide` is enabled.
+
+`display.overlay: true` draws a label over a sprite without painting a tile
+behind it; `display.textColor` selects its palette color. `glowWhen` accepts
+either one variable/equality or `allVariables` for a conjunction.
+
+For `circle_label`, `connections` selects vectors from `connectionMap`,
+`size` can select a diameter from `sizeMap`, and `badge`/`badgeMap` add a
+small badge when no connection arms are drawn. `linkTarget` and `linkUsed`
+reference entity parameters for optional control-to-target links. All fields
+are presentation data; no game identity is interpreted by the renderer.
 
 ### Restricted observation interfaces (additive)
 

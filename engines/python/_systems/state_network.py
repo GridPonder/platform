@@ -5,7 +5,6 @@ public projection is suitable for players; never serialize full state to agents.
 """
 from .._models import Entity, Pos
 from ._base import GameSystem
-from ._floor_wiring import floor_sources
 
 
 class StateNetworkSystem(GameSystem):
@@ -22,11 +21,6 @@ class StateNetworkSystem(GameSystem):
         if len(set(ids + inputs)) != len(ids + inputs):
             raise ValueError("state_network: duplicate identifiers")
         known = set(ids + inputs)
-        if c.get("floor"):
-            routes = floor_sources(c["floor"])
-            known.update(routes)
-            if any(s not in set(ids + inputs) for sources in routes.values() for s in sources):
-                raise ValueError("state_network: invalid floor source")
         arities = {"copy": 1, "toggle": 1, "not": 1, "and": 2, "or": 2, "xor": 2, "counter2": 1, "counter3": 1, "latch": 2}
         for n in nodes:
             if n.get("op") not in arities or len(n.get("inputs", [])) != arities[n["op"]]:
@@ -127,8 +121,6 @@ class StateNetworkSystem(GameSystem):
             if kind == "pulse":
                 r["inputs"] = {s: control["inputs"][s] for s in c["inputs"]}
                 signals = {**self.outputs(r), **control["inputs"]}
-                if c.get("floor"):
-                    signals.update({k: int(any(signals[s] for s in src)) for k, src in floor_sources(c["floor"]).items()})
                 new = {}
                 for n in c["nodes"]:
                     args = [signals[s] for s in n["inputs"]]

@@ -80,23 +80,24 @@ Once a seed basket lands on a garden plot the seeds are planted immediately and 
 `(avatar_position, frozenset{basket_positions}, inventory_item, clone_position_or_None)`. The garden plots are implicit in the level's ground layer, transformed out of the state as baskets are planted.
 
 **Precomputation (once per level load):**
-For each garden plot, run Dijkstra over the state space `(basket_position, last_push_direction_or_None)` to compute the minimum cost to push any basket onto that plot, where cost = `push_count + 2 × direction_changes`. This produces a `push_dist[plot][basket_pos]` table.
+For each garden plot, run reverse BFS to compute a lower bound on the number of move commands needed to deliver a basket. This produces a `push_dist[plot][basket_pos]` table shared by the engine-backed, fast Python, and Cython solvers.
 
-*Ice-aware (admissible):* A single push can slide a basket across multiple ice cells. The Dijkstra reverse-trace allows the basket to have originated at any intermediate ice cell (expanded reachability) — a real blocking object could have stopped the slide there. This strictly underestimates the push count when ice is present, preserving admissibility.
+*Ice-aware lower bound:* One move command can slide a basket across ice, push it repeatedly while the avatar slides, and then let the basket finish sliding after the avatar stops. The reverse trace allows every intermediate stop and ignores movable blockers. It permits one non-ice intermediate cell when the basket starts on ice, covering the avatar's final push as it leaves the ice. Originally icy cells remain available in the relaxation even after melting. This can underestimate the number of commands, but does not charge separately for pushes performed during one command.
 
-*Direction-change repositioning penalty:* After pushing in direction D, repositioning to push in a perpendicular direction D′ requires navigating around the basket — at least 2 extra moves even in open space (the avatar must go around one side). The clone action provides no shortcut: place + recall = 2 actions, the same as walking around. The Dijkstra state tracks `last_push_direction` and adds +2 when direction changes, making this a tight lower bound.
+*Avatar repositioning:* No extra cost is charged for direction changes. A clone placed earlier can make the remaining repositioning cost only one recall action; its placement cost has already been paid. The former two-action direction-change penalty could therefore overestimate the remaining solution length.
 
 **Admissible heuristic (A\*):**
 Use the precomputed table to compute an optimal-assignment lower bound:
 
-- With N remaining baskets and M remaining plots, enumerate all N-permutations of plots and take the minimum total cost — exact optimal bipartite matching in O(N! × N).
-- For N > 4, fall back to summing each basket's individual minimum cost across all remaining plots (still admissible, since baskets cannot share a plot in reality).
-- Return `float('inf')` if any basket has `push_dist = ∞` to every remaining plot (provably dead state), or if baskets remain but no plots remain.
+- With N remaining baskets and M remaining plots, choose M distinct baskets and assign them to the plots at minimum total cost. Spare baskets can remain unused.
+- For M > 4, sum each plot's cheapest basket cost, relaxing the distinct-basket constraint.
+- Return zero when no plots remain, including winning states with spare baskets.
+- Return `float('inf')` when there are too few baskets or the relaxed assignment cannot supply every plot.
 
-Admissibility argument: the table underestimates true push cost (ignores avatar position, other baskets, dynamic board state), and the assignment matching never overestimates (each basket must reach a distinct plot; the lower bound uses the cheapest possible assignment).
+Admissibility argument: the table relaxes avatar positioning, movable obstacles, and ice transitions. Each plot needs a distinct basket, and a Twinseed move acts on one basket along a fixed direction. Summing the cheapest relaxed delivery costs therefore bounds the number of future move commands from below.
 
 **Dead-end pruning:**
-If any remaining basket has `push_dist = ∞` to every remaining plot in the precomputed table, prune immediately — the level is unsolvable from this state. This subsumes the old corner-check heuristic (a basket in a corner always has `push_dist = ∞` to every non-adjacent plot) and additionally catches ice-specific dead ends where a basket has slid to a position from which it cannot be pushed to any plot regardless of ice.
+Prune only when the relaxed assignment cannot supply the remaining plots. A stranded spare basket is not a reason to prune if other baskets can fill all plots.
 
 **Tiebreaking:**
 Among states with equal f = g + h, prefer states with fewer remaining baskets (more planted). This biases search toward completing plants early, which reduces branching from basket pushes.

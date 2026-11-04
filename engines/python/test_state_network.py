@@ -1,11 +1,16 @@
 """Generic transition, sampling and information-boundary regressions."""
 import copy
+import sys
 import unittest
-from ._game_def import GameDef
-from ._turn_engine import TurnEngine
-from ._systems.state_network import StateNetworkSystem
-from .observation import build_prompt
-from .action_enum import enumerate_actions
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+from engines.python._game_def import GameDef
+from engines.python._turn_engine import TurnEngine
+from engines.python._systems.state_network import StateNetworkSystem
+from engines.python.observation import build_prompt
+from engines.python.action_enum import enumerate_actions
 
 
 def fixture(op='toggle'):
@@ -59,19 +64,6 @@ class NetworkTests(unittest.TestCase):
         self.assertTrue(e.execute_turn('send').accepted)
         self.assertFalse(e.is_lost)
 
-    def test_crossing_keeps_wires_separate_and_junction_joins(self):
-        from ._systems._floor_wiring import floor_sources
-        floor={'tiles':[{'x':0,'y':0,'shape':'cross'}], 'terminals':[
-            {'id':'x','kind':'source','x':0,'y':0,'side':'N'},
-            {'id':'y','kind':'source','x':0,'y':0,'side':'W'},
-            {'id':'a','kind':'sink','x':0,'y':0,'side':'S'},
-            {'id':'b','kind':'sink','x':0,'y':0,'side':'E'}]}
-        self.assertEqual(floor_sources(floor), {'a':['x'],'b':['y']})
-        floor['tiles'][0]['shape']='junction'
-        self.assertEqual(floor_sources(floor), {'a':['x','y'],'b':['x','y']})
-        floor['tiles'][0]['shape']='ne'
-        self.assertEqual(floor_sources(floor), {'a':['y'],'b':['x']})
-
     def test_counter_counts_while_clamped_and_low_input_pauses(self):
         e=self.engine('counter3')
         for a in ['on','off','mask','on','on']:
@@ -105,4 +97,5 @@ class NetworkTests(unittest.TestCase):
         g,_=fixture();c=g['systems'][0]['config'];c['nodes'][0]['inputs']=['missing']
         with self.assertRaises(ValueError):StateNetworkSystem('net',c)
 
-if __name__=='__main__':unittest.main()
+if __name__ == '__main__':
+    unittest.main()

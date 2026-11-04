@@ -43,9 +43,7 @@ class EffectExecutor {
     final refCtx = _RefContext(state, game);
 
     dynamic resolve(dynamic v) => resolveRef(v,
-        eventPayload: triggerEvent.payload,
-        board: refCtx,
-        avatar: refCtx);
+        eventPayload: triggerEvent.payload, board: refCtx, avatar: refCtx);
 
     switch (effect.type) {
       case 'spawn':
@@ -66,6 +64,10 @@ class EffectExecutor {
         return _setVariable(effect.data, resolve, state);
       case 'increment_variable':
         return _incrementVariable(effect.data, state);
+      case 'cycle_variable':
+        return _cycleVariable(effect.data, state);
+      case 'exchange_parameters':
+        return _exchangeParameters(effect.data, resolve, state, triggerEvent);
       case 'set_inventory':
         return _setInventory(effect.data, resolve, state);
       case 'clear_inventory':
@@ -77,8 +79,8 @@ class EffectExecutor {
     }
   }
 
-  List<GameEvent> _spawn(
-      Map<String, dynamic> data, dynamic Function(dynamic) r, LevelState state) {
+  List<GameEvent> _spawn(Map<String, dynamic> data, dynamic Function(dynamic) r,
+      LevelState state) {
     final posRaw = r(data['position']);
     if (posRaw == null) return const [];
     final pos = posRaw is Position ? posRaw : Position.fromJson(posRaw);
@@ -96,8 +98,8 @@ class EffectExecutor {
     return [GameEvent.objectPlaced(pos, kind, params)];
   }
 
-  List<GameEvent> _destroy(
-      Map<String, dynamic> data, dynamic Function(dynamic) r, LevelState state) {
+  List<GameEvent> _destroy(Map<String, dynamic> data,
+      dynamic Function(dynamic) r, LevelState state) {
     final posRaw = r(data['position']);
     if (posRaw == null) return const [];
     final pos = posRaw is Position ? posRaw : Position.fromJson(posRaw);
@@ -115,8 +117,8 @@ class EffectExecutor {
     ];
   }
 
-  List<GameEvent> _transform(
-      Map<String, dynamic> data, dynamic Function(dynamic) r, LevelState state) {
+  List<GameEvent> _transform(Map<String, dynamic> data,
+      dynamic Function(dynamic) r, LevelState state) {
     final posRaw = r(data['position']);
     if (posRaw == null) return const [];
     final pos = posRaw is Position ? posRaw : Position.fromJson(posRaw);
@@ -142,8 +144,8 @@ class EffectExecutor {
     ];
   }
 
-  List<GameEvent> _moveEntity(
-      Map<String, dynamic> data, dynamic Function(dynamic) r, LevelState state) {
+  List<GameEvent> _moveEntity(Map<String, dynamic> data,
+      dynamic Function(dynamic) r, LevelState state) {
     final fromRaw = r(data['from']);
     final toRaw = r(data['to']);
     if (fromRaw == null || toRaw == null) return const [];
@@ -160,8 +162,8 @@ class EffectExecutor {
     ];
   }
 
-  List<GameEvent> _setCell(
-      Map<String, dynamic> data, dynamic Function(dynamic) r, LevelState state) {
+  List<GameEvent> _setCell(Map<String, dynamic> data,
+      dynamic Function(dynamic) r, LevelState state) {
     final posRaw = r(data['position']);
     if (posRaw == null) return const [];
     final pos = posRaw is Position ? posRaw : Position.fromJson(posRaw);
@@ -194,19 +196,29 @@ class EffectExecutor {
     final exitRaw = mco.params['exitPosition'];
     if (exitRaw == null) return const [];
     final exitPos = exitRaw is Position ? exitRaw : Position.fromJson(exitRaw);
-    state.board.setEntity('objects', exitPos, EntityInstance('number', {'value': value}));
+    state.board.setEntity(
+        'objects', exitPos, EntityInstance('number', {'value': value}));
 
-    return [GameEvent.itemReleased(emitterId, 'number', exitPos, {'value': value})];
+    return [
+      GameEvent.itemReleased(emitterId, 'number', exitPos, {'value': value})
+    ];
   }
 
-  List<GameEvent> _applyGravity(
-      Map<String, dynamic> data, LevelState state) {
+  List<GameEvent> _applyGravity(Map<String, dynamic> data, LevelState state) {
     final selectorMap = data['selector'] as Map<String, dynamic>? ?? {};
     final tag = selectorMap['tag'] as String?;
     final direction = (data['direction'] as String?) ?? 'down';
 
-    final dx = direction == 'left' ? -1 : direction == 'right' ? 1 : 0;
-    final dy = direction == 'up' ? -1 : direction == 'down' ? 1 : 0;
+    final dx = direction == 'left'
+        ? -1
+        : direction == 'right'
+            ? 1
+            : 0;
+    final dy = direction == 'up'
+        ? -1
+        : direction == 'down'
+            ? 1
+            : 0;
 
     final events = <GameEvent>[];
     final board = state.board;
@@ -227,10 +239,13 @@ class EffectExecutor {
       }
 
       // Sort so we process bottom-up for downward gravity
-      if (direction == 'down') toMove.sort((a, b) => b.key.y.compareTo(a.key.y));
+      if (direction == 'down')
+        toMove.sort((a, b) => b.key.y.compareTo(a.key.y));
       if (direction == 'up') toMove.sort((a, b) => a.key.y.compareTo(b.key.y));
-      if (direction == 'right') toMove.sort((a, b) => b.key.x.compareTo(a.key.x));
-      if (direction == 'left') toMove.sort((a, b) => a.key.x.compareTo(b.key.x));
+      if (direction == 'right')
+        toMove.sort((a, b) => b.key.x.compareTo(a.key.x));
+      if (direction == 'left')
+        toMove.sort((a, b) => a.key.x.compareTo(b.key.x));
 
       for (final entry in toMove) {
         final pos = entry.key;
@@ -250,8 +265,8 @@ class EffectExecutor {
     return events;
   }
 
-  List<GameEvent> _setVariable(
-      Map<String, dynamic> data, dynamic Function(dynamic) r, LevelState state) {
+  List<GameEvent> _setVariable(Map<String, dynamic> data,
+      dynamic Function(dynamic) r, LevelState state) {
     final name = data['name'] as String;
     final value = r(data['value']);
     final old = state.variables[name];
@@ -269,20 +284,102 @@ class EffectExecutor {
     return [GameEvent.variableChanged(name, old, newVal)];
   }
 
-  List<GameEvent> _setInventory(
-      Map<String, dynamic> data, dynamic Function(dynamic) r, LevelState state) {
+  List<GameEvent> _cycleVariable(Map<String, dynamic> data, LevelState state) {
+    final name = data['name'];
+    final modulus = data['modulus'];
+    final amount = data['amount'] ?? 1;
+    final old = name is String ? state.variables[name] : null;
+    if (name is! String || old is! int) {
+      throw const FormatException(
+          'cycle_variable needs an existing integer variable');
+    }
+    if (modulus is! int || modulus < 2) {
+      throw const FormatException('cycle_variable modulus must be >= 2');
+    }
+    if (amount is! int) {
+      throw const FormatException('cycle_variable amount must be an integer');
+    }
+    final newVal = (old + amount) % modulus;
+    state.variables[name] = newVal;
+    return [GameEvent.variableChanged(name, old, newVal)];
+  }
+
+  List<GameEvent> _exchangeParameters(Map<String, dynamic> data,
+      dynamic Function(dynamic) r, LevelState state, GameEvent event) {
+    final firstRaw = r(data['firstPosition']);
+    final secondRaw = r(data['secondPosition']);
+    final firstLayer = r(data['firstLayer'] ?? 'objects');
+    final secondLayer = r(data['secondLayer'] ?? 'objects');
+    final param = r(data['param'] ?? 'value');
+    final firstVariable = r(data['firstVariable']);
+    final secondVariable = r(data['secondVariable']);
+    if (firstRaw == null || secondRaw == null) return const [];
+    if (firstLayer is! String || secondLayer is! String || param is! String) {
+      throw const FormatException(
+          'exchange_parameters needs string layers and parameter');
+    }
+    if ((firstVariable != null && firstVariable is! String) ||
+        (secondVariable != null && secondVariable is! String)) {
+      throw const FormatException(
+          'exchange_parameters variable names must be strings');
+    }
+    if (firstVariable != null && firstVariable == secondVariable) {
+      throw const FormatException(
+          'exchange_parameters variable names must be distinct');
+    }
+    final firstPos =
+        firstRaw is Position ? firstRaw : Position.fromJson(firstRaw);
+    final secondPos =
+        secondRaw is Position ? secondRaw : Position.fromJson(secondRaw);
+    if (firstLayer == secondLayer && firstPos == secondPos) return const [];
+    final first = state.board.getEntity(firstLayer, firstPos);
+    final second = state.board.getEntity(secondLayer, secondPos);
+    if (first == null ||
+        second == null ||
+        !first.params.containsKey(param) ||
+        !second.params.containsKey(param)) return const [];
+    final firstValue = first.params[param];
+    final secondValue = second.params[param];
+    final names = [firstVariable, secondVariable].whereType<String>().toList();
+    final oldVariables = {
+      for (final name in names) name: state.variables[name]
+    };
+    state.board.setEntity(firstLayer, firstPos,
+        EntityInstance(first.kind, {...first.params, param: secondValue}));
+    state.board.setEntity(secondLayer, secondPos,
+        EntityInstance(second.kind, {...second.params, param: firstValue}));
+    if (firstVariable is String) state.variables[firstVariable] = secondValue;
+    if (secondVariable is String) state.variables[secondVariable] = firstValue;
+    return [
+      GameEvent('parameters_exchanged', {
+        if (event.position != null) 'position': event.position,
+        'firstPosition': firstPos,
+        'secondPosition': secondPos,
+        'firstLayer': firstLayer,
+        'secondLayer': secondLayer,
+        'param': param,
+        'firstValue': firstValue,
+        'secondValue': secondValue,
+      }),
+      for (final name in names)
+        GameEvent.variableChanged(
+            name, oldVariables[name], state.variables[name]),
+    ];
+  }
+
+  List<GameEvent> _setInventory(Map<String, dynamic> data,
+      dynamic Function(dynamic) r, LevelState state) {
     final item = r(data['item']) as String?;
     final old = state.avatar.inventory.slot;
-    state.avatar = state.avatar.copyWith(
-        inventory: state.avatar.inventory.copyWith(slot: item));
+    state.avatar = state.avatar
+        .copyWith(inventory: state.avatar.inventory.copyWith(slot: item));
     return [GameEvent.inventoryChanged(old, item)];
   }
 
   List<GameEvent> _clearInventory(LevelState state) {
     final old = state.avatar.inventory.slot;
     if (old == null) return const [];
-    state.avatar = state.avatar.copyWith(
-        inventory: const InventoryState());
+    state.avatar = state.avatar.copyWith(inventory: const InventoryState());
     return [GameEvent.inventoryChanged(old, null)];
   }
 
@@ -292,7 +389,8 @@ class EffectExecutor {
     state.pendingMove = null;
     final from = pending.from;
     final to = pending.to;
-    state.avatar = state.avatar.copyWith(position: to, facing: pending.direction);
+    state.avatar =
+        state.avatar.copyWith(position: to, facing: pending.direction);
     return [
       GameEvent.avatarExited(from),
       GameEvent.avatarEntered(to, from, pending.direction.toJson()),

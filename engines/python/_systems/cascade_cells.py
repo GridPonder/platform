@@ -1,0 +1,326 @@
+"""Synchronous threshold cascades over parameterised board cells.
+
+One position-carrying action adds charge to a configured cell.  Every unstable
+cell then explodes once per wave from the same snapshot: subtract its threshold,
+sum all outgoing contributions, apply them together, and repeat until stable.
+
+The whole transition runs inside action resolution.  This is deliberate: a
+malformed non-terminating cascade can veto the action transactionally instead
+of leaking the partially settled board that an outer cascade-depth cutoff would
+leave behind.
+"""
+from __future__ import annotations
+
+from .. import _events as ev
+from .._game_def import GameDef
+from .._models import Entity, GameState, Pos
+from ._base import GameSystem
+
+
+_DEFAULT_KERNELS: dict[str, tuple[tuple[int, int], ...]] = {
+    "plus": ((0, -1), (1, 0), (0, 1), (-1, 0)),
+    "x": ((-1, -1), (1, -1), (1, 1), (-1, 1)),
+    "h": ((-1, 0), (1, 0)),
+    "v": ((0, -1), (0, 1)),
+}
+
+
+class CascadeCellsSystem(GameSystem):
+    def __init__(self, sys_id: str, config: dict | None = None):
+        super().__init__(sys_id, "cascade_cells")
+        self._config = config
+
+    def execute_action_resolution(
+        self, action: dict, state: GameState, game: GameDef
+    ) -> list[dict]:
+        config = self._config if self._config is not None else game.system_config(self.id)
+        action_id = config.get("action", "tap_cell")
+        if action.get("actionId") != action_id:
+            return []
+
+        raw_position = action.get("params", {}).get("position")
+        try:
+            clicked = Pos.from_json(raw_position)
+        except (KeyError, TypeError, ValueError, IndexError):
+            return [ev.action_vetoed()]
+        if not state.board.is_in_bounds(clicked):
+            return [ev.action_vetoed()]
+
+        layer_id = config.get("cellLayer", "objects")
+        cell_tag = config.get("cellTag", "cascade_cell")
+        charge_param = config.get("chargeParam", "charge")
+        threshold_param = config.get("thresholdParam", "threshold")
+        kernel_param = config.get("kernelParam", "kernel")
+        if not all(
+            isinstance(value, str) and value
+            for value in (layer_id, cell_tag, charge_param, threshold_param, kernel_param)
+        ):
+            return [ev.action_vetoed()]
+
+        click_delta = config.get("clickDelta", 1)
+        max_waves = config.get("maxWaves", 1000)
+        if not _is_int(click_delta) or click_delta <= 0:
+            return [ev.action_vetoed()]
+        if not _is_int(max_waves) or max_waves <= 0:
+            return [ev.action_vetoed()]
+
+        kernels = _parse_kernels(config.get("kernels"))
+        if kernels is None:
+            return [ev.action_vetoed()]
+        try:
+            switch_config = _parse_kernel_switch(config.get("kernelSwitch"))
+        except ValueError:
+            return [ev.action_vetoed()]
+
+        layer = state.board.layers.get(layer_id)
+        if layer is None:
+            return [ev.action_vetoed()]
+
+        initial = _snapshot_cells(
+            state, layer_id, cell_tag, charge_param, threshold_param,
+            kernel_param, kernels, game,
+        )
+        if initial is None:
+            return [ev.action_vetoed()]
+
+        clicked_data = initial.get(clicked)
+        if clicked_data is None:
+            return [ev.action_vetoed()]
+
+        events: list[dict] = []
+        clicked_entity, clicked_charge, _, _ = clicked_data
+        new_clicked_charge = clicked_charge + click_delta
+        _set_charge(
+            state, layer_id, clicked, clicked_entity, charge_param, new_clicked_charge
+        )
+        events.append(
+            ev.cell_charged(
+                clicked,
+                before_charge=clicked_charge,
+                after_charge=new_clicked_charge,
+                delta=click_delta,
+                wave=0,
+                source="click",
+                layer=layer_id,
+                param=charge_param,
+            )
+        )
+
+        completed_waves = 0
+        while True:
+            snapshot = _snapshot_cells(
+                state, layer_id, cell_tag, charge_param, threshold_param,
+                kernel_param, kernels, game,
+            )
+            if snapshot is None:
+                return [ev.action_vetoed()]
+
+            unstable = [
+                position
+                for position, (_, charge, threshold, _) in snapshot.items()
+                if charge >= threshold
+            ]
+            unstable.sort(key=lambda p: (p.y, p.x))
+            if not unstable:
+                events.append(ev.cascade_settled(completed_waves))
+                return events
+            if completed_waves >= max_waves:
+                return [ev.action_vetoed()]
+
+            wave = completed_waves + 1
+            events.append(ev.cascade_wave_started(wave, unstable))
+
+            # All outgoing contributions are computed from one immutable
+            # pre-wave snapshot.  Writes happen only after every source has
+            # contributed, so iteration order cannot affect the result.
+            incoming_sources: dict[Pos, list[Pos]] = {}
+            kernel_switches: dict[Pos, tuple[str, list[Pos]]] = {}
+            after_subtraction: dict[Pos, int] = {
+                position: charge
+                for position, (_, charge, _, _) in snapshot.items()
+            }
+            for position in unstable:
+                entity, charge, threshold, kernel = snapshot[position]
+                remainder = charge - threshold
+                after_subtraction[position] = remainder
+                events.append(
+                    ev.cell_exploded(
+                        position,
+                        before_charge=charge,
+                        after_charge=remainder,
+                        threshold=threshold,
+                        kernel=kernel,
+                        wave=wave,
+                        layer=layer_id,
+                        param=charge_param,
+                    )
+                )
+                for dx, dy in kernels[kernel]:
+                    destination = Pos(position.x + dx, position.y + dy)
+                    if destination in snapshot:
+                        incoming_sources.setdefault(destination, []).append(position)
+
+                if switch_config is not None:
+                    target_param, next_kernel_param, used_param = switch_config
+                    raw_target = entity.param(target_param)
+                    used = entity.param(used_param)
+                    if used is not None and not isinstance(used, bool):
+                        return [ev.action_vetoed()]
+                    if raw_target is not None and used is not True:
+                        target = _strict_position(raw_target)
+                        next_kernel = entity.param(next_kernel_param)
+                        if (target not in snapshot or not isinstance(next_kernel, str)
+                                or next_kernel not in kernels):
+                            return [ev.action_vetoed()]
+                        existing = kernel_switches.get(target)
+                        if existing is not None and existing[0] != next_kernel:
+                            return [ev.action_vetoed()]
+                        kernel_switches.setdefault(target, (next_kernel, []))[1].append(position)
+
+            for position in sorted(snapshot, key=lambda p: (p.y, p.x)):
+                entity, _charge, _threshold, _kernel = snapshot[position]
+                base = after_subtraction[position]
+                sources = incoming_sources.get(position, [])
+                delta = len(sources)
+                after = base + delta
+                _set_charge(state, layer_id, position, entity, charge_param, after)
+                if delta:
+                    events.append(
+                        ev.cell_charged(
+                            position,
+                            before_charge=base,
+                            after_charge=after,
+                            delta=delta,
+                            wave=wave,
+                            source="cascade",
+                            layer=layer_id,
+                            param=charge_param,
+                            source_positions=sources,
+                        )
+                    )
+
+            if switch_config is not None:
+                _, _, used_param = switch_config
+                for target in sorted(kernel_switches, key=lambda p: (p.y, p.x)):
+                    next_kernel, sources = kernel_switches[target]
+                    target_entity = state.board.get_entity(layer_id, target)
+                    before_kernel = target_entity.param(kernel_param)
+                    _set_param(state, layer_id, target, kernel_param, next_kernel)
+                    for source in sources:
+                        _set_param(state, layer_id, source, used_param, True)
+                    events.append(ev.cascade_kernel_switched(
+                        target, before_kernel, next_kernel, wave,
+                        layer=layer_id, param=kernel_param,
+                        source_positions=sources, used_param=used_param,
+                    ))
+
+            events.append(ev.cascade_wave_completed(wave, unstable))
+            completed_waves = wave
+
+
+def _is_int(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _strict_position(raw) -> Pos | None:
+    if (isinstance(raw, (list, tuple)) and len(raw) == 2
+            and all(_is_int(value) for value in raw)):
+        return Pos(raw[0], raw[1])
+    return None
+
+
+def _parse_kernel_switch(raw) -> tuple[str, str, str] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("kernelSwitch must be an object")
+    names = (
+        raw.get("targetParam", "switchTarget"),
+        raw.get("nextKernelParam", "switchKernel"),
+        raw.get("usedParam", "switchUsed"),
+    )
+    if not all(isinstance(name, str) and name for name in names):
+        raise ValueError("kernelSwitch parameter names must be non-empty strings")
+    return names
+
+
+def _parse_kernels(raw) -> dict[str, tuple[tuple[int, int], ...]] | None:
+    if raw is None:
+        return dict(_DEFAULT_KERNELS)
+    if not isinstance(raw, dict) or not raw:
+        return None
+    parsed: dict[str, tuple[tuple[int, int], ...]] = {}
+    for name, offsets in raw.items():
+        if not isinstance(name, str) or not name or not isinstance(offsets, list):
+            return None
+        converted: list[tuple[int, int]] = []
+        for offset in offsets:
+            if (
+                not isinstance(offset, (list, tuple))
+                or len(offset) != 2
+                or not _is_int(offset[0])
+                or not _is_int(offset[1])
+            ):
+                return None
+            converted.append((offset[0], offset[1]))
+        parsed[name] = tuple(converted)
+    return parsed
+
+
+def _snapshot_cells(
+    state: GameState,
+    layer_id: str,
+    cell_tag: str,
+    charge_param: str,
+    threshold_param: str,
+    kernel_param: str,
+    kernels: dict[str, tuple[tuple[int, int], ...]],
+    game: GameDef,
+) -> dict[Pos, tuple[Entity, int, int, str]] | None:
+    layer = state.board.layers.get(layer_id)
+    if layer is None:
+        return None
+    cells: dict[Pos, tuple[Entity, int, int, str]] = {}
+    for position, entity in layer.entries():
+        if not game.has_tag(entity.kind, cell_tag):
+            continue
+        charge = entity.param(charge_param)
+        threshold = entity.param(threshold_param)
+        kernel = entity.param(kernel_param)
+        if (
+            not _is_int(charge)
+            or charge < 0
+            or not _is_int(threshold)
+            or threshold <= 0
+            or not isinstance(kernel, str)
+            or kernel not in kernels
+        ):
+            return None
+        cells[position] = (entity, charge, threshold, kernel)
+    return cells
+
+
+def _set_charge(
+    state: GameState,
+    layer_id: str,
+    position: Pos,
+    entity: Entity,
+    charge_param: str,
+    charge: int,
+) -> None:
+    params = dict(entity.params)
+    params[charge_param] = charge
+    state.board.set_entity(layer_id, position, Entity(entity.kind, params))
+
+
+def _set_param(
+    state: GameState,
+    layer_id: str,
+    position: Pos,
+    name: str,
+    value,
+) -> None:
+    entity = state.board.get_entity(layer_id, position)
+    params = dict(entity.params)
+    params[name] = value
+    state.board.set_entity(layer_id, position, Entity(entity.kind, params))

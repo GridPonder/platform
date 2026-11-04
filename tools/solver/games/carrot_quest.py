@@ -195,7 +195,7 @@ def _extract_level_geometry(level_json: dict) -> tuple:
     flag_pos = (0, 0)
     markers = layers.get("markers", {})
     for entry in (markers.get("entries", []) if isinstance(markers, dict) else []):
-        if entry.get("kind") == "flag":
+        if entry.get("kind") in ("carrot", "flag"):
             flag_pos = (entry["position"][0], entry["position"][1])
             break
 

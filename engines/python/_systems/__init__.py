@@ -17,8 +17,11 @@ from .avatar_navigation import AvatarNavigationSystem
 from .balance_regions import BalanceRegionsSystem
 from .beam import BeamSystem
 from .cell_rotation import CellRotationSystem
+from .cascade_cells import CascadeCellsSystem
+from .proximity_effects import ProximityEffectsSystem
 from .coupled_actors import CoupledActorsSystem
 from .elastic_block import ElasticBlockSystem
+from .fill_spill import FillSpillSystem
 from .flank_capture import FlankCaptureSystem
 from .flood_fill import FloodFillSystem
 from .follower_npcs import FollowerNpcsSystem
@@ -51,10 +54,13 @@ _REGISTRY: dict[str, SystemFactory] = {
     "balance_regions": lambda sys_id, _: BalanceRegionsSystem(sys_id),
     "beam": lambda sys_id, config: BeamSystem(sys_id, config),
     "cell_rotation": lambda sys_id, _: CellRotationSystem(sys_id),
+    "cascade_cells": lambda sys_id, config: CascadeCellsSystem(sys_id, config),
+    "proximity_effects": lambda sys_id, config: ProximityEffectsSystem(sys_id, config),
     "push_objects": lambda sys_id, _: PushObjectsSystem(sys_id),
     "portals": lambda sys_id, _: PortalsSystem(sys_id),
     "ice_slide": lambda sys_id, _: IceSlideSystem(sys_id),
     "flood_fill": lambda sys_id, _: FloodFillSystem(sys_id),
+    "fill_spill": lambda sys_id, _: FillSpillSystem(sys_id),
     "slide_merge": lambda sys_id, _: SlideMergeSystem(sys_id),
     "overlay_cursor": lambda sys_id, _: OverlayCursorSystem(sys_id),
     "region_transform": lambda sys_id, _: RegionTransformSystem(sys_id),

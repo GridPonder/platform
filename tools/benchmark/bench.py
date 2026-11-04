@@ -241,6 +241,7 @@ def run_level(
     llm_attempts = 0
     last_call_latency_ms: float | None = None
     last_model_error_type: str | None = None
+    model_error: str | None = None
     last_state: dict[str, Any] = {}
     initial_base_prompt_digest: str | None = None
     initial_prompt_digest: str | None = None
@@ -265,8 +266,6 @@ def run_level(
         **extra: Any,
     ) -> None:
         nonlocal progress_warning_emitted
-        if progress_callback is None:
-            return
         if event is not None:
             for key in (
                 "actions_this_attempt",
@@ -278,6 +277,8 @@ def run_level(
             ):
                 if key in event:
                     last_state[key] = event[key]
+        if progress_callback is None:
+            return
         snapshot = {
             "status": status,
             "phase": phase,
@@ -394,15 +395,21 @@ def run_level(
                     except Exception as exc:
                         last_exc = exc
                         last_model_error_type = type(exc).__name__
+                        if getattr(exc, "status_code", None) in (400, 401, 403, 404, 422):
+                            break
                         if _retry < 2:
                             time.sleep(2 ** _retry)
                 if not llm_ok:
-                    _send_give_up(send, mode, f"LLM error: {last_exc}")
-                    if action_timeout is not None and isinstance(last_exc, TimeoutError):
-                        consecutive_timeouts += 1
-                        if consecutive_timeouts >= MAX_CONSECUTIVE_REJECTIONS:
-                            break
-                    continue
+                    message = str(last_exc)
+                    for name, value in os.environ.items():
+                        if len(value) >= 8 and any(word in name.upper() for word in ("KEY", "TOKEN", "SECRET")):
+                            message = message.replace(value, "[REDACTED]")
+                    model_error = f"LLM request failed ({last_model_error_type}): {message[:2000]}"
+                    cost_complete = False
+                    # Transport failures are not gameplay decisions. Do not
+                    # turn them into give_up/reset actions and failed puzzles.
+                    report_progress("error", status="error", error=model_error)
+                    break
 
                 consecutive_timeouts = 0
                 last_model_error_type = None
@@ -501,8 +508,8 @@ def run_level(
         # Runner subprocess died (crash, hang, killed) before emitting a
         # won/lost event. Don't fabricate a gold_path_length — record the
         # failure so aggregation can drop the row cleanly.
-        runner_error = "runner exited without won/lost event"
-        final_event = {"event": "lost"}
+        runner_error = model_error or "runner exited without won/lost event"
+        final_event = {"event": "lost", **last_state}
 
     success = final_event["event"] == "won"
     actions_total: int = final_event.get("actions_total", len(latencies))
@@ -596,6 +603,9 @@ def run_level(
 
     if runner_error is not None:
         result["error"] = runner_error
+    if model_error is not None:
+        result["model_error_type"] = last_model_error_type
+        result["llm_attempts"] = llm_attempts
 
     report_progress(
         "completed" if runner_error is None else "error",
@@ -984,7 +994,7 @@ def main() -> None:
                 fout.write(json.dumps(result) + "\n")
                 fout.flush()
 
-                status = "ok  " if result.get("success") else "FAIL"
+                status = "ERROR" if result.get("error") else ("ok  " if result.get("success") else "FAIL")
                 actions = result.get("actions_total", "?")
                 gold = result.get("gold_path_length", "?")
                 calls = result.get("llm_calls", "?")
@@ -1001,6 +1011,11 @@ def main() -> None:
                     f"  actions={actions:>3}/{gold:<3}  rej={rejections:<3}{calls_col}"
                     f"  avg={mean_str}  total={total_str}"
                 )
+                if result.get("error"):
+                    tqdm.write(f"  {result['error']}")
+                if result.get("model_error_type") and result.get("llm_calls") == 0:
+                    tqdm.write("  Stopping this model: no successful model calls. Fix the request error before running more levels.")
+                    break
 
         print(f"  → {out_file}")
 

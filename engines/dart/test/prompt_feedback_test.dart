@@ -565,9 +565,8 @@ void main() {
           'unit_b territory 2/2, unit_c territory 0/0 — 5 of 9 claimed)');
     });
 
-    test('override on a goal without progress is unchanged', () {
-      expect(
-          _goalText(
+    test('board_match override keeps target grid', () {
+      final text = _goalText(
               _balanceGame(overrides: {'match_goal': 'Put unit_a in the middle.'}),
               [
                 {
@@ -584,8 +583,9 @@ void main() {
                   }
                 }
               ],
-              _connected),
-          'Put unit_a in the middle.');
+              _connected);
+      expect(text, startsWith('Put unit_a in the middle.\n'));
+      expect(text, contains('Target legend:'));
     });
 
     test('override on sequence_match appends done count', () {

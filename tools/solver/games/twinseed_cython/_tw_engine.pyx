@@ -97,7 +97,7 @@ cdef void slide_obj(unsigned char* cells, int pos, int obj, int dir_idx,
         if ng == GROUND_VOID or not is_walkable(ng):
             break
         no = (cells[nxt] >> 3) & 7
-        if no != OBJ_NONE:
+        if is_solid(no):
             break
         cells[pos] = cells[pos] & 7        # clear obj at current
         cells[nxt] = (cells[nxt] & 7) | (obj << 3)
@@ -123,10 +123,11 @@ cdef void slide_obj(unsigned char* cells, int pos, int obj, int dir_idx,
 # ---------------------------------------------------------------------------
 
 cdef int slide_avatar(unsigned char* cells, int pos, int dir_idx,
-                      int* neighbors, int inventory) noexcept nogil:
-    """Slide avatar on ice. Returns (new_pos << 8) | new_inventory."""
+                      int* neighbors, int inventory,
+                      int pending_pos, int pending_obj) noexcept nogil:
+    """Resolve avatar sliding before the most recent pushed object's slide."""
     cdef int nxt, ng, no, pg, push_dest, pdg, pdo
-    while 1:
+    while (cells[pos] & 7) == GROUND_ICE:
         nxt = neighbors[pos * 4 + dir_idx]
         if nxt < 0:
             break
@@ -135,32 +136,31 @@ cdef int slide_avatar(unsigned char* cells, int pos, int dir_idx,
             break
         no = (cells[nxt] >> 3) & 7
         if is_solid(no):
-            if is_pushable(no):
-                push_dest = neighbors[nxt * 4 + dir_idx]
-                if push_dest < 0:
-                    break
-                pdg = cells[push_dest] & 7
-                if pdg == GROUND_VOID or not is_walkable(pdg):
-                    break
-                pdo = (cells[push_dest] >> 3) & 7
-                if pdo != OBJ_NONE:
-                    break
-                cells[push_dest] = (cells[push_dest] & 7) | (no << 3)
-                cells[nxt] = cells[nxt] & 7
-                pos = nxt
-                pg = cells[push_dest] & 7
-                if no == OBJ_SEED_BASKET and pg == GROUND_GARDEN_PLOT:
-                    cells[push_dest] = (cells[push_dest] & 0xF8) | GROUND_PLANTED
-                    cells[push_dest] = cells[push_dest] & 7
-                elif no == OBJ_SEED_BASKET and pg == GROUND_WATER:
-                    cells[push_dest] = cells[push_dest] & 7   # basket drowns
-                elif no == OBJ_METAL_CRATE and pg == GROUND_WATER:
-                    cells[push_dest] = (cells[push_dest] & 0xF8) | GROUND_WATER_CRATE
-                    cells[push_dest] = cells[push_dest] & 7
-                elif pg == GROUND_ICE:
-                    slide_obj(cells, push_dest, no, dir_idx, neighbors)
-            break
-        # Walk to next cell
+            if not is_pushable(no):
+                break
+            push_dest = neighbors[nxt * 4 + dir_idx]
+            if push_dest < 0:
+                break
+            pdg = cells[push_dest] & 7
+            if pdg == GROUND_VOID or not is_walkable(pdg):
+                break
+            pdo = (cells[push_dest] >> 3) & 7
+            if pdo != OBJ_NONE:
+                break
+            cells[push_dest] = (cells[push_dest] & 7) | (no << 3)
+            cells[nxt] = cells[nxt] & 7
+            pending_pos = -1
+            if no == OBJ_SEED_BASKET and pdg == GROUND_GARDEN_PLOT:
+                cells[push_dest] = GROUND_PLANTED
+            elif no == OBJ_SEED_BASKET and pdg == GROUND_WATER:
+                cells[push_dest] = GROUND_WATER
+            elif no == OBJ_METAL_CRATE and pdg == GROUND_WATER:
+                cells[push_dest] = GROUND_WATER_CRATE
+            elif pdg == GROUND_ICE:
+                pending_pos = push_dest
+                pending_obj = no
+        else:
+            pending_pos = -1
         pos = nxt
         pg = cells[pos] & 7
         if pg == GROUND_ICE:
@@ -176,8 +176,8 @@ cdef int slide_avatar(unsigned char* cells, int pos, int dir_idx,
         if is_pickup(no):
             inventory = INV_TORCH if no == OBJ_TORCH else INV_PICKAXE
             cells[pos] = cells[pos] & 7
-        if pg != GROUND_ICE:
-            break
+    if pending_pos >= 0:
+        slide_obj(cells, pending_pos, pending_obj, dir_idx, neighbors)
     return (pos << 8) | inventory
 
 
@@ -209,6 +209,7 @@ def apply_cy(bytes state not None, int action_idx, list neighbors_list,
         int avatar_pos, clone_pos, inventory
         int target, tg, to, push_dest, pdg, pdo, pg, nxt
         int new_avatar, new_clone, new_inv
+        int pending_pos = -1, pending_obj = 0
         int tmp, i
         int* neighbors
 
@@ -283,7 +284,8 @@ def apply_cy(bytes state not None, int action_idx, list neighbors_list,
                 out[push_dest] = (out[push_dest] & 0xF8) | GROUND_WATER_CRATE
                 out[push_dest] = out[push_dest] & 7   # crate consumed into water_crate
             elif pg == GROUND_ICE:
-                slide_obj(out, push_dest, to, action_idx, neighbors)
+                pending_pos = push_dest
+                pending_obj = to
         else:
             return state, False
 
@@ -307,10 +309,10 @@ def apply_cy(bytes state not None, int action_idx, list neighbors_list,
             tg = GROUND_EMPTY
     if tg == GROUND_WATER and inventory != INV_NONE:
         inventory = INV_NONE
-    if tg == GROUND_ICE:
-        tmp = slide_avatar(out, avatar_pos, action_idx, neighbors, inventory)
-        avatar_pos = tmp >> 8
-        inventory  = tmp & 0xFF
+    tmp = slide_avatar(out, avatar_pos, action_idx, neighbors, inventory,
+                       pending_pos, pending_obj)
+    avatar_pos = tmp >> 8
+    inventory  = tmp & 0xFF
 
     out[cells_len]     = avatar_pos
     out[cells_len + 2] = inventory
@@ -323,7 +325,7 @@ def apply_cy(bytes state not None, int action_idx, list neighbors_list,
 # Heuristic and pruning in C
 #
 # cost_table: array.array('d') of length cells_len*cells_len
-#   cost_table[plot_pos * cells_len + basket_pos] = Dijkstra push cost
+#   cost_table[plot_pos * cells_len + basket_pos] = relaxed move-command count
 #   INF (1e300) means no path.
 # ---------------------------------------------------------------------------
 
@@ -345,12 +347,10 @@ cdef double _min_assign(double* ct, int cl,
     cdef int i, j, k, found, depth
     cdef int used[MAX_BASKETS]
     cdef int choice_stack[4]
-    cdef int idx_stack[4]
+    cdef int idx_stack[5]
 
-    if nb == 0:
-        return 0.0
     if np_ == 0:
-        return 1e300
+        return 0.0
     if nb < np_:
         return 1e300  # too few baskets to fill all plots
 
@@ -424,9 +424,9 @@ def heuristic_and_prune_cy(bytes state not None,
     Compute heuristic and prune flag in one C pass over state.
 
     Returns (h: float, prune: bool).
-      h     = min-cost basket→plot assignment (admissible heuristic).
-              float('inf') if any basket has no path to any plot.
-      prune = True if any basket has push_dist=inf to every remaining plot.
+      h     = min-cost assignment supplying all remaining plots.
+      prune = True only if that relaxed assignment is impossible.
+              Unused baskets need not reach a plot.
 
     Parameters
     ----------
@@ -457,25 +457,14 @@ def heuristic_and_prune_cy(bytes state not None,
                 baskets[nb] = i
                 nb += 1
 
-    if nb == 0:
-        return 0.0, False
-
     if np_ == 0:
-        return float("inf"), True  # baskets remain but no plots — dead state
+        return 0.0, False
 
     if nb < np_:
         return float("inf"), True  # drowned basket(s) — can't fill all remaining plots
 
-    # Prune check: if any basket can't reach any plot, return inf immediately
-    for i in range(nb):
-        row_min = 1e300
-        for j in range(np_):
-            if ct[plots[j] * cells_len + baskets[i]] < row_min:
-                row_min = ct[plots[j] * cells_len + baskets[i]]
-        if row_min >= 1e300:
-            return float("inf"), True
-
     # Min-cost assignment
     h = _min_assign(ct, cells_len, baskets, nb, plots, np_)
-
+    if h >= 1e300:
+        return float("inf"), True
     return h, False

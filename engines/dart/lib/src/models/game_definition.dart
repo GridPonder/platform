@@ -101,11 +101,15 @@ class GameReadout {
   /// instead of the raw number — e.g. `sonar`'s `-1` for "no target".
   final int? blankWhen;
 
+  /// Optional live capacity displayed alongside the current value.
+  final String? maxVariable;
+
   const GameReadout({
     required this.variable,
     required this.label,
     this.color,
     this.blankWhen,
+    this.maxVariable,
   });
 
   // Tolerant of malformed fields, like the Python parser (`_parse_readouts`):
@@ -114,8 +118,19 @@ class GameReadout {
         variable: j['variable'] is String ? j['variable'] as String : '',
         label: j['label'] is String ? j['label'] as String : '',
         color: j['color'] is String ? j['color'] as String : null,
-        blankWhen: j['blankWhen'] is num ? (j['blankWhen'] as num).toInt() : null,
+        blankWhen:
+            j['blankWhen'] is num ? (j['blankWhen'] as num).toInt() : null,
+        maxVariable:
+            j['maxVariable'] is String ? j['maxVariable'] as String : null,
       );
+  String formatValue(Map<String, dynamic> variables) {
+    final rawValue = variables[variable];
+    if (rawValue is String) return rawValue;
+    final number = rawValue is num ? rawValue.toInt() : null;
+    if (number == null || number == blankWhen) return '—';
+    final rawMaximum = variables[maxVariable];
+    return rawMaximum is num ? '$number/${rawMaximum.toInt()}' : '$number';
+  }
 }
 
 /// UI display configuration for a game.

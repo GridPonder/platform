@@ -39,4 +39,6 @@ export 'src/agent/ascii_renderer.dart'; // re-exports TextRenderer as AsciiRende
 export 'src/agent/random_agent.dart';
 export 'src/agent/llm_agent.dart';
 
-export 'src/systems/floor_wiring.dart';
+
+// Node update rule, shared with clients that simulate public hypotheses.
+export 'src/systems/state_network_system.dart' show nodeStep;

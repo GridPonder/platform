@@ -297,7 +297,8 @@ Board state matches a target pattern.
         [null, null, null]
       ]
     },
-    "matchMode": "exact_non_null"
+    "matchMode": "exact_non_null",
+    "matchParams": ["color"]
 }}
 ```
 
@@ -305,6 +306,9 @@ Board state matches a target pattern.
 |-------------|------|-------------|
 | `targetLayers` | object | Layer data in the same format as board layers. |
 | `matchMode` | string | `"exact"` (all cells match), `"exact_non_null"` (only non-null target cells must match). Default: `"exact_non_null"`. |
+| `matchParams` | array of strings | Optional parameters to compare alongside entity kind. Each target cell must specify them; the default compares kind only. |
+
+Target previews show a selected `symbolParam` value when available.
 
 #### `variable_threshold`
 A variable reaches or exceeds a target value.
