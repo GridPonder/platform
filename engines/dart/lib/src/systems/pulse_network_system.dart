@@ -23,14 +23,14 @@ class PulseNetworkSystem extends GameSystem {
           : Position.fromJson(event['position']);
       if (state.board.getEntity(config['controlsLayer'] as String, pos)?.kind ==
           config['pressedKind']) {
-        events.addAll(_pulse(pos, state, config));
+        events.addAll(_pulse(pos, state, config, triggerEvents));
       }
     }
     return events;
   }
 
-  List<GameEvent> _pulse(
-      Position source, LevelState state, Map<String, dynamic> c) {
+  List<GameEvent> _pulse(Position source, LevelState state,
+      Map<String, dynamic> c, List<GameEvent> triggerEvents) {
     final board = state.board, events = <GameEvent>[];
     final lightLayer = c['lightsLayer'] as String,
         objectLayer = c['objectsLayer'] as String;
@@ -98,6 +98,29 @@ class PulseNetworkSystem extends GameSystem {
       events.add(GameEvent.variableChanged(queued, old, 0));
     }
     var incoming = <Position, int>{};
+    final routed = <Position>{};
+    if (c['activateMovedRelays'] == true) {
+      Position position(dynamic raw) =>
+          raw is Position ? raw : Position.fromJson(raw);
+      final moves = triggerEvents
+          .where((e) => e.type == 'tile_moved' && e['layer'] == lightLayer)
+          .toList();
+      final before = {
+        for (final e in moves) position(e['fromPosition']): e['kind']
+      };
+      for (final e in moves) {
+        final p = position(e['position']);
+        if (before[p] == e['kind']) continue;
+        // Protect the moved result, just like a directly written light.
+        routed.add(p);
+        if (before[p] == off &&
+            e['kind'] == on &&
+            kind(objectLayer, p) == relay) {
+          emit(p, incoming);
+          trace('seed_${number(p)}');
+        }
+      }
+    }
     for (final (p, _) in loaded) {
       emit(p, incoming);
       trace('delay_${number(p)}');
@@ -109,9 +132,9 @@ class PulseNetworkSystem extends GameSystem {
       direct = [];
     }
     for (final p in direct) {
-      if (kind(objectLayer, p) == relay &&
-          kind(lightLayer, p) == off &&
-          writes[sourceKind] != off) {
+      final old = kind(lightLayer, p);
+      final target = writes[sourceKind] ?? (old == off ? on : off);
+      if (kind(objectLayer, p) == relay && old == off && target == on) {
         emit(p, incoming);
         trace('seed_${number(p)}');
         change(objectLayer, p, relay);
@@ -124,7 +147,7 @@ class PulseNetworkSystem extends GameSystem {
         events.add(GameEvent.variableChanged(queued, 0, 1));
       }
     }
-    final seen = direct.toSet();
+    final seen = {...direct, ...routed};
     for (final p in direct) {
       change(signals, p, c['hitKind'] as String);
       if (writes.containsKey(sourceKind)) {

@@ -49,6 +49,7 @@ Visual presentation and input bindings are defined separately in `theme.json` �
 |-------|------|---------|-------------|
 | `showGoal` | boolean | `false` | Show the goal panel during play. |
 | `showGuide` | boolean | `false` | Show the level's `guide` text during play. |
+| `goalPreviewSize` | number | unset | Optional maximum target-preview size in logical pixels. Enables a larger, responsive board-match preview and a tap-to-enlarge view. Unset preserves the existing display. |
 | `showGoalPreview` | boolean | `true` | Whether a `board_match` goal is drawn as a miniature target board. Turn it off for a game that uses `board_match` to say "this entity stands here" rather than to specify a pattern — a two-row board with one marked square explains less than the sentence does. The panel then falls back to `goalDescriptions`, listing every goal the level has. |
 | `showMoves` | boolean | `true` | Whether to show the generic "Moves: N" action counter. Turn it off for a game whose action count includes non-move actions (e.g. cell selection in a `beam`-based game) and so doesn't read as a meaningful tally — surface progress via `readouts` instead. |
 | `readouts` | array | `[]` | Live `state.variables` chips shown during play. Each entry: `{"variable": "...", "label": "...", "color": "..."?, "blankWhen": N?, "maxVariable": "..."?}`. Pack-agnostic — the app only knows how to draw a labelled number, never what it means. |

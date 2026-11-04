@@ -10,6 +10,42 @@ void main() {
       jsonDecode(File('${root.path}/$path').readAsStringSync())
           as Map<String, dynamic>;
   final game = GameDefinition.fromJson(read('game.json'));
+  for (final enabled in [false, true]) {
+    for (final old in ['dark', 'lit']) {
+      for (final next in ['dark', 'lit']) {
+        test('moved relay $old to $next, enabled=$enabled', () {
+          final data = read('game.json');
+          (data['systems'][1]['config'] as Map)['activateMovedRelays'] =
+              enabled;
+          final definition = GameDefinition.fromJson(data);
+          final level = LevelDefinition.fromJson(
+              read('levels/relay_on.json'), game.layers);
+          final state = level.initialState();
+          state.board.setEntity(
+              'objects', const Position(0, 0), const EntityInstance('wait'));
+          state.board
+              .setEntity('lights', const Position(1, 0), EntityInstance(next));
+          state.board
+              .setEntity('lights', const Position(0, 0), EntityInstance(old));
+          state.board.setEntity('controls', const Position(0, 0),
+              const EntityInstance('pressed'));
+          const PulseNetworkSystem(id: 'network').executeCascadeResolution([
+            GameEvent.tileMoved(
+                const Position(0, 0), const Position(1, 0), next,
+                layer: 'lights'),
+            GameEvent.tileMoved(const Position(1, 0), const Position(0, 0), old,
+                layer: 'lights'),
+            GameEvent.cellTransformed(
+                const Position(0, 0), 'ready', 'pressed', 'controls'),
+          ], state, definition);
+          expect(state.board.getEntity('lights', const Position(2, 0))?.kind,
+              enabled && old == 'dark' && next == 'lit' ? 'lit' : 'dark');
+          expect(state.board.getEntity('lights', const Position(1, 0))?.kind,
+              next);
+        });
+      }
+    }
+  }
   test('one pressed control cannot fire twice from duplicate events', () {
     final level =
         LevelDefinition.fromJson(read('levels/relay_on.json'), game.layers);

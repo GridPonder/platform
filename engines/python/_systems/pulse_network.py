@@ -19,10 +19,10 @@ class PulseNetworkSystem(GameSystem):
                 pos = pos if isinstance(pos, Pos) else Pos.from_json(pos)
                 entity = state.board.get_entity(config["controlsLayer"], pos)
                 if entity and entity.kind == config["pressedKind"]:
-                    events.extend(self._pulse(pos, state, config))
+                    events.extend(self._pulse(pos, state, config, trigger_events))
         return events
 
-    def _pulse(self, source, state, c):
+    def _pulse(self, source, state, c, trigger_events=()):
         if not isinstance(source, Pos):
             source = Pos.from_json(source)
         board, events = state.board, []
@@ -79,6 +79,22 @@ class PulseNetworkSystem(GameSystem):
             state.variables[queued] = 0
             events.append(ev.variable_changed(queued, old, 0))
         incoming = {}
+        routed = set()
+        if c.get("activateMovedRelays") is True:
+            def position(raw):
+                return raw if isinstance(raw, Pos) else Pos.from_json(raw)
+            moves = [e for e in trigger_events if e.get("type") == "tile_moved"
+                     and e.get("layer") == light_layer]
+            before = {position(e["fromPosition"]): e["kind"] for e in moves}
+            for event in moves:
+                p = position(event["position"])
+                if before.get(p) == event["kind"]:
+                    continue
+                # Protect the moved result, just like a directly written light.
+                routed.add(p)
+                if before.get(p) == off and event["kind"] == on and kind(object_layer, p) == relay:
+                    emit(p, incoming)
+                    trace(f"seed_{number(p)}")
         for p, _ in loaded:
             emit(p, incoming)
             trace(f"delay_{number(p)}")
@@ -88,7 +104,9 @@ class PulseNetworkSystem(GameSystem):
         elif source_kind not in writes:
             direct = []
         for p in direct:
-            if kind(object_layer, p) == relay and kind(light_layer, p) == off and writes.get(source_kind) != off:
+            old = kind(light_layer, p)
+            target = writes.get(source_kind, on if old == off else off)
+            if kind(object_layer, p) == relay and old == off and target == on:
                 emit(p, incoming)
                 trace(f"seed_{number(p)}")
                 change(object_layer, p, relay)
@@ -97,7 +115,7 @@ class PulseNetworkSystem(GameSystem):
             if queued:
                 state.variables[queued] = 1
                 events.append(ev.variable_changed(queued, 0, 1))
-        seen = set(direct)
+        seen = set(direct) | routed
         for p in direct:
             change(signal_layer, p, c["hitKind"])
             if source_kind in writes:
@@ -125,7 +143,8 @@ class PulseNetworkSystem(GameSystem):
                 collisions = c.get("collisions") is not False
                 cancel = collisions and ((mask & 5) == 5 or (mask & 10) == 10)
                 burst = collisions and c.get("bursts") is not False and not cancel and bool(mask & 5) and bool(mask & 10)
-                forwarding = not cancel and kind(object_layer, p) == relay and kind(light_layer, p) == off
+                forwarding = (not cancel and kind(object_layer, p) == relay
+                              and kind(light_layer, p) == off)
                 if burst or forwarding:
                     emit(p, output)
                 if forwarding:

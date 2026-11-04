@@ -148,6 +148,9 @@ class GameUiConfig {
   /// goal text does not. Turning it off falls back to the goal's description.
   final bool showGoalPreview;
 
+  /// Optional target size with an expandable view; absent preserves the layout.
+  final double? goalPreviewSize;
+
   /// Whether to show the generic "Moves: N" action counter. Defaults on for
   /// backward compatibility; a game whose action count includes non-move
   /// actions (e.g. cell selection) and therefore doesn't read as a
@@ -160,6 +163,7 @@ class GameUiConfig {
     this.showGuide = false,
     this.readouts = const [],
     this.showGoalPreview = true,
+    this.goalPreviewSize,
     this.showMoves = true,
   });
 
@@ -176,6 +180,8 @@ class GameUiConfig {
                 if (r is Map<String, dynamic>) GameReadout.fromJson(r),
             ].where((r) => r.variable.isNotEmpty).toList(),
       showGoalPreview: (j['showGoalPreview'] as bool?) ?? true,
+      goalPreviewSize: j['goalPreviewSize'] is num && (j['goalPreviewSize'] as num) > 0
+          ? (j['goalPreviewSize'] as num).toDouble() : null,
       showMoves: (j['showMoves'] as bool?) ?? true,
     );
   }

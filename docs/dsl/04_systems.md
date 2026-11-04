@@ -25,7 +25,8 @@ Configuration is pack vocabulary, not fixed engine entity names:
 | `queuedVariable` | Optional 0/1 variable indicating whether this press loaded a new store. |
 | `collisions` | Default `true`: same-wave opposites cancel; a perpendicular pair bursts. Cancellation takes precedence. `false` disables both effects. |
 | `bursts` | Default `true`. Set `false` to merge perpendicular arrivals into one flip without forwarding from ordinary cells. Opposite cancellation still follows `collisions`. |
-| `trace` | Default `false`: emit read-only `pulse_trace` diagnostic events. |
+  | `trace` | Default `false`: emit read-only `pulse_trace` diagnostic events. |
+  | `activateMovedRelays` | Default `false`. With movement events enabled, a light permutation that changes a relay from OFF to ON seeds the same first wave as a direct activation. Changed destinations are protected from further pulses that press. ON-to-OFF and unchanged states do not seed. |
 
 A ready control outside `flipKinds`, `writeKinds`, and `delayKinds` simply
 advances time, allowing stores to release. Every pulse travels exactly one
@@ -385,13 +386,15 @@ unsafe carry move
 |-------|------|---------|-------------|
 | `overlaySystemId` | string | — | Id of the `overlay_cursor` system providing the region. |
 | `affectedLayers` | array of strings | `["objects"]` | Which layers are transformed. |
+| `emitMotion` | boolean | `false` | For rotate, flip and diagonal swap, emit `tile_moved` events for nonempty sources whose positions change. Preserves kinds and parameters; enables simultaneous renderer movement. Fixed points, empty sources and excluded void pairs emit nothing. Only literal `true` enables it. Exchange is unaffected. |
+| `trigger` | object | absent | Optional `{ "layer": "...", "kind": "...", "kinds": [...], "tag": "..." }` guard: the action's `position` must contain the specified kind, one of `kinds`, or the specified `tag` on that layer. Missing, malformed, or nonmatching positions leave the board unchanged. |
 | `operations` | object | `{}` | Map of operation name → operation config. |
 
 Each operation:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `type` | string | `"rotate"`, `"flip"`, `"diagonal_swap"`, or `"exchange"`. |
+| `type` | string | `"rotate"`, `"flip"`, `"diagonal_swap"`, `"exchange"`, or `"cycle_neighbors"`. |
 | `action` | string | Action id that triggers this operation. |
 | `layers` | `[first, second]` | `exchange` only: the two layers swapped. Ignores `affectedLayers`. |
 | `pairs` | object | — | Aggressor kind mapped to one victim kind or a list of victim kinds. |
@@ -409,6 +412,14 @@ Example config:
   }
 }
 ```
+
+**Operation: `cycle_neighbors`**
+
+Permutes the four orthogonal neighbors of the action's `position` clockwise
+(left -> top -> right -> bottom -> left). The center and diagonal cells stay
+fixed. It needs no overlay; overlapping neighborhoods compose in action order.
+A missing/malformed position, out-of-bounds neighbor or void neighbor leaves
+the board unchanged. `affectedLayers`, `trigger` and `emitMotion` still apply.
 
 **Operation: `rotate`**
 

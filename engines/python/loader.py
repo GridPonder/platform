@@ -27,8 +27,8 @@ def load_pack(pack_dir: str | Path) -> tuple[GameDef, dict[str, dict]]:
         Pass a value to TurnEngine(game, levels['level_id']).
     """
     pack = Path(pack_dir)
-    manifest = json.loads((pack / "manifest.json").read_text())
-    game_json = json.loads((pack / "game.json").read_text())
+    manifest = json.loads((pack / "manifest.json").read_text(encoding="utf-8"))
+    game_json = json.loads((pack / "game.json").read_text(encoding="utf-8"))
 
     game = GameDef.from_dict(
         game_json,
@@ -41,7 +41,7 @@ def load_pack(pack_dir: str | Path) -> tuple[GameDef, dict[str, dict]]:
     levels_dir = pack / "levels"
     if levels_dir.exists():
         for level_file in sorted(levels_dir.glob("*.json")):
-            level_json = json.loads(level_file.read_text())
+            level_json = json.loads(level_file.read_text(encoding="utf-8"))
             level_id = level_json.get("id", level_file.stem)
             levels[level_id] = level_json
 
