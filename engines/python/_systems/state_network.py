@@ -59,25 +59,31 @@ class StateNetworkSystem(GameSystem):
     def key(self):
         return "__network_" + self.id
 
+    def _initial_runtime(self):
+        c = self.config
+        return {
+            "values": {n["id"]: n.get("initial", 0) for n in c["nodes"]},
+            "inputs": {s: 0 for s in c.get("inputs", [])},
+            **({"counters": {n["id"]: 0 for n in c["nodes"] if n["op"].startswith("counter")}}
+               if any(n["op"].startswith("counter") for n in c["nodes"]) else {}),
+            "energy": c["energy"], "probe": "" if c.get("initialProbe") is None else c["initialProbe"],
+            "clamp": "", "reading": -1, "sample": "none", "done": [],
+            "closed": [], "journal": [], "complete": 0, "failed": 0,
+        }
+
     def runtime(self, state):
         if self.key not in state.variables:
-            c = self.config
-            state.variables[self.key] = {
-                "values": {n["id"]: n.get("initial", 0) for n in c["nodes"]},
-                "inputs": {s: 0 for s in c.get("inputs", [])},
-                **({"counters": {n["id"]: 0 for n in c["nodes"] if n["op"].startswith("counter")}}
-                   if any(n["op"].startswith("counter") for n in c["nodes"]) else {}),
-                "energy": c["energy"], "probe": "" if c.get("initialProbe") is None else c["initialProbe"],
-                "clamp": "", "reading": -1, "sample": "none", "done": [],
-                "closed": [], "journal": [], "complete": 0, "failed": 0,
-            }
+            state.variables[self.key] = self._initial_runtime()
         return state.variables[self.key]
 
     def outputs(self, r):
         return {k: (0 if k == r["clamp"] else v) for k, v in r["values"].items()}
 
-    def project(self, state):
-        c, r = self.config, self.runtime(state)
+    def public_view(self, state):
+        """Every public field by name, independent of which ones `readouts`
+        copies into variables. Reads state without modifying it."""
+        c = self.config
+        r = state.variables[self.key] if self.key in state.variables else self._initial_runtime()
         public = {k: r[k] for k in ("energy", "probe", "clamp", "reading", "sample", "complete", "failed")}
         public["journal"] = " | ".join(r["journal"]) or "No powered readings yet"
         for inp in c.get("inputs", []):
@@ -86,6 +92,12 @@ class StateNetworkSystem(GameSystem):
             public["done_" + task] = int(task in r["done"])
         for probe in c.get("probes", {}):
             public["open_" + probe] = int(probe not in r["closed"])
+        return public
+
+    def project(self, state):
+        c = self.config
+        self.runtime(state)
+        public = self.public_view(state)
         for field, variable in c.get("readouts", {}).items():
             if field not in public or variable.startswith("__network_"):
                 raise ValueError("state_network: invalid public readout")

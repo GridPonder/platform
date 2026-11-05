@@ -4,11 +4,12 @@ import 'board_renderer.dart';
 import 'network_input_controller.dart';
 import 'network_circuit_clues.dart';
 import 'network_lesson.dart';
+import 'network_presentation.dart';
 
 /// Annotates the real board using only public targets and recorded measurements.
 /// The original cells, sprites and positions remain the primary representation.
 class NetworkBench extends StatelessWidget {
-  final Map<String, dynamic> config;
+  final NetworkView view;
   final Map<String, dynamic>? publicCircuit;
   final Map<String, dynamic>? lesson;
   final NetworkInputController inputController;
@@ -22,7 +23,7 @@ class NetworkBench extends StatelessWidget {
 
   const NetworkBench({
     super.key,
-    required this.config,
+    required this.view,
     required this.inputController,
     required this.state,
     required this.game,
@@ -35,8 +36,9 @@ class NetworkBench extends StatelessWidget {
     this.lesson,
   });
 
-  Object? _read(String field) =>
-      state.variables[(config['readouts'] as Map?)?[field]];
+  Map<String, dynamic> get config => view.config;
+  NetworkTerms get _terms => view.terms;
+  Object? _read(String field) => view.read(field);
   List<PublicCircuitNode> get _clues =>
       ((publicCircuit?['nodes'] as List?) ?? [])
           .map((n) => PublicCircuitNode(n as Map))
@@ -49,6 +51,13 @@ class NetworkBench extends StatelessWidget {
       orElse: () => clues.last,
     );
   }
+
+  /// The nodes `publicCircuit.pairedInputs` assigns inputs to, in order:
+  /// `pairedNodes` when given, else the first two public nodes.
+  List<String> get _pairedNodes =>
+      ((publicCircuit?['pairedNodes'] as List?) ??
+              _clues.take(2).map((n) => n.id).toList())
+          .cast<String>();
 
   Map get _controls => config['controls'] as Map? ?? {};
   List get _indicators => config['indicators'] as List? ?? [];
@@ -74,13 +83,7 @@ class NetworkBench extends StatelessWidget {
   Widget _buildBench(BuildContext context) {
     _registerControls();
     final tasks = config['tasks'] as Map? ?? {};
-    final ready = tasks.entries.where(
-      (e) =>
-          _read('done_${e.key}') != 1 &&
-          (e.value['after'] as List? ?? []).every(
-            (id) => _read('done_$id') == 1,
-          ),
-    );
+    final ready = tasks.entries.where((e) => view.canCommit(e.key as String));
     final current = ready.isEmpty ? null : ready.first;
     final targets =
         current?.value['requires'] as Map? ?? config['safe'] as Map? ?? {};
@@ -94,6 +97,7 @@ class NetworkBench extends StatelessWidget {
             controller: inputController,
             read: _read,
             won: state.isWon,
+            terms: _terms,
           ),
         Wrap(
           alignment: WrapAlignment.center,
@@ -103,10 +107,10 @@ class NetworkBench extends StatelessWidget {
           children: [
             Text(
               state.isWon
-                  ? 'Ready for service!'
+                  ? 'Complete!'
                   : current == null
-                  ? 'Safe shutdown · memory targets:'
-                  : '${lesson?['tasks']?[current.key] ?? 'Inspection ${current.key}'} · output targets:',
+                  ? 'Final state · memory targets:'
+                  : '${lesson?['tasks']?[current.key] ?? view.taskTitle(current.key as String)} · output targets:',
               style: const TextStyle(fontWeight: FontWeight.w700),
             ),
             for (final e in targets.entries)
@@ -118,15 +122,15 @@ class NetworkBench extends StatelessWidget {
                       : const Color(0xFFE3E9E9),
                   borderRadius: BorderRadius.circular(6),
                 ),
-                child: Text('${e.key} ${e.value == 1 ? 'ON' : 'OFF'}'),
+                child: Text('${e.key} ${NetworkTerms.bit(e.value)}'),
               ),
             IconButton(
-              tooltip: 'Experiment notebook',
+              tooltip: 'Readings so far',
               icon: const Icon(Icons.history_edu, size: 20),
               onPressed: () => showDialog<void>(
                 context: context,
                 builder: (context) => AlertDialog(
-                  title: const Text('Experiment notebook'),
+                  title: const Text('Readings so far'),
                   content: SizedBox(
                     width: 480,
                     child: SingleChildScrollView(
@@ -149,10 +153,10 @@ class NetworkBench extends StatelessWidget {
             padding: const EdgeInsets.only(bottom: 6),
             child:
                 guidance ??
-                const Text(
-                  'Return the machine to service: pass its inspections, then shut it down safely.',
+                Text(
+                  'Complete every ${_terms.task} in order, then reach the final state.',
                   textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 12, color: Colors.blueGrey),
+                  style: const TextStyle(fontSize: 12, color: Colors.blueGrey),
                 ),
           ),
         Expanded(
@@ -167,15 +171,18 @@ class NetworkBench extends StatelessWidget {
                   Padding(
                     padding: EdgeInsets.symmetric(vertical: 5),
                     child: Text(
-                      lesson == null
-                          ? 'Tap a module’s rule to trace its inputs.\nSolid = certain wire · dashed = possible wire.\nBrown cables are the shared test bus.'
-                          : 'Tap a module’s rule to trace its inputs.\nSolid = certain wire · dashed = possible wire.',
+                      'Tap a ${_terms.node}’s rule to trace its inputs.\nSolid = certain wire · dashed = possible wire.',
                       textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 12, color: Color(0xFF41666B)),
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF41666B),
+                      ),
                     ),
                   ),
                   NetworkClueDetail(
                     node: clue,
+                    terms: _terms,
+                    pairedNodes: _pairedNodes,
                     pairs: publicCircuit?['pairedInputs'] as List? ?? [],
                     held: _read('clamp') == clue.id,
                   ),
@@ -215,9 +222,9 @@ class NetworkBench extends StatelessWidget {
         Padding(
           padding: const EdgeInsets.only(top: 5),
           child: Text(
-            'Arrows: select · Enter: activate · Space: run test. Gold = target; Read = last measurement.',
+            'Arrows: select · Enter: activate · Space: run ${_terms.pulse}. Gold = target; Read = last reading.',
             textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 12),
+            style: const TextStyle(fontSize: 12),
           ),
         ),
       ],
@@ -232,10 +239,11 @@ class NetworkBench extends StatelessWidget {
         items.add(
           NetworkBoardControl(
             Position(pos[0] as int, pos[1] as int),
-            'Switch ${name.toString().toUpperCase()} — ${inputController.inputs[name] == 1 ? 'ON' : 'OFF'}',
+            '${NetworkTerms.capitalize(_terms.input)} ${name.toString().toUpperCase()} — ${NetworkTerms.bit(inputController.inputs[name])}',
             () {
               if (enabled) inputController.toggle(name as String);
             },
+            id: 'switch-$name',
           ),
         );
     }
@@ -246,10 +254,11 @@ class NetworkBench extends StatelessWidget {
         items.add(
           NetworkBoardControl(
             Position(pos[0] as int, pos[1] as int),
-            'Test socket ${entry.key}',
+            '${NetworkTerms.capitalize(_terms.probe)} ${entry.key}',
             () {
               if (enabled) onAction(GameAction(action, {}));
             },
+            id: 'socket-${entry.key}',
           ),
         );
       }
@@ -271,7 +280,7 @@ class NetworkBench extends StatelessWidget {
               items.add(
                 NetworkBoardControl(
                   Position(x, y),
-                  'Hold $target OFF — ${held ? 'active; Enter releases' : 'inactive'}',
+                  '${NetworkTerms.capitalize(_terms.clamp)} $target OFF — ${held ? 'active; Enter releases' : 'inactive'}',
                   () {
                     if (enabled)
                       onAction(
@@ -281,6 +290,7 @@ class NetworkBench extends StatelessWidget {
                         ),
                       );
                   },
+                  id: 'tool-$target',
                 ),
               );
             }
@@ -291,19 +301,16 @@ class NetworkBench extends StatelessWidget {
     for (final task in (config['tasks'] as Map? ?? {}).entries) {
       final pos = _position('done_${task.key}');
       final action = _action('commit', task.key);
-      final ready =
-          _read('done_${task.key}') != 1 &&
-          (task.value['after'] as List? ?? []).every(
-            (id) => _read('done_$id') == 1,
-          );
+      final ready = view.canCommit(task.key as String);
       if (pos != null && action != null && ready) {
         items.add(
           NetworkBoardControl(
             Position(pos[0] as int, pos[1] as int),
-            'Inspection ${task.key} — Enter reviews requirements',
+            '${view.taskTitle(task.key as String)} — Enter reviews requirements',
             () {
               if (enabled) onAction(GameAction(action, {}));
             },
+            id: 'inspection-${task.key}',
           ),
         );
       }
@@ -357,16 +364,7 @@ class NetworkBench extends StatelessWidget {
               onTap: enabled && action != null && !locked
                   ? () {
                       final control = inputController.controls.where(
-                        (c) =>
-                            key == 'socket-${c.label.split(' ').last}' ||
-                            (key.startsWith('tool-') &&
-                                c.label.startsWith(
-                                  'Hold ${key.substring(5)} ',
-                                )) ||
-                            (key.startsWith('inspection-') &&
-                                c.label.startsWith(
-                                  'Inspection ${key.substring(11)} ',
-                                )),
+                        (c) => c.id == key,
                       );
                       if (control.isNotEmpty) {
                         inputController.select(control.first.position);
@@ -498,7 +496,7 @@ class NetworkBench extends StatelessWidget {
                     pos,
                     Tooltip(
                       message:
-                          'Switch ${name.toString().toUpperCase()}: click or Enter to stage the next test',
+                          '${NetworkTerms.capitalize(_terms.input)} ${name.toString().toUpperCase()}: click or Enter to stage the next ${_terms.pulse}',
                       child: Material(
                         color: Colors.transparent,
                         child: InkWell(
@@ -634,8 +632,8 @@ class NetworkBench extends StatelessWidget {
                     hit(
                       'socket-${e.key}',
                       _read('open_${e.key}') == 0
-                          ? 'Port ${e.key} is sealed'
-                          : 'Attach test lead to ${e.key}; Run test to read it',
+                          ? '${NetworkTerms.capitalize(_terms.probe)} ${e.key} is closed'
+                          : 'Select ${_terms.probe} ${e.key}; the next ${_terms.pulse} reads it',
                       _action('probe', e.key),
                       selected: _read('probe') == e.key,
                       locked: _read('open_${e.key}') == 0,
@@ -647,7 +645,7 @@ class NetworkBench extends StatelessWidget {
                     pos,
                     hit(
                       'inspection-${task.key}',
-                      'Inspection ${task.key}: ${(task.value['requires'] as Map).entries.map((e) => '${e.key} ${e.value == 1 ? 'ON' : 'OFF'}').join(', ')}',
+                      '${view.taskTitle(task.key as String)}: ${NetworkTerms.pattern(task.value['requires'] as Map)}',
                       _action('commit', task.key),
                       selected: task.key == current,
                       locked: _read('done_${task.key}') == 1,
@@ -669,7 +667,7 @@ class NetworkBench extends StatelessWidget {
                           [x, y],
                           hit(
                             'tool-${_controls[action.id]['target']}',
-                            'Hold output ${_controls[action.id]['target']} OFF; memory still updates',
+                            '${NetworkTerms.capitalize(_terms.clamp)} output ${_controls[action.id]['target']} OFF; memory still updates',
                             action.id,
                           ),
                         ),

@@ -753,7 +753,10 @@ are presentation data; no game identity is interpreted by the renderer.
 undo, hint replay and predictive action previews; the Undo control is replaced
 by a visible Restart. Solve stays available: it replays the level's authored
 solution (for a `state_network`, an explained step-by-step policy) and the
-assisted attempt earns no progress. It does not hide
+assisted attempt earns no progress. Policy actions are action ids or gold-path
+objects such as `{"action": "move", "direction": "up"}`, so actions with
+parameters replay intact; without a policy, Solve plays the gold path as
+authored. It does not hide
 arbitrary board entities or variables: systems/pack authors must explicitly
 project public observations and expose only public variables via `ui.readouts`.
 Readouts accept strings as well as numbers; text journals wrap in the app.

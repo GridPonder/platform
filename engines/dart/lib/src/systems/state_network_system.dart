@@ -74,10 +74,8 @@ class StateNetworkSystem extends GameSystem {
   }
 
   String get key => '__network_$id';
-  Map runtime(LevelState state) {
-    state.variables.putIfAbsent(
-      key,
-      () => <String, dynamic>{
+
+  Map<String, dynamic> _initialRuntime() => <String, dynamic>{
         'values': {
           for (final n in config['nodes']) n['id'] as String: n['initial'] ?? 0,
         },
@@ -101,8 +99,10 @@ class StateNetworkSystem extends GameSystem {
         'journal': <String>[],
         'complete': 0,
         'failed': 0,
-      },
-    );
+      };
+
+  Map runtime(LevelState state) {
+    state.variables.putIfAbsent(key, _initialRuntime);
     return state.variables[key] as Map;
   }
 
@@ -111,9 +111,12 @@ class StateNetworkSystem extends GameSystem {
           e.key as String: e.key == r['clamp'] ? 0 : e.value as int,
       };
 
-  void project(LevelState state) {
-    final r = runtime(state);
-    final public = <String, dynamic>{
+  /// Every public field by name, independent of which ones `readouts` copies
+  /// into variables. Reads [state] without modifying it, so a presentation
+  /// can rely on it even when a level declares only a few readouts.
+  Map<String, dynamic> publicView(LevelState state) {
+    final r = state.variables[key] as Map? ?? _initialRuntime();
+    return <String, dynamic>{
       for (final k in [
         'energy',
         'probe',
@@ -134,6 +137,11 @@ class StateNetworkSystem extends GameSystem {
       for (final probe in (config['probes'] as Map? ?? {}).keys)
         'open_$probe': (r['closed'] as List).contains(probe) ? 0 : 1,
     };
+  }
+
+  void project(LevelState state) {
+    runtime(state);
+    final public = publicView(state);
     for (final e in (config['readouts'] as Map? ?? {}).entries) {
       if (!public.containsKey(e.key) ||
           (e.value as String).startsWith('__network_')) {

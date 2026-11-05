@@ -41,4 +41,4 @@ export 'src/agent/llm_agent.dart';
 
 
 // Node update rule, shared with clients that simulate public hypotheses.
-export 'src/systems/state_network_system.dart' show nodeStep;
+export 'src/systems/state_network_system.dart' show nodeStep, StateNetworkSystem;

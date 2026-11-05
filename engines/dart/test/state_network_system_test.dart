@@ -50,6 +50,33 @@ void main() {
     expect(e.executeTurn(const GameAction('send')).accepted, isTrue);
     expect(e.isLost, isFalse);
   });
+  test('publicView reports task status a level does not read out', () {
+    final json = jsonDecode(
+        File('../python/_fixtures/state_network.json').readAsStringSync());
+    final sys = json['game']['systems'][0];
+    final c = sys['config'];
+    c['tasks']['first'] = {'requires': {}};
+    c['tasks']['job']['after'] = ['first'];
+    c['controls']['first'] = {'type': 'commit', 'target': 'first'};
+    (json['game']['actions'] as List)
+        .add({'id': 'first', 'params': <String, dynamic>{}});
+    final game = GameDefinition.fromJson(json['game']);
+    final e =
+        TurnEngine(game, LevelDefinition.fromJson(json['level'], game.layers));
+    final network = StateNetworkSystem(id: sys['id'], config: c);
+    expect(e.state.variables.containsKey('done_first'), isFalse);
+    expect(network.publicView(e.state)['done_first'], 0);
+    e.executeTurn(const GameAction('first'));
+    final view = network.publicView(e.state);
+    expect(view['done_first'], 1);
+    expect(view['done_job'], 0);
+    expect(view['input_p'], 0);
+    expect(view.keys.where((k) => k.startsWith('__network_')), isEmpty);
+    // Reading never creates runtime state.
+    final fresh = e.state.copy()..variables.clear();
+    expect(network.publicView(fresh)['energy'], 6);
+    expect(fresh.variables, isEmpty);
+  });
   test('assistance policy defaults off and parses opt-in', () {
     expect(
         GameDefinition.fromJson({

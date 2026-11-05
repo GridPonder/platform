@@ -39,6 +39,7 @@ import '../widgets/balance_panel.dart';
 import '../widgets/controls_widget.dart';
 import '../widgets/network_bench.dart';
 import '../widgets/network_input_controller.dart';
+import '../widgets/network_presentation.dart';
 import '../widgets/network_workbench.dart';
 import 'cell_selection_state.dart';
 
@@ -373,15 +374,8 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
       if (activate) {
         _networkInput.activate();
       } else {
-        for (final entry in _networkControls.entries) {
-          if (entry.value['type'] == 'pulse' &&
-              _networkInput.inputs.entries.every(
-                (e) => entry.value['inputs'][e.key] == e.value,
-              )) {
-            _onAction(GameAction(entry.key as String, {}));
-            break;
-          }
-        }
+        final pulse = _networkView?.pulseFor(_networkInput.inputs);
+        if (pulse != null) _onAction(GameAction(pulse, {}));
       }
     }
     return KeyEventResult.handled;
@@ -418,8 +412,14 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
         !_networkControls.containsKey(_primaryMoveAction!.id);
   }
 
-  Object? _networkRead(String field) =>
-      _engine.state.variables[(_network?.config['readouts'] as Map?)?[field]];
+  /// The level's network with every public field, independent of which
+  /// ones the level copies into variables through `readouts`.
+  NetworkView? get _networkView {
+    final network = _network;
+    return network == null ? null : NetworkView.of(network, _engine.state);
+  }
+
+  Object? _networkRead(String field) => _networkView?.read(field);
 
   Future<void> _onAction(GameAction action) async {
     if (_aiRunning ||
@@ -431,87 +431,21 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
         _engine.state.isWon ||
         _engine.state.isLost)
       return;
-    final config = _network?.config;
-    final control = (config?['controls'] as Map?)?[action.actionId];
-    if (control?['type'] == 'commit' && !_hasVisualWorkbench) {
-      final target = control['target'];
-      final task = config!['tasks'][target] as Map;
-      final waiting = (task['after'] as List? ?? [])
-          .where((id) => _networkRead('done_$id') != 1)
-          .toList();
-      if (waiting.isNotEmpty || _networkRead('done_$target') == 1) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              waiting.isNotEmpty
-                  ? 'Complete inspection ${waiting.join(', ')} first.'
-                  : 'Inspection $target is already complete.',
-            ),
-          ),
-        );
+    final view = _networkView;
+    final control = view?.controls[action.actionId];
+    if (view != null && control?['type'] == 'commit' && !_hasVisualWorkbench) {
+      final target = control['target'] as String;
+      final blocker = view.commitBlocker(target);
+      if (blocker != null) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(blocker)));
         return;
       }
       _confirmingDelivery = true;
-      final accepted = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: Text(
-            task['label'] == null
-                ? 'Submit for inspection $target?'
-                : '${task['label']}?',
-          ),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  task['label'] == null
-                      ? 'The inspector checks module outputs, not the X / Y / Z switches.'
-                      : 'Check the module outputs below before operating the machine.',
-                ),
-                const SizedBox(height: 14),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 6,
-                  children: [
-                    for (final e in (task['requires'] as Map).entries)
-                      Chip(
-                        label: Text(
-                          '${e.key}: ${e.value == 1 ? 'ON (1)' : 'OFF (0)'}',
-                        ),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 14),
-                const Text(
-                  'Costs 1 charge. The machine does not advance. A wrong pattern ends this attempt. You can go back and keep testing.',
-                ),
-                if ((task['closes'] as List? ?? []).isNotEmpty) ...[
-                  const SizedBox(height: 10),
-                  Text(
-                    'Passing seals test ports: ${(task['closes'] as List).join(', ')}.',
-                  ),
-                ],
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              autofocus: true,
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Keep testing'),
-            ),
-            FilledButton(
-              key: const ValueKey('confirm-inspection'),
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Submit · 1 charge'),
-            ),
-          ],
-        ),
-      );
+      final accepted = await view.confirmCommit(context, target);
       _confirmingDelivery = false;
-      if (!mounted || accepted != true) return;
+      if (!mounted || !accepted) return;
     }
     await _runAction(action);
   }
@@ -2863,104 +2797,24 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
   }
 
   Widget? _networkGuidance() {
-    if (!_humanNetworkHelp) return null;
+    final view = _networkView;
+    if (!_humanNetworkHelp || view == null) return null;
     if (!_lessonActive) {
       if (_levelDef.metadata?['networkLesson'] != null ||
           _levelIndex != 0 ||
           _engine.state.isWon ||
           _engine.state.isLost)
         return null;
-      final fresh = _networkRead('sample') == 'none';
-      final firstTask =
-          ((_network!.config['tasks'] as Map?) ?? const {}).entries.firstOrNull;
-      if (firstTask == null) return null;
-      final target = ((firstTask.value['requires'] as Map?) ?? const {}).entries
-          .map((e) => '${e.key} ${e.value == 1 ? 'ON' : 'OFF'}')
-          .join(', ');
-      return Text(
-        fresh
-            ? 'Start here: leave the test switches OFF and click Run test. Read ${_networkRead('probe')} beside its module. Need a walkthrough? Choose Teach me below.'
-            : 'The reading is one clue, not the answer. ${firstTask.key} needs $target together. Teach me explains a complete example, one move at a time.',
-        textAlign: TextAlign.center,
-        style: const TextStyle(fontSize: 13, color: Color(0xFF176C73)),
-      );
+      return NetworkGuidance.firstLevelHint(view);
     }
-    final path = _levelDef.solution.goldPath;
-    final done = _lessonIndex >= path.length || _engine.state.isWon;
-    var explanation =
-        'All inspections passed and every memory is OFF. Restart to try it yourself.';
-    if (!done) {
-      final c =
-          _network!.config['controls'][path[_lessonIndex].actionId] as Map;
-      final target = c['target'];
-      switch (c['type']) {
-        case 'pulse':
-          final switches = (c['inputs'] as Map).entries
-              .map(
-                (e) =>
-                    '${e.key.toString().toUpperCase()} ${e.value == 1 ? 'ON' : 'OFF'}',
-              )
-              .join(', ');
-          explanation =
-              'Run test with $switches. It costs 1 charge and advances every module, even with all switches OFF. Then the lead reads ${_networkRead('probe')}.';
-          break;
-        case 'probe':
-          explanation =
-              'Attach the test lead to socket $target. This is free. Moving the lead does not measure anything; the next test will.';
-          break;
-        case 'clamp':
-          explanation = target == ''
-              ? 'Release the hold. The output works normally again; the module memory was never cleared.'
-              : 'Hold $target OFF. Its output is forced to 0, including what downstream modules receive. Its memory still changes on each test. This setup is free.';
-          break;
-        case 'commit':
-          final required =
-              (_network!.config['tasks'][target]['requires'] as Map).entries
-                  .map((e) => '${e.key} ${e.value == 1 ? 'ON' : 'OFF'}')
-                  .join(', ');
-          explanation =
-              'Submit inspection $target: $required. The preceding example moves produced that pattern. This spends 1 charge without advancing the modules.';
-          break;
-      }
-    }
-    return Container(
-      constraints: const BoxConstraints(maxWidth: 900),
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: const Color(0xFFE8F4F2),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            done
-                ? 'Demonstration complete'
-                : 'Guided example · move ${_lessonIndex + 1}/${path.length}',
-            style: const TextStyle(fontWeight: FontWeight.bold),
-          ),
-          Text(
-            explanation,
-            textAlign: TextAlign.center,
-            style: const TextStyle(fontSize: 13),
-          ),
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (!done)
-                TextButton(
-                  key: const ValueKey('lesson-next'),
-                  onPressed: _lessonBusy ? null : _nextNetworkLessonStep,
-                  child: const Text('Do this step'),
-                ),
-              TextButton(
-                onPressed: _onReset,
-                child: Text(done ? 'Try yourself' : 'Exit lesson & restart'),
-              ),
-            ],
-          ),
-        ],
-      ),
+    return NetworkGuidance(
+      view: view,
+      path: _levelDef.solution.goldPath,
+      lessonIndex: _lessonIndex,
+      won: _engine.state.isWon,
+      busy: _lessonBusy,
+      onNext: _nextNetworkLessonStep,
+      onExit: _onReset,
     );
   }
 
@@ -2976,7 +2830,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     }
     final path = _levelDef.solution.goldPath;
     if (path.isEmpty) return null;
-    return PolicyCursor.fromPath([for (final a in path) a.actionId]);
+    return PolicyCursor.fromActions(path);
   }
 
   bool get _canSolveExplained =>
@@ -2998,11 +2852,11 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
 
   Future<void> _solverStep() async {
     final cursor = _solver;
-    final action = cursor?.nextAction;
+    final action = cursor?.nextGameAction;
     if (cursor == null || action == null || _solverBusy) return;
     final epoch = _controlsEpoch;
     setState(() => _solverBusy = true);
-    await _runAction(GameAction(action, {}), source: 'solve');
+    await _runAction(action, source: 'solve');
     // Let the workbench finish showing the move before reading its result.
     while (mounted && _mechanismAnimating && epoch == _controlsEpoch) {
       await Future.delayed(const Duration(milliseconds: 40));
@@ -3032,28 +2886,8 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
   }
 
   /// Fallback explanation for a solver move the policy does not annotate.
-  String _plainStepNote(String actionId) {
-    final c = _network?.config['controls']?[actionId] as Map?;
-    switch (c?['type']) {
-      case 'pulse':
-        final switches = (c!['inputs'] as Map).entries
-            .map(
-              (e) =>
-                  '${e.key.toString().toUpperCase()} ${e.value == 1 ? 'on' : 'off'}',
-            )
-            .join(', ');
-        return 'Set $switches and run a cycle (1 power).';
-      case 'probe':
-        return 'Move the meter to ${c!['target']} (free).';
-      case 'clamp':
-        return c!['target'] == ''
-            ? 'Return the clamp (free).'
-            : 'Clamp ${c['target']} (free): its output counts as 0.';
-      case 'commit':
-        return 'Dispatch Job ${c!['target']} (1 power).';
-    }
-    return 'Play $actionId.';
-  }
+  String _plainStepNote(String actionId) =>
+      _networkView?.stepNote(actionId) ?? 'Play $actionId.';
 
   Widget _buildSolverPanel() {
     final cursor = _solver!;
@@ -3064,8 +2898,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     final String body;
     if (state.isWon) {
       title = 'Solved in $_solverSteps steps';
-      body =
-          'Every job is done and everything is off. Restart to try it yourself.';
+      body = 'The level is complete. Restart to try it yourself.';
     } else if (state.isLost || !cursor.onScript) {
       title = 'Off script';
       body =
@@ -3767,7 +3600,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
                           )
                         : _network != null
                         ? NetworkBench(
-                            config: _network!.config,
+                            view: _networkView!,
                             publicCircuit:
                                 _levelDef.metadata?['publicCircuit']
                                     as Map<String, dynamic>?,
@@ -3931,6 +3764,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
                         _levelDef.systemOverrides,
                       ),
                       publicVariables: Map<String, dynamic>.of(state.variables),
+                      networkView: _networkView,
                       enabled:
                           !state.isWon &&
                           !state.isLost &&
@@ -4152,54 +3986,25 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
 
   Widget _buildGoalGuidePanel(LevelState state) {
     final ui = widget.packService.game.ui;
-    if (_network != null) {
-      return Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-        child: Row(
-          children: [
-            const Icon(Icons.battery_charging_full, color: Color(0xFF176C73)),
-            const SizedBox(width: 6),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '${_networkRead('energy')} charges left',
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  if (_networkRead('reading') == 0 ||
-                      _networkRead('reading') == 1)
-                    Text(
-                      'Last test: ${_networkRead('sample')} ${_networkRead('reading') == 1 ? 'ON' : 'OFF'}',
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: Color(0xFF176C73),
-                      ),
-                    ),
-                ],
-              ),
+    final networkView = _networkView;
+    if (networkView != null) {
+      return NetworkStatusRow(
+        view: networkView,
+        onGuide: () => showDialog<void>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Guide'),
+            content: SizedBox(
+              width: 640,
+              child: SingleChildScrollView(child: _buildGuideContents()),
             ),
-            TextButton.icon(
-              onPressed: () => showDialog<void>(
-                context: context,
-                builder: (context) => AlertDialog(
-                  title: const Text('Bench handbook'),
-                  content: SizedBox(
-                    width: 640,
-                    child: SingleChildScrollView(child: _buildGuideContents()),
-                  ),
-                  actions: [
-                    TextButton(
-                      onPressed: () => Navigator.pop(context),
-                      child: const Text('Close'),
-                    ),
-                  ],
-                ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Close'),
               ),
-              icon: const Icon(Icons.menu_book_outlined),
-              label: const Text('Guide'),
-            ),
-          ],
+            ],
+          ),
         ),
       );
     }
@@ -5189,21 +4994,14 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
         : widget.packService.game.loseDescriptions[_loseReason];
     var title = customMessage == null ? 'Out of Moves!' : 'Game Over';
     var subtitle = customMessage ?? 'Plan the order more carefully.';
-    if (_network != null) {
-      final last = (_networkRead('journal') ?? '').toString().split(' | ').last;
-      if (last.endsWith(' failed')) {
-        final order = last.split(' ').first;
-        final requirements =
-            _network!.config['tasks'][order]['requires'] as Map;
-        title = 'Inspection $order did not pass';
-        subtitle =
-            'Required: ${requirements.entries.map((e) => '${e.key} ${e.value == 1 ? 'ON' : 'OFF'}').join(', ')}. '
-            'At least one module output differed. The input switches do not directly set these outputs. Restart to try again.';
-      } else {
-        title = 'Battery empty';
-        subtitle =
-            'The inspections and safe shutdown were not complete when the last charge was spent. Restart to try a different sequence.';
-      }
+    // A pack's own description wins; otherwise explain the network's failure
+    // only when the engine says the network caused this loss.
+    final networkLoss = customMessage == null
+        ? _networkView?.lossMessage(_loseReason)
+        : null;
+    if (networkLoss != null) {
+      title = networkLoss.title;
+      subtitle = networkLoss.subtitle;
     }
     return Container(
       width: double.infinity,

@@ -5,7 +5,15 @@ class NetworkBoardControl {
   final Position position;
   final String label;
   final VoidCallback activate;
-  const NetworkBoardControl(this.position, this.label, this.activate);
+
+  /// Stable identity (e.g. `socket-A`), so callers never parse [label].
+  final String? id;
+  const NetworkBoardControl(
+    this.position,
+    this.label,
+    this.activate, {
+    this.id,
+  });
 }
 
 /// Staged inputs and a navigation cursor. Neither changes engine state.

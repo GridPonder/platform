@@ -1,7 +1,11 @@
+import 'package:gridponder_engine/engine.dart';
+
 /// Walks a level's explained conditional solution (`metadata.solver`).
 ///
 /// A policy node is `{actions, notes?, learned?, next | win | <variable>:
-/// {value: node}}`: play `actions` in order (each with an optional note), then
+/// {value: node}}`. Each action is an action id, or a gold-path style object
+/// (`{"action": id, ...params}`) for actions that take parameters such as a
+/// direction or position. Play `actions` in order (each with an optional note), then
 /// continue at `next`, stop on `win`, or branch on the public state variable
 /// named by the remaining key. Branching only ever reads public variables, so
 /// the walker plays the live attempt without knowing its hidden setup.
@@ -23,12 +27,27 @@ class PolicyCursor {
     'next': {'win': true},
   });
 
+  /// A gold path as a policy, keeping every action's parameters.
+  factory PolicyCursor.fromActions(List<GameAction> actions) => PolicyCursor({
+    'actions': [for (final a in actions) a.toJson()],
+    'next': {'win': true},
+  });
+
   List get _actions => node['actions'] as List? ?? const [];
 
   bool get finished => index >= _actions.length && node['win'] == true;
 
-  String? get nextAction =>
-      index < _actions.length ? _actions[index] as String : null;
+  /// The next action's id.
+  String? get nextAction => nextGameAction?.actionId;
+
+  /// The next action with its parameters.
+  GameAction? get nextGameAction {
+    if (index >= _actions.length) return null;
+    final entry = _actions[index];
+    return entry is Map
+        ? GameAction.fromJson(Map<String, dynamic>.from(entry))
+        : GameAction(entry as String, const {});
+  }
 
   /// Why the next action is played, when the policy explains it.
   String? get note {

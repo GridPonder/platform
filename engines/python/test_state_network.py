@@ -107,6 +107,23 @@ class NetworkTests(unittest.TestCase):
         e.execute_turn('clear')
         self.assertEqual(e.state.variables['reading'],0)
 
+    def test_public_view_reports_status_without_readouts(self):
+        g,l=fixture();c=g['systems'][0]['config']
+        c['tasks']['first']={'requires':{}}
+        c['tasks']['job']['after']=['first']
+        c['controls']['first']={'type':'commit','target':'first'}
+        g['actions'].append({'id':'first','params':{}})
+        e=TurnEngine(GameDef(g),l);net=StateNetworkSystem('net',c)
+        self.assertNotIn('done_first',e.state.variables)
+        self.assertEqual(net.public_view(e.state)['done_first'],0)
+        e.execute_turn('first')
+        view=net.public_view(e.state)
+        self.assertEqual((view['done_first'],view['done_job'],view['input_p']),(1,0,0))
+        self.assertFalse(any(k.startswith('__network_') for k in view))
+        fresh=copy.deepcopy(e.state);fresh.variables={}
+        self.assertEqual(net.public_view(fresh)['energy'],6)
+        self.assertEqual(fresh.variables,{})
+
     def test_validation(self):
         g,_=fixture();c=g['systems'][0]['config'];c['nodes'][0]['inputs']=['missing']
         with self.assertRaises(ValueError):StateNetworkSystem('net',c)

@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'network_presentation.dart';
 
 /// Only authored public alternatives belong here. Never pass runtime nodes.
 class PublicCircuitNode {
@@ -34,7 +35,7 @@ class PublicCircuitNode {
       'copy' => 'copies ${inputs.first}',
       'not' =>
         inputs.first == id
-            ? 'flips itself every test'
+            ? 'flips itself every step'
             : 'takes the opposite of ${inputs.first}',
       'toggle' =>
         'flips its memory when ${inputs.first} is ON; otherwise keeps it',
@@ -48,21 +49,34 @@ class PublicCircuitNode {
 
 class NetworkClueDetail extends StatelessWidget {
   final PublicCircuitNode node;
+
+  /// `publicCircuit.pairedInputs`: each entry lists the input wired to each
+  /// of [pairedNodes], in the same order.
   final List pairs;
+  final List<String> pairedNodes;
   final bool held;
+  final NetworkTerms terms;
   const NetworkClueDetail({
     super.key,
     required this.node,
     required this.pairs,
     required this.held,
+    this.pairedNodes = const [],
+    this.terms = const NetworkTerms(),
   });
 
   @override
   Widget build(BuildContext context) {
     final pairing = pairs
         .map(
-          (p) =>
-              'A←${p[0].toString().toUpperCase()}, B←${p[1].toString().toUpperCase()}',
+          (p) => [
+            for (
+              var i = 0;
+              i < pairedNodes.length && i < (p as List).length;
+              i++
+            )
+              '${pairedNodes[i]}←${p[i].toString().toUpperCase()}',
+          ].join(', '),
         )
         .join(' OR ');
     return Container(
@@ -89,18 +103,18 @@ class NetworkClueDetail extends StatelessWidget {
                 ),
               ),
               Text(
-                'Next test: ${node.id} ${node.alternatives.map(node.explain).join(' OR ')}.',
+                'Next ${terms.pulse}: ${node.id} ${node.alternatives.map(node.explain).join(' OR ')}.',
                 style: const TextStyle(fontSize: 13),
               ),
-              if (pairs.isNotEmpty && (node.id == 'A' || node.id == 'B'))
+              if (pairs.isNotEmpty && pairedNodes.contains(node.id))
                 Text(
-                  'Paired wiring: $pairing. They use different switches.',
+                  'Paired wiring: $pairing. They use different ${terms.inputs}.',
                   style: const TextStyle(fontSize: 13),
                 ),
               Text(
                 held
-                    ? '${node.id} is held OFF: downstream modules receive OFF; its memory still updates.'
-                    : 'Module sources use their PREVIOUS output; switches use your new setting. A clue is not a measurement.',
+                    ? '${node.id} is held OFF: downstream ${terms.nodes} receive OFF; its memory still updates.'
+                    : '${NetworkTerms.capitalize(terms.node)} sources use their PREVIOUS output; ${terms.inputs} use your new setting. A clue is not a measurement.',
                 style: const TextStyle(fontSize: 12, color: Color(0xFF41666B)),
               ),
             ],

@@ -1,20 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:gridponder_engine/engine.dart';
 import 'network_input_controller.dart';
+import 'network_presentation.dart';
 
 /// Composes existing network actions using only public control definitions and
-/// projected readouts. Changing an input here stages a pulse, not an engine turn.
+/// the network's public fields. Changing an input here stages a pulse, not an
+/// engine turn.
 class NetworkControls extends StatefulWidget {
-  final Map<String, dynamic> config;
-  final Map<String, dynamic> publicVariables;
+  final NetworkView view;
   final bool enabled;
   final NetworkInputController? inputController;
   final void Function(GameAction) onAction;
 
   const NetworkControls({
     super.key,
-    required this.config,
-    required this.publicVariables,
+    required this.view,
     required this.enabled,
     this.inputController,
     required this.onAction,
@@ -28,12 +28,12 @@ class _NetworkControlsState extends State<NetworkControls> {
   final Map<String, int> _localInputs = {};
   Map<String, int> get _inputs =>
       widget.inputController?.inputs ?? _localInputs;
-  Map get _controls => widget.config['controls'] as Map? ?? {};
-  List<String> get _names =>
-      (widget.config['inputs'] as List? ?? []).cast<String>();
+  NetworkView get _view => widget.view;
+  NetworkTerms get _terms => widget.view.terms;
+  Map get _controls => _view.controls;
+  List<String> get _names => _view.inputNames;
 
-  Object? _read(String field) =>
-      widget.publicVariables[(widget.config['readouts'] as Map?)?[field]];
+  Object? _read(String field) => _view.read(field);
 
   @override
   void initState() {
@@ -51,11 +51,9 @@ class _NetworkControlsState extends State<NetworkControls> {
   @override
   void didUpdateWidget(covariant NetworkControls oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // Energy changes after either a keyboard pulse or delivery. Sync from
-    // public input readouts while preserving staged choices on free selection.
-    final energyKey = (widget.config['readouts'] as Map?)?['energy'];
-    if (oldWidget.publicVariables[energyKey] !=
-        widget.publicVariables[energyKey]) {
+    // Energy changes after either a keyboard pulse or a commit. Sync from the
+    // public inputs while preserving staged choices on free selection.
+    if (oldWidget.view.read('energy') != _read('energy')) {
       _syncInputs();
     }
   }
@@ -91,7 +89,7 @@ class _NetworkControlsState extends State<NetworkControls> {
               child: Text(
                 (e.value['target'] ?? '') == ''
                     ? 'None'
-                    : '${e.value['target']}${type == 'probe' && _read('open_${e.value['target']}') == 0 ? ' (sealed)' : ''}',
+                    : '${e.value['target']}${type == 'probe' && _read('open_${e.value['target']}') == 0 ? ' (closed)' : ''}',
               ),
             ),
         ],
@@ -119,22 +117,11 @@ class _NetworkControlsState extends State<NetworkControls> {
   }
 
   Widget _buildControls(BuildContext context) {
-    String? pulse;
-    for (final entry in _controls.entries) {
-      if (entry.value['type'] == 'pulse' &&
-          _names.every((n) => entry.value['inputs'][n] == _inputs[n])) {
-        pulse = entry.key as String;
-        break;
-      }
-    }
-    final tasks = widget.config['tasks'] as Map? ?? {};
+    final pulse = _view.pulseFor(_inputs);
     final deliveries = _controls.entries.where(
       (e) =>
           e.value['type'] == 'commit' &&
-          _read('done_${e.value['target']}') != 1 &&
-          (tasks[e.value['target']]['after'] as List? ?? []).every(
-            (id) => _read('done_$id') == 1,
-          ),
+          _view.canCommit(e.value['target'] as String),
     );
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
@@ -150,7 +137,7 @@ class _NetworkControlsState extends State<NetworkControls> {
               Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text('Set test switches · free'),
+                  Text('Set ${_terms.inputs} · free'),
                   Wrap(
                     spacing: 6,
                     children: [
@@ -179,15 +166,18 @@ class _NetworkControlsState extends State<NetworkControls> {
               FilledButton.icon(
                 key: const ValueKey('network-pulse'),
                 onPressed: widget.enabled && pulse != null
-                    ? () => _send(pulse!)
+                    ? () => _send(pulse)
                     : null,
                 icon: const Icon(Icons.bolt),
                 label: Text(
-                  'Run test · ${_names.map((n) => _inputs[n]).join()} · 1 charge',
+                  'Run ${_terms.pulse} · ${_names.map((n) => _inputs[n]).join()} · 1 ${_terms.energy}',
                 ),
               ),
-              _selector('probe', 'Test lead'),
-              _selector('clamp', 'Hold OFF'),
+              _selector('probe', NetworkTerms.capitalize(_terms.probe)),
+              _selector(
+                'clamp',
+                '${NetworkTerms.capitalize(_terms.clamp)} OFF',
+              ),
             ],
           ),
           if (deliveries.isNotEmpty) ...[
@@ -202,15 +192,11 @@ class _NetworkControlsState extends State<NetworkControls> {
                 for (final e in deliveries)
                   OutlinedButton(
                     key: ValueKey(e.key as String),
-                    onPressed:
-                        widget.enabled &&
-                            _read('done_${e.value['target']}') != 1
+                    onPressed: widget.enabled
                         ? () => _send(e.key as String)
                         : null,
                     child: Text(
-                      tasks[e.value['target']]['label'] == null
-                          ? 'Submit inspection ${e.value['target']}…'
-                          : '${tasks[e.value['target']]['label']} (${e.value['target']})…',
+                      'Submit ${_view.taskTitle(e.value['target'] as String)}…',
                     ),
                   ),
               ],

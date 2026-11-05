@@ -2411,6 +2411,21 @@ Configuration fields:
   `input_<input>`, `done_<transaction>`, `open_<socket>`. Private runtime names are reserved.
 - `indicators`: `{field, layer, position, kinds}` projects public fields onto
   board entities. `kinds` maps stringified public values to entity kind ids.
+- `labels`: optional presentation vocabulary; engines ignore it. Keys `task`,
+  `energy`, `input`, `node`, `probe`, `pulse` and `clamp` name those concepts in
+  the app's generic network controls, each with an optional `<key>Plural`.
+  Defaults are neutral ("task", "energy", "input", "node", "probe", "step",
+  "hold"). A task may also carry a `label` used as its title. Example:
+  `{"task": "inspection", "energy": "charge", "input": "switch", "inputPlural": "switches"}`.
+
+`readouts` decide which public fields become level variables (for goals, lose
+conditions, `ui.readouts` and agent observations). The app's own network
+controls do not depend on them: they read every public field through
+`publicView` (`public_view` in Python), which returns the same values the
+projection uses without modifying state. A loss is explained as a network
+failure only when its reason is the `variable_threshold` on the variable
+`failed` is copied to; a pack's `loseDescriptions` entry still takes precedence,
+and losses caused by other systems keep their own text.
 
 A clamp forces an output low immediately, including what downstream nodes read,
 without resetting memory; the node still updates on every pulse. Moving a probe

@@ -5,6 +5,7 @@ import '../services/hint_service.dart';
 import 'board_renderer.dart' show cellNamedColor;
 import 'network_controls.dart';
 import 'network_input_controller.dart';
+import 'network_presentation.dart';
 
 typedef ActionCallback = void Function(GameAction action);
 
@@ -58,6 +59,9 @@ class ControlsWidget extends StatefulWidget {
   final Map<String, dynamic> publicVariables;
   final bool enabled;
   final NetworkInputController? networkInputController;
+  /// The level's network with all public fields. Without it, a network's
+  /// panel falls back to the fields its `readouts` copy into variables.
+  final NetworkView? networkView;
 
   const ControlsWidget({
     super.key,
@@ -81,6 +85,7 @@ class ControlsWidget extends StatefulWidget {
     this.publicVariables = const {},
     this.enabled = true,
     this.networkInputController,
+    this.networkView,
   });
 
   @override
@@ -135,9 +140,13 @@ class _ControlsWidgetState extends State<ControlsWidget> {
       for (final s in networks)
         NetworkControls(
           key: ValueKey(s.id),
-          config: s.config,
+          view: identical(widget.networkView?.config, s.config)
+              ? widget.networkView!
+              : NetworkView(s.config, {
+                  for (final e in (s.config['readouts'] as Map? ?? {}).entries)
+                    e.key as String: widget.publicVariables[e.value],
+                }),
           inputController: widget.networkInputController,
-          publicVariables: widget.publicVariables,
           enabled: widget.enabled,
           onAction: widget.onAction,
         ),

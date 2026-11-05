@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'network_circuit_clues.dart';
 import 'network_input_controller.dart';
+import 'network_presentation.dart';
 
 /// Optional teaching content. Reads only authored public clues and projected
 /// measurements; a player's hypothesis is never checked against private state.
@@ -10,6 +11,7 @@ class NetworkLesson extends StatelessWidget {
   final NetworkInputController controller;
   final Object? Function(String) read;
   final bool won;
+  final NetworkTerms terms;
 
   const NetworkLesson({
     super.key,
@@ -18,6 +20,7 @@ class NetworkLesson extends StatelessWidget {
     required this.controller,
     required this.read,
     required this.won,
+    this.terms = const NetworkTerms(),
   });
 
   Future<void> _notebook(BuildContext context) async {
@@ -102,7 +105,7 @@ class NetworkLesson extends StatelessWidget {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Back to the machine'),
+            child: const Text('Back'),
           ),
         ],
       ),
@@ -158,7 +161,7 @@ class NetworkLesson extends StatelessWidget {
               Expanded(
                 child: Text(
                   won
-                      ? 'Repair complete! ${lesson['insight']}'
+                      ? 'Complete! ${lesson['insight']}'
                       : lesson['brief'] as String,
                   style: const TextStyle(fontWeight: FontWeight.w600),
                 ),
@@ -175,7 +178,7 @@ class NetworkLesson extends StatelessWidget {
                   '${i < done ? '✓' : '○'} ${labels[i]}',
                   key: ValueKey('milestone-$i'),
                 ),
-              Text('${won ? '✓' : '○'} Safely parked'),
+              Text('${won ? '✓' : '○'} Final state'),
               TextButton.icon(
                 key: const ValueKey('hypotheses'),
                 onPressed: () => _notebook(context),
@@ -204,9 +207,9 @@ class NetworkLesson extends StatelessWidget {
               spacing: 6,
               children: [
                 for (final (index, label) in [
-                  '1 · Set X',
+                  '1 · Set ${terms.inputs}',
                   '2 · Update from old outputs',
-                  '3 · Read selected socket',
+                  '3 · Read selected ${terms.probe}',
                 ].indexed)
                   Text(
                     label,
@@ -226,9 +229,9 @@ class NetworkLesson extends StatelessWidget {
           Text(
             won
                 ? (spent <= target
-                      ? 'Efficiency goal met · $spent charges used (goal: $target).'
-                      : 'Job complete · $spent charges used. Optional replay goal: $target.')
-                : 'Room to experiment · optional efficiency goal: $target charges. All successful repairs unlock the next job.',
+                      ? 'Efficiency goal met · ${terms.energyCount(spent)} used (goal: $target).'
+                      : 'Complete · ${terms.energyCount(spent)} used. Optional replay goal: $target.')
+                : 'Room to experiment · optional efficiency goal: ${terms.energyCount(target)}. Any successful completion unlocks the next level.',
             textAlign: TextAlign.center,
             style: const TextStyle(fontSize: 11, color: Color(0xFF536A70)),
           ),
