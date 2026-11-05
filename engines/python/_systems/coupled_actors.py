@@ -32,6 +32,13 @@ that would otherwise block them: the target cell is reduced to
 ``clearedKind``, the actor takes it, and the cell it left is backfilled with
 ``backfillKind`` unless another actor ends the turn standing there. See
 ``_excavate`` for the semantics and the tolerance contract.
+
+Optionally, ``blockingLayers`` lists other layers whose occupied cells block
+a mover like another actor (e.g. a patrol moved by a second, taped instance).
+
+Optionally, ``rejectNoOpMoves: true`` vetoes a move in which no actor changes
+cell, so pushing every actor into a wall is not a free wait: a vetoed move
+costs no action and never reaches NPC resolution. Ignored with a ``tape``.
 """
 from __future__ import annotations
 
@@ -76,6 +83,24 @@ def _tape_direction(tape: dict, state: GameState) -> str | None:
         idx %= len(program)
     state.variables[idx_var] = idx + 1
     return program[idx]
+
+
+def _blocking_cells(board, config: dict) -> set:
+    """Cells occupied on any `blockingLayers` layer: they block a mover just
+    as another actor does. Read once, before anyone moves — entities on those
+    layers are moved by other systems, not this one. A non-list value, or a
+    non-string or unknown layer id, contributes nothing."""
+    raw = config.get("blockingLayers")
+    if not isinstance(raw, list):
+        return set()
+    cells: set = set()
+    for layer_id in raw:
+        if not isinstance(layer_id, str):
+            continue
+        layer = board.layers.get(layer_id)
+        if layer is not None:
+            cells.update(pos for pos, _ in layer.entries())
+    return cells
 
 
 class CoupledActorsSystem(GameSystem):
@@ -146,6 +171,7 @@ class CoupledActorsSystem(GameSystem):
             ordered.extend(members)
 
         occupied = {pos for pos, _ in actors}
+        blockers = _blocking_cells(board, config)
         events: list[dict] = []
         pending_backfill: list[Pos] = []
 
@@ -162,6 +188,7 @@ class CoupledActorsSystem(GameSystem):
                 not in_bounds
                 or (solid and not digging)
                 or target in occupied
+                or target in blockers
             )
             if blocked:
                 events.append(ev.actor_blocked(entity.kind, pos))
@@ -182,6 +209,14 @@ class CoupledActorsSystem(GameSystem):
                 board, game, claim, ground_layer_id, target, entity.kind)
             if claim_event is not None:
                 events.append(claim_event)
+
+        # A turn in which nobody moved is a free "wait" unless the game opts
+        # to veto it. A veto never reaches NPC resolution, so clocks and tapes
+        # hold still. Read strictly, like `tape.cycle`. A tape-driven machine
+        # is not the player's move, so it is never vetoed.
+        if (tape is None and config.get("rejectNoOpMoves") is True
+                and not any(e["type"] == "actor_moved" for e in events)):
+            return [ev.action_vetoed()]
 
         # After every actor has resolved: `occupied` is now the final
         # positions for the turn, which is exactly what decides whether a

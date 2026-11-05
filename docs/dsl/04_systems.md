@@ -549,6 +549,8 @@ never half-apply an exchange, and every legal exchange stays reversible.
 | `tape` | object | — | Optional. Drives the system from a stored programme instead of from the action's direction. See [Tape-driven stepping](#tape-driven-stepping). |
 | `claim` | object | — | Optional. When present, an actor that reaches a new cell also claims it in a territory layer. See below. |
 | `excavate` | object | — | Optional. Lets actors cut through terrain that would otherwise block them, backfilling the cell they leave. See [Excavating movers](#excavating-movers). |
+| `blockingLayers` | array of strings | `[]` | Other layers whose occupied cells block a mover exactly like another actor — for example a patrol moved by a second, `tape`-driven instance of this system. Read once at the start of the move. Non-string or unknown layer ids are ignored. |
+| `rejectNoOpMoves` | boolean | `false` | Veto a move in which no actor changes cell, so pushing every actor into a wall is not a free wait. A vetoed move costs no action and never reaches NPC resolution, so `turn_cycle` clocks and tapes hold still. Read strictly: only the boolean `true` enables it. Ignored when `tape` is set. |
 
 `claim` object:
 
