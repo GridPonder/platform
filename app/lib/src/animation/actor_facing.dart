@@ -80,10 +80,11 @@ Map<String, Map<Position, String>> layeredFacingAfterMoves(
 Map<Position, String> facingAfterTurnsInPlace(
   Map<Position, String> facingAt,
   LevelState pre,
-  LevelState post,
-) {
-  final before = pre.board.layers['actors'];
-  final after = post.board.layers['actors'];
+  LevelState post, {
+  String layer = 'actors',
+}) {
+  final before = pre.board.layers[layer];
+  final after = post.board.layers[layer];
   if (before == null || after == null) return facingAt;
   Map<Position, String>? next;
   for (final entry in after.entries()) {
@@ -95,4 +96,26 @@ Map<Position, String> facingAfterTurnsInPlace(
     (next ??= Map<Position, String>.of(facingAt))[entry.key] = turned;
   }
   return next ?? facingAt;
+}
+
+/// [facingAfterTurnsInPlace] for every auxiliary layer whose facing is
+/// remembered, so a mover that reversed on the spot does not keep drawing its
+/// last travel direction.
+Map<String, Map<Position, String>> layeredFacingAfterTurnsInPlace(
+  Map<String, Map<Position, String>> facingByLayer,
+  LevelState pre,
+  LevelState post,
+) {
+  Map<String, Map<Position, String>>? next;
+  for (final entry in facingByLayer.entries) {
+    final turned = facingAfterTurnsInPlace(
+      entry.value,
+      pre,
+      post,
+      layer: entry.key,
+    );
+    if (identical(turned, entry.value)) continue;
+    (next ??= Map.of(facingByLayer))[entry.key] = turned;
+  }
+  return next ?? facingByLayer;
 }

@@ -23,6 +23,20 @@ def fixture(op='toggle'):
 class NetworkTests(unittest.TestCase):
     def engine(self,op='toggle'):
         g,l=fixture(op);return TurnEngine(GameDef(g),l)
+    def test_flags_are_read_strictly_like_dart(self):
+        g,l=fixture();g['systems'][0]['config']['energy']=True
+        with self.assertRaises(Exception): TurnEngine(GameDef(g),l)
+        g,l=fixture();g['systems'][0]['config']['initialProbe']=None
+        e=TurnEngine(GameDef(g),l);self.assertEqual(e.state.variables['__network_net']['probe'],'')
+        # parkCounters: only the boolean true demands parked counters.
+        def finish(park):
+            g,l=fixture();c=g['systems'][0]['config']
+            c['nodes']=[{'id':'n','op':'copy','inputs':['p']},{'id':'m','op':'counter3','inputs':['p']}]
+            c['safe']={}
+            if park is not None: c['parkCounters']=park
+            e=TurnEngine(GameDef(g),l);e.execute_turn('on');e.execute_turn('send')
+            return e.is_won
+        self.assertTrue(finish(None));self.assertTrue(finish(1));self.assertFalse(finish(True))
     def test_snapshot_and_order(self):
         e=self.engine();e.execute_turn('on');r=e.state.variables['__network_net']
         self.assertEqual(r['values'],{'n':1,'m':0})

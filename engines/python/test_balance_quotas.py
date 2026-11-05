@@ -127,6 +127,17 @@ def test_goal_text_states_the_quota() -> None:
     print("  OK  goal_text_states_the_quota")
 
 
+def test_goal_text_states_the_scored_count() -> None:
+    """A count the evaluator reads as 1 must also be shown as 1."""
+    game = _make_game()
+    level = _make_level([(1, 0), (2, 1)])
+    level["goals"][0]["config"]["quotas"][0]["count"] = 2.0
+    engine = TurnEngine(game, level)
+    text = render_goals(level, engine.state, game)
+    assert "exactly 1 Site cell" in text and "need 1 each" in text, text
+    print("  OK  goal_text_states_the_scored_count")
+
+
 def test_foreign_mark_on_claimable_land_loses() -> None:
     """A territory mark that belongs to no owner can never be claimed."""
     level = _make_level([(1, 0), (2, 1)])
@@ -151,6 +162,7 @@ def run_all() -> bool:
         test_over_quota_loses_at_once,
         test_shortfall_beyond_unowned_sites_loses,
         test_goal_text_states_the_quota,
+        test_goal_text_states_the_scored_count,
         test_foreign_mark_on_claimable_land_loses,
         test_no_foreign_mark_no_loss,
     ]

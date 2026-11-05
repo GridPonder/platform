@@ -347,6 +347,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
         key == LogicalKeyboardKey.numpadEnter;
     final test = key == LogicalKeyboardKey.space;
     if (!navigation && !activate && !test) return KeyEventResult.ignored;
+    if (_packClaimsKey(key)) return KeyEventResult.ignored;
     if (_lessonActive) return KeyEventResult.ignored;
     if (_aiRunning ||
         _animating ||
@@ -372,7 +373,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
       if (activate) {
         _networkInput.activate();
       } else {
-        for (final entry in (_network!.config['controls'] as Map).entries) {
+        for (final entry in _networkControls.entries) {
           if (entry.value['type'] == 'pulse' &&
               _networkInput.inputs.entries.every(
                 (e) => entry.value['inputs'][e.key] == e.value,
@@ -384,6 +385,37 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
       }
     }
     return KeyEventResult.handled;
+  }
+
+  /// A level's `state_network` controls; empty when the config omits them.
+  Map get _networkControls =>
+      (_network?.config['controls'] as Map?) ?? const {};
+
+  /// True when no other enabled system shares this level, so actions the
+  /// network does not map cannot belong to anything else and may be hidden.
+  bool get _networkOnlyLevel => widget.packService.game
+      .withSystemOverrides(_levelDef.systemOverrides)
+      .systems
+      .every((sys) => !sys.enabled || sys.type == 'state_network');
+
+  /// Keys the pack itself binds (a `key_press` binding, or arrows driving a
+  /// move action) stay with the regular keyboard handler.
+  bool _packClaimsKey(LogicalKeyboardKey key) {
+    final gestureMap =
+        widget.packService.theme?.controls?.gestureMap ?? const [];
+    if (gestureMap.any(
+      (b) => b.gesture == 'key_press' && _keyForChar(b.key ?? '') == key,
+    )) {
+      return true;
+    }
+    final arrow =
+        key == LogicalKeyboardKey.arrowLeft ||
+        key == LogicalKeyboardKey.arrowRight ||
+        key == LogicalKeyboardKey.arrowUp ||
+        key == LogicalKeyboardKey.arrowDown;
+    return arrow &&
+        _hasMoveAction &&
+        !_networkControls.containsKey(_primaryMoveAction!.id);
   }
 
   Object? _networkRead(String field) =>
@@ -591,6 +623,11 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
       // will turn it; its engine-written `facing` param is the only record.
       _actorFacingAt = facingAfterTurnsInPlace(
         _actorFacingAt,
+        preState,
+        _engine.state,
+      );
+      _otherFacingAt = layeredFacingAfterTurnsInPlace(
+        _otherFacingAt,
         preState,
         _engine.state,
       );
@@ -2155,6 +2192,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
   void _onUndo() {
     if (!widget.packService.game.ui.undoAllowed) return;
     if (_aiRunning || _replaying || _animating) return;
+    if (_solver != null || _lessonActive) return;
     // Depth before the undo: "was n moves in, stepped back". Undoing out of a
     // loss re-arms the fail event — dying again is a fresh fact.
     final depthBefore = _engine.undoDepth;
@@ -2169,7 +2207,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
               .cast<String>();
           _networkInput.sync({
             for (final k in inputs)
-              k: (_engine.state.variables['input_$k'] as num?)?.toInt() ?? 0,
+              k: (_networkRead('input_$k') as num?)?.toInt() ?? 0,
           });
         }
         _otherFacingAt = _otherFacingHistory.isNotEmpty
@@ -2197,6 +2235,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
   /// Call only once foreground motion has finished, so its controllers cannot
   /// write a previous attempt's positions back over the new board.
   void _clearPlaybackState() {
+    _mechanismAnimating = false;
     _lessonActive = false;
     _lessonBusy = false;
     _lessonIndex = 0;
@@ -2469,8 +2508,10 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
   /// button first appears.
   Set<String> _hiddenActionIds(LevelState state) {
     final hidden = <String>{};
-    if (_network != null) {
-      final configured = (_network!.config['controls'] as Map).keys.toSet();
+    // Actions the network leaves unmapped are hidden only when no other
+    // system could use them on this level.
+    if (_network != null && _networkOnlyLevel) {
+      final configured = _networkControls.keys.toSet();
       hidden.addAll(
         widget.packService.game.actions
             .where((action) => !configured.contains(action.id))
@@ -2830,8 +2871,10 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
           _engine.state.isLost)
         return null;
       final fresh = _networkRead('sample') == 'none';
-      final firstTask = (_network!.config['tasks'] as Map).entries.first;
-      final target = (firstTask.value['requires'] as Map).entries
+      final firstTask =
+          ((_network!.config['tasks'] as Map?) ?? const {}).entries.firstOrNull;
+      if (firstTask == null) return null;
+      final target = ((firstTask.value['requires'] as Map?) ?? const {}).entries
           .map((e) => '${e.key} ${e.value == 1 ? 'ON' : 'OFF'}')
           .join(', ');
       return Text(
@@ -3906,13 +3949,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
                           : null,
                       onSolve: _canSolveExplained
                           ? (_solver == null ? _startSolver : null)
-                          : kDebugMode &&
-                                (!widget
-                                        .packService
-                                        .game
-                                        .ui
-                                        .restrictedInformation ||
-                                    _humanNetworkHelp)
+                          : kDebugMode
                           ? _onSolve
                           : null,
                       onTeach: _humanNetworkHelp && !_canSolveExplained
@@ -3923,7 +3960,9 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
                           _engine.undoDepth > 0 &&
                           !_aiRunning &&
                           !_replaying &&
-                          !_animating,
+                          !_animating &&
+                          _solver == null &&
+                          !_lessonActive,
                       showRestart: !widget.packService.game.ui.undoAllowed,
                       hintStatuses: hintStatuses,
                       availableActionIds: _availableFloodActions(state),

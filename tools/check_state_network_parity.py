@@ -20,13 +20,19 @@ def main():
     args = parser.parse_args()
     fixture = json.loads((ROOT/'engines/python/_fixtures/state_network.json').read_text())
     cases = []
-    for op in ['copy', 'toggle', 'not', 'and', 'or', 'xor']:
+    variants = [(op, False) for op in
+                ['copy', 'toggle', 'not', 'and', 'or', 'xor', 'counter2', 'counter3', 'latch']]
+    variants += [('counter2', True), ('counter3', True)]
+    for op, park in variants:
         for actions in itertools.product(['on', 'off', 'mask', 'unmask', 'sample', 'send'], repeat=3):
             g, level = copy.deepcopy(fixture['game']), copy.deepcopy(fixture['level'])
-            node = g['systems'][0]['config']['nodes'][0]
+            config = g['systems'][0]['config']
+            node = config['nodes'][0]
             node['op'] = op
-            if op in ['and', 'or', 'xor']:
+            if op in ['and', 'or', 'xor', 'latch']:
                 node['inputs'] = ['p', 'm']
+            if park:
+                config['parkCounters'] = True
             engine = TurnEngine(GameDef(g), level)
             used, expected = [], []
             for action in actions:

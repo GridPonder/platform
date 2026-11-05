@@ -750,8 +750,10 @@ are presentation data; no game identity is interpreted by the renderer.
 ### Restricted observation interfaces (additive)
 
 `ui.restrictedInformation` defaults to `false`. When true, the app suppresses
-undo, hint replay, debug Solve and predictive action previews; the Undo control
-is replaced by a visible Restart. It does not hide
+undo, hint replay and predictive action previews; the Undo control is replaced
+by a visible Restart. Solve stays available: it replays the level's authored
+solution (for a `state_network`, an explained step-by-step policy) and the
+assisted attempt earns no progress. It does not hide
 arbitrary board entities or variables: systems/pack authors must explicitly
 project public observations and expose only public variables via `ui.readouts`.
 Readouts accept strings as well as numbers; text journals wrap in the app.

@@ -2430,7 +2430,8 @@ nontrivial obligation; no automatic initial-state victory is evaluated here.
 
 For restricted observations, use `ui.restrictedInformation: true` and explicit
 public rules listing permitted component/wiring alternatives. This suppresses app
-undo, hints, Solve and action previews. Restart begins another attempt. This is
+undo, hints and action previews; Solve still walks the authored solution, as an
+assisted attempt that earns no progress. Restart begins another attempt. This is
 an interface boundary, **not** protection against inspecting downloaded assets,
 engine configuration, debugger, trusted previews or full state. Evaluated agents
 must receive only observations/actions, without source, solutions or state dumps.

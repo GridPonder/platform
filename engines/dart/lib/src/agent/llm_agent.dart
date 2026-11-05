@@ -977,7 +977,7 @@ Choose the action most likely to reach the goal in fewest total actions (summed 
       final label = kindToLabel != null
           ? (kindToLabel[kind] ?? kind)
           : _resolveEntityName(game, kind, null);
-      head = '$head, and each must own exactly ${raw['count'] ?? 1} $label cell(s)';
+      head = '$head, and each must own exactly ${balanceQuotaCount(Map<String, dynamic>.from(raw))} $label cell(s)';
     }
     if (owners.isEmpty) return head;
     final progress = _balanceProgress(config, state, game, names);
@@ -1032,7 +1032,7 @@ Choose the action most likely to reach the goal in fewest total actions (summed 
           '${names[i]} ${held[owners[i]] ?? 0}'
       ].join(', ');
       withQuotas = '$withQuotas; marked cells held: $marked '
-          '(need ${quota['count'] ?? 1} each)';
+          '(need ${balanceQuotaCount(quota)} each)';
     }
     if (claimable != 0) return '$withQuotas — $owned of $claimable claimed';
     return withQuotas;

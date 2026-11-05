@@ -418,7 +418,7 @@ def _quota_count(quota: dict) -> int:
     return count if type(count) is int and count >= 0 else 1
 
 
-def balance_supply_cut(cfg: dict, state: GameState) -> bool:
+def balance_supply_cut(cfg: dict, state: GameState, default_kind: str | None = None) -> bool:
     """True when `requireConnected` is set and some owner holds a cell that
     can no longer reach its ``connectionSources`` cell through that owner's
     own cells or unclaimed claimable cells. Claimed cells never change owner,
@@ -434,9 +434,11 @@ def balance_supply_cut(cfg: dict, state: GameState) -> bool:
     ground = board.layers.get(cfg.get("claimableLayer", "ground"))
     if terr is None or ground is None:
         return False
+    if default_kind is None:
+        default_kind = ground.default_kind
     claimable_kind = cfg.get("claimableKind")
     if claimable_kind is None:
-        claimable_kind = ground.default_kind or "empty"
+        claimable_kind = default_kind or "empty"
     kinds = (set(claimable_kind) if isinstance(claimable_kind, (list, tuple))
              else {claimable_kind})
     _counts, positions, _claimable = _balance_tally(cfg, state)
@@ -453,7 +455,7 @@ def balance_supply_cut(cfg: dict, state: GameState) -> bool:
             if mark is not None:
                 return mark.kind == owner
             g = ground.get(p)
-            return (g.kind if g is not None else ground.default_kind) in kinds
+            return (g.kind if g is not None else default_kind) in kinds
 
         source = Pos(int(raw[0]), int(raw[1]))
         reached: set = set()
@@ -771,7 +773,8 @@ def _balance_unreachable(
 
     # A claimable cell carrying a territory mark that belongs to no owner
     # (blighted land, say) can never be owned, so completion is impossible.
-    if layer is not None and _has_foreign_mark(state, goal_cfg, layer, owned):
+    declared = _declared_default_kind(game, goal_cfg.get("claimableLayer", "ground"))
+    if layer is not None and _has_foreign_mark(state, goal_cfg, layer, owned, declared):
         return True
 
     # Quotas: an owner past its quota can never shed a marked cell, and an
@@ -784,18 +787,28 @@ def _balance_unreachable(
             return True
 
     # Supply lines: a cell cut off from its owner's source for good.
-    if balance_supply_cut(goal_cfg, state):
+    if balance_supply_cut(goal_cfg, state, declared):
         return True
     return False
 
 
-def _has_foreign_mark(state: GameState, goal_cfg: dict, layer, owners) -> bool:
+def _declared_default_kind(game: GameDef | None, layer_id: str) -> str | None:
+    """The game definition's `defaultKind` for a layer, whatever its
+    occupancy; matches the Dart lose evaluator's `_layerDefaultKind`."""
+    if game is None:
+        return None
+    layer_def = next((l for l in game.layers if l.get("id") == layer_id), None)
+    return layer_def.get("defaultKind") if layer_def is not None else None
+
+
+def _has_foreign_mark(state: GameState, goal_cfg: dict, layer, owners,
+                      default_kind: str | None = None) -> bool:
     claimable_layer = state.board.layers.get(goal_cfg.get("claimableLayer", "ground"))
     if claimable_layer is None:
         return False
     kind = goal_cfg.get("claimableKind")
     if kind is None:
-        kind = claimable_layer.default_kind or "empty"
+        kind = default_kind or claimable_layer.default_kind or "empty"
     kinds = set(kind) if isinstance(kind, (list, tuple)) else {kind}
     for pos, entity in layer.entries():
         if entity.kind in owners:

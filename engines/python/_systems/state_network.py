@@ -27,11 +27,11 @@ class StateNetworkSystem(GameSystem):
                 raise ValueError("state_network: invalid operation/arity")
             if any(s not in known for s in n["inputs"]) or n.get("initial", 0) not in (0, 1):
                 raise ValueError("state_network: invalid source/initial value")
-        if not isinstance(c.get("energy"), int) or c["energy"] < 1:
+        if not isinstance(c.get("energy"), int) or isinstance(c["energy"], bool) or c["energy"] < 1:
             raise ValueError("state_network: positive energy required")
         if any(v not in ids for v in c.get("probes", {}).values()):
             raise ValueError("state_network: invalid probe")
-        if c.get("initialProbe", "") not in ["", *c.get("probes", {})]:
+        if ("" if c.get("initialProbe") is None else c["initialProbe"]) not in ["", *c.get("probes", {})]:
             raise ValueError("state_network: invalid initial probe")
         if any(k not in ids or v not in (0, 1) for k, v in c.get("safe", {}).items()):
             raise ValueError("state_network: invalid safe condition")
@@ -67,7 +67,7 @@ class StateNetworkSystem(GameSystem):
                 "inputs": {s: 0 for s in c.get("inputs", [])},
                 **({"counters": {n["id"]: 0 for n in c["nodes"] if n["op"].startswith("counter")}}
                    if any(n["op"].startswith("counter") for n in c["nodes"]) else {}),
-                "energy": c["energy"], "probe": c.get("initialProbe", ""),
+                "energy": c["energy"], "probe": "" if c.get("initialProbe") is None else c["initialProbe"],
                 "clamp": "", "reading": -1, "sample": "none", "done": [],
                 "closed": [], "journal": [], "complete": 0, "failed": 0,
             }
@@ -157,7 +157,7 @@ class StateNetworkSystem(GameSystem):
         # Safe completion concerns actual memory, not a temporarily forced output.
         r["complete"] = int(not r["failed"] and len(r["done"]) == len(c.get("tasks", {}))
                             and all(r["values"][k] == v for k, v in c.get("safe", {}).items())
-                            and (not c.get("parkCounters") or not any(r.get("counters", {}).values())))
+                            and (c.get("parkCounters") is not True or not any(r.get("counters", {}).values())))
         if r["energy"] == 0 and not r["complete"]:
             r["failed"] = 1
         self.project(state)
