@@ -380,12 +380,24 @@ A `display` block on an entity kind tells the renderer how to draw the entity pr
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `type`  | string | One of `tile` (rounded shadowed coloured tile), `fill` (flat colour rectangle), `circle` (filled circle with glow), `label` (coloured tile with a centred text label), `emoji` (centred glyph), `icon` (Material-style icon by name). |
+| `type`  | string | One of `tile` (rounded shadowed coloured tile), `fill` (flat colour rectangle), `circle` (filled circle with glow), `label` (coloured tile with a centred text label), `emoji` (centred glyph), `icon` (Material-style icon by name), `circle_label` (circle with text label or corner badge), `image_label` (text label and status badge overlaid onto a sprite). |
 | `color` | string | Optional. A palette name (`"red"`), `@param:<key>` (read colour name from instance param), or `@hue:<source>` (derive an HSL colour from a numeric string — useful for value-coloured tiles). See *substitution tokens* below. |
 | `value` | string | Optional. The glyph (for `emoji`) or icon name (for `icon`). |
 | `label` | string | Optional. Text shown by the `label` type. May use the substitution tokens below. |
 
-A `circle_label` display with `"overlay": true` keeps the kind's sprite and draws its label as a small badge in the corner; when the label resolves to nothing (an `@param:` the instance does not carry) no badge is drawn, so a kind can badge only the cells that hold the value.
+A `circle_label` display with `"overlay": true` keeps the kind's sprite and draws its label as a small badge in the corner; when the label resolves to nothing (an `@param:` the instance does not carry) no badge is drawn, so a kind can badge only the cells that hold the value. Optional `badgeScale` scales the badge (default `1`); smaller multi-character badges use a wider pill to preserve legibility.
+
+An `image_label` display overlays a text label and optional status badge onto an entity sprite. Note: on an entity kind declaring a sprite, `image_label` only renders when `"overlay": true` is set.
+- `label`: text shown on the label panel (supports substitution tokens).
+- `labelPosition`: `"top"` or `"bottom"` (default `"bottom"`).
+- `labelBackground`: `false` removes the label panel background (defaults to themed background).
+- `badge`: optional string (supports substitution tokens) shown inside a status pill/circle.
+- `badgeIcon`: optional vector icon name (e.g. `"check"`).
+- `badgeLabel`: optional accessibility label for vector icons (defaults to `"Completed"`).
+- `image`: optional pack-relative image path drawn alongside the sprite.
+- `heldImage`: `true` presents an image authored with the standard transparent carrying offset in a square viewport.
+- `spriteInsets`: `[left, top, right, bottom]` reserves illustration margins as fractions of a cell, preventing artwork from overlapping text.
+- `imageSize`, `imageRight`, `imageTop`: position and size the optional secondary image as fractions of a cell.
 
 #### Substitution tokens
 

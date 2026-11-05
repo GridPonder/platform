@@ -35,6 +35,7 @@ import '../widgets/board_renderer.dart'
         elasticPushObjectTravel,
         resolveEntityMotionFrame;
 import '../widgets/balance_panel.dart';
+import '../widgets/catalog_panel.dart';
 import '../widgets/controls_widget.dart';
 import 'cell_selection_state.dart';
 
@@ -3235,6 +3236,14 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
   /// past the board's edges. The mouse wheel, `+`/`-`/`0` and the corner
   /// buttons change the zoom; drags stay game input.
   Widget _buildZoomableBoard(LevelState state, Widget board) {
+    return CatalogBoardLayout(
+      pack: widget.packService,
+      state: state,
+      board: _buildBareZoomableBoard(state, board),
+    );
+  }
+
+  Widget _buildBareZoomableBoard(LevelState state, Widget board) {
     return Listener(
       onPointerSignal: _onBoardPointerSignal,
       child: LayoutBuilder(
@@ -3281,7 +3290,15 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
   ) {
     final cols = state.board.width;
     final rows = state.board.height;
-    final cell = BoardRenderer.cellSizeFor(constraints, cols, rows);
+    final cell = BoardRenderer.cellSizeFor(
+      constraints,
+      cols,
+      rows,
+      maxCellSize:
+          (widget.packService.presentation?['maxCellSize'] as num?)
+              ?.toDouble() ??
+          70,
+    );
     final gridSize = Size(cell * cols, cell * rows);
     // [Center] places the fitted grid in the middle of the board area.
     final gridOrigin = Offset(
