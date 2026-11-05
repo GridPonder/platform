@@ -380,6 +380,98 @@ def balance_counts(cfg: dict, state: GameState) -> tuple[dict[str, int], int]:
     return counts, claimable
 
 
+def balance_quota_tally(
+    cfg: dict, state: GameState
+) -> list[tuple[dict, dict[str, int], int]]:
+    """Per ``quotas`` entry: the entry, how many marked cells each owner holds,
+    and how many marked cells are still unowned.
+
+    A quota ``{"layer": L, "kind": K, "count": N}`` requires every owner to
+    own exactly N cells whose layer L holds an entity of kind K — e.g. one
+    site each. One pass serves the goal, the lose condition and the renderer,
+    so what an agent is shown cannot drift from what it is scored on.
+    """
+    territory = state.board.layers.get(cfg.get("layer"))
+    owners = cfg.get("owners", [])
+    out = []
+    for quota in cfg.get("quotas", []) or []:
+        if not isinstance(quota, dict):
+            continue
+        marks = state.board.layers.get(quota.get("layer"))
+        held = {o: 0 for o in owners}
+        unowned = 0
+        if marks is not None:
+            for pos, entity in marks.entries():
+                if entity.kind != quota.get("kind"):
+                    continue
+                owner = territory.get(pos) if territory is not None else None
+                if owner is not None and owner.kind in held:
+                    held[owner.kind] += 1
+                else:
+                    unowned += 1
+        out.append((quota, held, unowned))
+    return out
+
+
+def _quota_count(quota: dict) -> int:
+    count = quota.get("count", 1)
+    return count if type(count) is int and count >= 0 else 1
+
+
+def balance_supply_cut(cfg: dict, state: GameState) -> bool:
+    """True when `requireConnected` is set and some owner holds a cell that
+    can no longer reach its ``connectionSources`` cell through that owner's
+    own cells or unclaimed claimable cells. Claimed cells never change owner,
+    so such a supply line can never be mended.
+
+    Only claimability decides passability — never this turn's solidity — so a
+    closed crossing is not a cut. An owner without a valid source is never
+    reported (the win check already treats it as unconnected)."""
+    if cfg.get("requireConnected") is not True:
+        return False
+    board = state.board
+    terr = board.layers.get(cfg.get("layer"))
+    ground = board.layers.get(cfg.get("claimableLayer", "ground"))
+    if terr is None or ground is None:
+        return False
+    claimable_kind = cfg.get("claimableKind")
+    if claimable_kind is None:
+        claimable_kind = ground.default_kind or "empty"
+    kinds = (set(claimable_kind) if isinstance(claimable_kind, (list, tuple))
+             else {claimable_kind})
+    _counts, positions, _claimable = _balance_tally(cfg, state)
+    sources = cfg.get("connectionSources", {})
+    for owner, cells in positions.items():
+        raw = sources.get(owner)
+        if not cells or not isinstance(raw, (list, tuple)) or len(raw) != 2:
+            continue
+
+        def passable(p: Pos) -> bool:
+            if not board.is_in_bounds(p):
+                return False
+            mark = terr.get(p)
+            if mark is not None:
+                return mark.kind == owner
+            g = ground.get(p)
+            return (g.kind if g is not None else ground.default_kind) in kinds
+
+        source = Pos(int(raw[0]), int(raw[1]))
+        reached: set = set()
+        if passable(source):
+            reached.add(source)
+            frontier = [source]
+            while frontier:
+                c = frontier.pop()
+                for n in (Pos(c.x + 1, c.y), Pos(c.x - 1, c.y),
+                          Pos(c.x, c.y + 1), Pos(c.x, c.y - 1)):
+                    if n not in reached and passable(n):
+                        reached.add(n)
+                        frontier.append(n)
+        if not cells <= reached:
+            return True
+    return False
+
+
 def _balance_connected(
     cfg: dict, positions: dict[str, set]
 ) -> dict[str, int | None]:
@@ -429,7 +521,7 @@ def _balance(cfg: dict, state: GameState, game: GameDef) -> tuple[bool, float]:
     When ``requireConnected`` is true, every cell owned by a configured owner
     must be orthogonally connected to that owner's fixed ``connectionSources``
     position through cells of the same owner.  This models supply lines without
-    coupling the generic balance goal to any game-specific capital entity.
+    coupling the generic balance goal to any game-specific marker entity.
     """
     counts, positions, claimable = _balance_tally(cfg, state)
     owned = sum(counts.values())
@@ -444,11 +536,15 @@ def _balance(cfg: dict, state: GameState, game: GameDef) -> tuple[bool, float]:
             reached = reached_by_owner[owner]
             if reached is None or reached != len(cells):
                 connected = False
+    quotas_met = all(
+        all(n == _quota_count(quota) for n in held.values())
+        for quota, held, _unowned in balance_quota_tally(cfg, state))
     progress_numerator = connected_owned if cfg.get("requireConnected", False) else owned
     progress = progress_numerator / claimable if claimable else 0.0
     done = owned > 0 and \
            (equal or not cfg.get("requireEqual", True)) and \
-           (complete or not cfg.get("requireComplete", True)) and connected
+           (complete or not cfg.get("requireComplete", True)) and connected \
+           and quotas_met
     return done, progress
 
 
@@ -628,9 +724,22 @@ def _balance_unreachable(
     are arithmetically impossible). Generic across coupled and individual modes;
     unlike `balance_budget_exhausted` it needs no actor/budget wiring.
 
+    It also fires when a claimable cell carries a territory mark of a kind that
+    is not one of the owners (e.g. land a patrol blighted): that cell can never
+    be owned, so completion is impossible.
+
+    With ``quotas`` on the goal it also fires when an owner holds more marked
+    cells than its quota, or when the owners' combined shortfall exceeds the
+    marked cells nobody owns yet.
+
+    With ``requireConnected`` it also fires when an owned cell can no longer
+    reach its owner's connection source through that owner's cells or
+    unclaimed claimable cells (see `balance_supply_cut`).
+
     The over-claim half is suppressed when the board carries repaintable cells
     (see `_claims_are_overwritable`) — an over-share owner can then be repainted
-    back down, so it is not terminal."""
+    back down, so it is not terminal. The quota checks sit behind the same
+    guard, for the same reason."""
     goal = _balance_goal_for_condition(cfg, goals)
     if goal is None:
         return False
@@ -657,7 +766,44 @@ def _balance_unreachable(
             if entity.kind in owned:
                 owned[entity.kind] += 1
 
-    return any(count > target for count in owned.values())
+    if any(count > target for count in owned.values()):
+        return True
+
+    # A claimable cell carrying a territory mark that belongs to no owner
+    # (blighted land, say) can never be owned, so completion is impossible.
+    if layer is not None and _has_foreign_mark(state, goal_cfg, layer, owned):
+        return True
+
+    # Quotas: an owner past its quota can never shed a marked cell, and an
+    # owner short of it can only be topped up from marked cells nobody owns.
+    for quota, held, unowned in balance_quota_tally(goal_cfg, state):
+        need = _quota_count(quota)
+        if any(n > need for n in held.values()):
+            return True
+        if sum(need - n for n in held.values()) > unowned:
+            return True
+
+    # Supply lines: a cell cut off from its owner's source for good.
+    if balance_supply_cut(goal_cfg, state):
+        return True
+    return False
+
+
+def _has_foreign_mark(state: GameState, goal_cfg: dict, layer, owners) -> bool:
+    claimable_layer = state.board.layers.get(goal_cfg.get("claimableLayer", "ground"))
+    if claimable_layer is None:
+        return False
+    kind = goal_cfg.get("claimableKind")
+    if kind is None:
+        kind = claimable_layer.default_kind or "empty"
+    kinds = set(kind) if isinstance(kind, (list, tuple)) else {kind}
+    for pos, entity in layer.entries():
+        if entity.kind in owners:
+            continue
+        ground = claimable_layer.get(pos)
+        if ground is not None and ground.kind in kinds:
+            return True
+    return False
 
 
 def _balance_goal_for_condition(cfg: dict, goals: list[dict]) -> dict | None:

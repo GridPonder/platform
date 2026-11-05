@@ -1,4 +1,5 @@
 import '../models/game_definition.dart';
+import 'goal_evaluator.dart';
 import '../models/game_state.dart';
 import '../models/goal.dart';
 
@@ -56,13 +57,18 @@ class LoseEvaluator {
             final numVal = current as num;
             bool lost;
             switch (comparison) {
-              case 'eq': lost = numVal == target;
-              case 'gte': lost = numVal >= target;
-              case 'lte': lost = numVal <= target;
-              default: lost = false;
+              case 'eq':
+                lost = numVal == target;
+              case 'gte':
+                lost = numVal >= target;
+              case 'lte':
+                lost = numVal <= target;
+              default:
+                lost = false;
             }
             if (lost) {
-              return LoseStatus(isLost: true, reason: 'variable_threshold:$name');
+              return LoseStatus(
+                  isLost: true, reason: 'variable_threshold:$name');
             }
           }
         case 'balance_budget_exhausted':
@@ -124,7 +130,32 @@ class LoseEvaluator {
 
     if (_claimsAreOverwritable(state, game)) return false;
 
-    return owned.values.any((count) => count > target);
+    if (owned.values.any((count) => count > target)) return true;
+
+    // A claimable cell carrying a territory mark that belongs to no owner
+    // (blighted land, say) can never be owned, so completion is impossible.
+    if (layer != null &&
+        _hasForeignMark(state, goal.config, game, layerId, owned)) {
+      return true;
+    }
+
+    // Quotas: an owner past its quota can never shed a marked cell, and an
+    // owner short of it can only be topped up from marked cells nobody owns.
+    for (final (quota, held, unowned)
+        in balanceQuotaTally(goal.config, state)) {
+      final need = balanceQuotaCount(quota);
+      if (held.values.any((n) => n > need)) return true;
+      final shortfall = held.values.fold(0, (a, n) => a + (need - n));
+      if (shortfall > unowned) return true;
+    }
+
+    // Supply lines: a cell cut off from its owner's source for good.
+    if (balanceSupplyCut(goal.config, state,
+        defaultKind: _layerDefaultKind(
+            game, goal.config['claimableLayer'] as String? ?? 'ground'))) {
+      return true;
+    }
+    return false;
   }
 
   /// True when an owned cell on THIS board could actually be repainted.
@@ -274,6 +305,25 @@ class LoseEvaluator {
         .entries()
         .where((entry) => kinds.contains(entry.value.kind))
         .length;
+  }
+
+  bool _hasForeignMark(LevelState state, Map<String, dynamic> goalConfig,
+      GameDefinition? game, String territoryId, Map<String, int> owners) {
+    final layerId = goalConfig['claimableLayer'] as String? ?? 'ground';
+    final raw = goalConfig['claimableKind'];
+    final kinds = raw is List
+        ? raw.map((k) => k.toString()).toSet()
+        : {
+            (raw as String?) ?? _layerDefaultKind(game, layerId) ?? 'empty',
+          };
+    final territory = state.board.layers[territoryId];
+    if (territory == null) return false;
+    for (final entry in territory.entries()) {
+      if (owners.containsKey(entry.value.kind)) continue;
+      final ground = state.board.getEntity(layerId, entry.key);
+      if (ground != null && kinds.contains(ground.kind)) return true;
+    }
+    return false;
   }
 
   String? _layerDefaultKind(GameDefinition? game, String layerId) {

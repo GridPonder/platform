@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ._goal import balance_connected_counts, balance_counts
+from ._goal import balance_connected_counts, balance_counts, balance_quota_tally
 from .text_renderer import order_layer_ids
 
 
@@ -212,6 +212,14 @@ def _describe_balance(
     else:
         head = f"Claim cells for {listed}"
 
+    for quota in config.get("quotas") or []:
+        if not isinstance(quota, dict):
+            continue
+        kind = quota.get("kind")
+        label = (kind_to_label.get(kind, kind) if kind_to_label is not None
+                 else _resolve_entity_name(game_def, kind, None))
+        count = quota.get("count", 1)
+        head = f"{head}, and each must own exactly {count} {label} cell(s)"
     if not owners:
         return head
     progress = _balance_progress(config, state, names)
@@ -251,6 +259,10 @@ def _balance_progress(config: dict, state, names: list[str]) -> str:
         tally = ", ".join(f"{name} {counts.get(owner, 0)}"
                           for name, owner in zip(names, owners))
     owned = sum(counts.values())
+    for quota, held, _unowned in balance_quota_tally(config, state):
+        marked = ", ".join(f"{name} {held.get(owner, 0)}"
+                           for name, owner in zip(names, owners))
+        tally = f"{tally}; marked cells held: {marked} (need {quota.get('count', 1)} each)"
     if claimable:
         return f"{tally} — {owned} of {claimable} claimed"
     return tally
