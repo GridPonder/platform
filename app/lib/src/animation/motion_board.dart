@@ -1,5 +1,19 @@
 import 'package:gridponder_engine/engine.dart';
 
+/// Grounded locomotion must not inherit the generic downward-drop animation.
+/// Physical objects keep their existing gravity unless the kind opts out.
+bool isFallingMove(EntityKindDef? kind, Position from, Position to) =>
+    from.x == to.x && to.y > from.y && kind?.motion['fallOnDown'] != false;
+
+/// One group shares a travel clock. Honour its slowest requested per-cell
+/// duration, so a fast first mover cannot truncate another mover's gait.
+int groupMoveDuration(Iterable<AnimationStep> moves) => moves
+    .map((move) => move.durationMs > 0 ? move.durationMs.clamp(40, 400) : 130)
+    .fold<int>(
+      0,
+      (longest, duration) => duration > longest ? duration : longest,
+    );
+
 /// One entity travelling between two cells during a turn.
 class TravellingEntity {
   final Position from;

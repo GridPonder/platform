@@ -41,6 +41,34 @@ Map<Position, String> facingAfterMoves(
   return next;
 }
 
+/// Remember motion on auxiliary layers too (for example walking patrols).
+/// Separate maps prevent two entities sharing a cell on different layers
+/// from overwriting each other's facing. Never mutate undo snapshots.
+Map<String, Map<Position, String>> layeredFacingAfterMoves(
+  Map<String, Map<Position, String>> facingByLayer,
+  Iterable<({String layer, Position from, Position to, String direction})>
+  moves,
+) {
+  final byLayer =
+      <String, List<({Position from, Position to, String direction})>>{};
+  for (final move in moves) {
+    (byLayer[move.layer] ??= []).add((
+      from: move.from,
+      to: move.to,
+      direction: move.direction,
+    ));
+  }
+  if (byLayer.isEmpty) return facingByLayer;
+  return {
+    ...facingByLayer,
+    for (final entry in byLayer.entries)
+      entry.key: facingAfterMoves(
+        facingByLayer[entry.key] ?? const {},
+        entry.value,
+      ),
+  };
+}
+
 /// [facingAt] with every actor that turned this turn facing its new way.
 ///
 /// A turn is an actor whose `facing` param changed while it stayed on its

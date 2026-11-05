@@ -185,6 +185,8 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
 
   /// Idle facing of actors by the cell they stand on — see [actorIdleFacing].
   Map<Position, String> _actorFacingAt = {};
+  Map<String, Map<Position, String>> _otherFacingAt = {};
+  final List<Map<String, Map<Position, String>>> _otherFacingHistory = [];
 
   /// [_actorFacingAt] as it stood before each accepted turn, one entry per
   /// engine undo step, so undo restores facing along with the engine state.
@@ -280,7 +282,9 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     _agentMemory.clear();
     _lastFloodColor = null;
     _actorFacingAt = {};
+    _otherFacingAt = {};
     _actorFacingHistory.clear();
+    _otherFacingHistory.clear();
     _wonHandled = false;
     _loseReason = null;
     _selectedMultiCellObjectId = null;
@@ -520,6 +524,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
       _loseReason = result.loseReason;
     }
     _actorFacingHistory.add(_actorFacingAt);
+    _otherFacingHistory.add(_otherFacingAt);
     final tracking = _playtest.enabled;
     _playtest.move(
       action: action.actionId,
@@ -1792,8 +1797,11 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
         layer: step.extra['layer'] as String? ?? 'objects',
         direction: _directionBetween(from, to),
         distance: (dx.abs() > dy.abs() ? dx.abs() : dy.abs()).toDouble(),
-        // Straight down and nothing else is a fall; anything else is carried.
-        falling: dx == 0 && dy > 0,
+        falling: isFallingMove(
+          widget.packService.game.entityKinds[step.entityKind],
+          from,
+          to,
+        ),
       ));
     }
     if (movers.isEmpty) return;
@@ -1803,9 +1811,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     // Per-cell pacing for carried travel — the engine's `moveDurationMs`
     // convention. A fall instead takes the time gravity would take, which
     // grows with the square root of the drop, not with the drop.
-    final perCellMs = moves.first.durationMs > 0
-        ? moves.first.durationMs.clamp(40, 400)
-        : 130;
+    final perCellMs = groupMoveDuration(moves);
     final travelMs = falls
         ? (_fallCellMs * sqrt(span)).round()
         : (perCellMs * span).round();
@@ -1850,6 +1856,11 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     }
     setState(() {
       _preAnimState = postState;
+      _otherFacingAt = layeredFacingAfterMoves(_otherFacingAt, [
+        for (final m in movers)
+          if (m.layer != 'actors' && m.direction != null)
+            (layer: m.layer, from: m.from, to: m.to, direction: m.direction!),
+      ]);
       _actorFacingAt = facingAfterMoves(_actorFacingAt, [
         for (final m in movers)
           if (m.layer == 'actors' && m.direction != null)
@@ -1938,6 +1949,18 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     setState(() {
       if (lastPaths) _hiddenTransforms = const [];
       _preAnimState = _heldBoard(pending: stillPending);
+      _otherFacingAt = layeredFacingAfterMoves(_otherFacingAt, [
+        for (final m in movers)
+          if (m.layer != 'actors' && !m.removedAtEnd)
+            if (_directionBetween(m.path[m.path.length - 2], m.path.last)
+                case final direction?)
+              (
+                layer: m.layer,
+                from: m.path.first,
+                to: m.path.last,
+                direction: direction,
+              ),
+      ]);
       _actorFacingAt = facingAfterMoves(_actorFacingAt, [
         for (final m in movers)
           if (m.layer == 'actors' && !m.removedAtEnd)
@@ -2008,7 +2031,10 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     }
 
     final kindDef = widget.packService.game.entityKinds[m.entity.kind];
-    final motionFrame = resolveEntityMotionFrame(kindDef, elapsedMs, travelled);
+    // The final controller tick is exactly travelMs: do not wrap the gait
+    // back to its first frame for one tick just before the idle sprite lands.
+    final frameMs = m.falling ? elapsedMs : min(elapsedMs, travelMs - 1.0);
+    final motionFrame = resolveEntityMotionFrame(kindDef, frameMs, travelled);
     final entity = m.direction == null
         ? m.entity
         : EntityInstance(m.entity.kind, {
@@ -2146,6 +2172,9 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
               k: (_engine.state.variables['input_$k'] as num?)?.toInt() ?? 0,
           });
         }
+        _otherFacingAt = _otherFacingHistory.isNotEmpty
+            ? _otherFacingHistory.removeLast()
+            : {};
       }
       _lastFloodColor = null;
       _selectedCellPosition = null;
@@ -2193,7 +2222,9 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     _cascadeFeedbacks = const {};
     _cascadeTransfers = const [];
     _actorFacingAt = {};
+    _otherFacingAt = {};
     _actorFacingHistory.clear();
+    _otherFacingHistory.clear();
     _hiddenTransforms = const [];
   }
 
@@ -2222,6 +2253,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
       _cascadeFeedbacks = const {};
       _cascadeTransfers = const [];
       _actorFacingAt = {};
+      _otherFacingAt = {};
     });
   }
 
@@ -3266,7 +3298,9 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     _engine.reset();
     setState(() {
       _actorFacingAt = {};
+      _otherFacingAt = {};
       _actorFacingHistory.clear();
+      _otherFacingHistory.clear();
       _aiRunning = true;
       _lastThinking = null;
       _lastResponse = null;
@@ -3731,6 +3765,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
                               packService: widget.packService,
                               animationOverlays: _animOverlays,
                               actorFacingAt: _actorFacingAt,
+                              otherFacingAt: _otherFacingAt,
                               onCellTap:
                                   (_hasCellTapGesture ||
                                       _moveActionNeedsPosition)

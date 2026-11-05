@@ -310,6 +310,7 @@ A `motion` block on an entity kind sets per-cell motion durations the renderer u
 | `pathStepDurationMs` | Engine emits `entity_path` (multi-cell traversal, e.g. queued-emitter routes). Per cell. | 80 |
 | `spawnDurationMs` | Engine emits `entity_spawn` (e.g. queued-emitter spawn). | 120 |
 | `frameDurationMs` | Optional time per frame for `motion.sprites.walk`. When present, walk frames advance by elapsed motion time; otherwise they retain the legacy one-frame-per-cell cadence. | absent |
+| `fallOnDown` | A straight downward move is normally drawn as a gravity drop (accelerating, with a landing squash). Set `false` for kinds that walk south rather than fall, so the move uses linear per-cell travel. | `true` |
 
 #### How motion events are sequenced
 
