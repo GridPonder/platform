@@ -19,6 +19,7 @@ import '../services/playtest_session.dart';
 import '../services/playtest_tracker.dart';
 import '../services/progress_service.dart';
 import '../services/settings_service.dart';
+import '../services/solver_policy.dart';
 import '../widgets/board_renderer.dart'
     show
         AvatarMotion,
@@ -37,6 +38,9 @@ import '../widgets/board_renderer.dart'
 import '../widgets/balance_panel.dart';
 import '../widgets/catalog_panel.dart';
 import '../widgets/controls_widget.dart';
+import '../widgets/network_bench.dart';
+import '../widgets/network_input_controller.dart';
+import '../widgets/network_workbench.dart';
 import 'cell_selection_state.dart';
 
 /// One entity travelling from [from] to [to] during a turn's animation.
@@ -87,6 +91,20 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
   late List<String> _levelIds;
   late LevelDefinition _levelDef;
   late TurnEngine _engine;
+  int _controlsEpoch = 0;
+  final _networkInput = NetworkInputController();
+  bool _mechanismAnimating = false;
+  bool _confirmingDelivery = false;
+  bool _lessonActive = false;
+  bool _lessonBusy = false;
+  int _lessonIndex = 0;
+  bool _assistedNetworkAttempt = false;
+
+  /// Explained solver walking the live attempt; null when not solving.
+  PolicyCursor? _solver;
+  bool _solverBusy = false;
+  bool _solverAuto = false;
+  int _solverSteps = 0;
   late HintService _hintService;
 
   /// Playtest lifecycle: level open/exit, attempts, and the `t`/`busy`/`at`
@@ -168,6 +186,8 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
 
   /// Idle facing of actors by the cell they stand on — see [actorIdleFacing].
   Map<Position, String> _actorFacingAt = {};
+  Map<String, Map<Position, String>> _otherFacingAt = {};
+  final List<Map<String, Map<Position, String>>> _otherFacingHistory = [];
 
   /// [_actorFacingAt] as it stood before each accepted turn, one entry per
   /// engine undo step, so undo restores facing along with the engine state.
@@ -210,6 +230,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
+    FocusManager.instance.addEarlyKeyEventHandler(_networkKeyEvent);
     _sequence = widget.packService.sequence;
     _levelIds = widget.packService.levelIds;
     final startId = widget.startLevelId;
@@ -232,6 +253,8 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
 
   @override
   void dispose() {
+    FocusManager.instance.removeEarlyKeyEventHandler(_networkKeyEvent);
+    _networkInput.dispose();
     _trackLevelExit();
     _hintRefreshTimer?.cancel();
     _agentSub?.cancel();
@@ -246,11 +269,13 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
   SettingsService get s => widget.settings;
 
   void _loadLevelById(String levelId) {
+    _controlsEpoch++;
     _clearPlaybackState();
     _trackLevelExit();
     _stopAgent();
     _levelDef = widget.packService.level(levelId);
     _engine = TurnEngine(widget.packService.game, _levelDef);
+    _resetNetworkInput();
     _hintService = HintService(hintStops: _levelDef.solution.hintStops);
     _lastThinking = null;
     _lastResponse = null;
@@ -258,7 +283,9 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     _agentMemory.clear();
     _lastFloodColor = null;
     _actorFacingAt = {};
+    _otherFacingAt = {};
     _actorFacingHistory.clear();
+    _otherFacingHistory.clear();
     _wonHandled = false;
     _loseReason = null;
     _selectedMultiCellObjectId = null;
@@ -281,8 +308,212 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     _playtest.exitLevel(_engine.undoDepth);
   }
 
+  SystemDef? get _network {
+    final systems = widget.packService.game
+        .withSystemOverrides(_levelDef.systemOverrides)
+        .systems
+        .where((s) => s.enabled && s.type == 'state_network');
+    return systems.length == 1 ? systems.first : null;
+  }
+
+  Map<String, dynamic>? get _mechanismScene =>
+      _levelDef.metadata?['mechanismScene'] as Map<String, dynamic>?;
+
+  void _resetNetworkInput() {
+    _networkInput.reset(
+      (_network?.config['inputs'] as List? ?? []).cast<String>(),
+    );
+  }
+
+  bool get _hasVisualWorkbench =>
+      _network != null && hasNetworkWorkbench(_mechanismScene);
+
+  KeyEventResult _networkKeyEvent(KeyEvent event) {
+    if (!mounted ||
+        _isShowingStory ||
+        _network == null ||
+        _hasVisualWorkbench ||
+        ModalRoute.of(context)?.isCurrent != true ||
+        (event is! KeyDownEvent && event is! KeyRepeatEvent)) {
+      return KeyEventResult.ignored;
+    }
+    final key = event.logicalKey;
+    final navigation =
+        key == LogicalKeyboardKey.arrowLeft ||
+        key == LogicalKeyboardKey.arrowRight ||
+        key == LogicalKeyboardKey.arrowUp ||
+        key == LogicalKeyboardKey.arrowDown;
+    final activate =
+        key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter;
+    final test = key == LogicalKeyboardKey.space;
+    if (!navigation && !activate && !test) return KeyEventResult.ignored;
+    if (_packClaimsKey(key)) return KeyEventResult.ignored;
+    if (_lessonActive) return KeyEventResult.ignored;
+    if (_aiRunning ||
+        _animating ||
+        _replaying ||
+        _confirmingDelivery ||
+        _engine.state.isWon ||
+        _engine.state.isLost)
+      return KeyEventResult.handled;
+    if (navigation) {
+      _networkInput.move(
+        key == LogicalKeyboardKey.arrowLeft
+            ? -1
+            : key == LogicalKeyboardKey.arrowRight
+            ? 1
+            : 0,
+        key == LogicalKeyboardKey.arrowUp
+            ? -1
+            : key == LogicalKeyboardKey.arrowDown
+            ? 1
+            : 0,
+      );
+    } else if (event is KeyDownEvent) {
+      if (activate) {
+        _networkInput.activate();
+      } else {
+        for (final entry in _networkControls.entries) {
+          if (entry.value['type'] == 'pulse' &&
+              _networkInput.inputs.entries.every(
+                (e) => entry.value['inputs'][e.key] == e.value,
+              )) {
+            _onAction(GameAction(entry.key as String, {}));
+            break;
+          }
+        }
+      }
+    }
+    return KeyEventResult.handled;
+  }
+
+  /// A level's `state_network` controls; empty when the config omits them.
+  Map get _networkControls =>
+      (_network?.config['controls'] as Map?) ?? const {};
+
+  /// True when no other enabled system shares this level, so actions the
+  /// network does not map cannot belong to anything else and may be hidden.
+  bool get _networkOnlyLevel => widget.packService.game
+      .withSystemOverrides(_levelDef.systemOverrides)
+      .systems
+      .every((sys) => !sys.enabled || sys.type == 'state_network');
+
+  /// Keys the pack itself binds (a `key_press` binding, or arrows driving a
+  /// move action) stay with the regular keyboard handler.
+  bool _packClaimsKey(LogicalKeyboardKey key) {
+    final gestureMap =
+        widget.packService.theme?.controls?.gestureMap ?? const [];
+    if (gestureMap.any(
+      (b) => b.gesture == 'key_press' && _keyForChar(b.key ?? '') == key,
+    )) {
+      return true;
+    }
+    final arrow =
+        key == LogicalKeyboardKey.arrowLeft ||
+        key == LogicalKeyboardKey.arrowRight ||
+        key == LogicalKeyboardKey.arrowUp ||
+        key == LogicalKeyboardKey.arrowDown;
+    return arrow &&
+        _hasMoveAction &&
+        !_networkControls.containsKey(_primaryMoveAction!.id);
+  }
+
+  Object? _networkRead(String field) =>
+      _engine.state.variables[(_network?.config['readouts'] as Map?)?[field]];
+
   Future<void> _onAction(GameAction action) async {
-    if (_aiRunning || _animating || _replaying) return;
+    if (_aiRunning ||
+        _animating ||
+        _mechanismAnimating ||
+        _replaying ||
+        _lessonActive ||
+        _confirmingDelivery ||
+        _engine.state.isWon ||
+        _engine.state.isLost)
+      return;
+    final config = _network?.config;
+    final control = (config?['controls'] as Map?)?[action.actionId];
+    if (control?['type'] == 'commit' && !_hasVisualWorkbench) {
+      final target = control['target'];
+      final task = config!['tasks'][target] as Map;
+      final waiting = (task['after'] as List? ?? [])
+          .where((id) => _networkRead('done_$id') != 1)
+          .toList();
+      if (waiting.isNotEmpty || _networkRead('done_$target') == 1) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              waiting.isNotEmpty
+                  ? 'Complete inspection ${waiting.join(', ')} first.'
+                  : 'Inspection $target is already complete.',
+            ),
+          ),
+        );
+        return;
+      }
+      _confirmingDelivery = true;
+      final accepted = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text(
+            task['label'] == null
+                ? 'Submit for inspection $target?'
+                : '${task['label']}?',
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  task['label'] == null
+                      ? 'The inspector checks module outputs, not the X / Y / Z switches.'
+                      : 'Check the module outputs below before operating the machine.',
+                ),
+                const SizedBox(height: 14),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 6,
+                  children: [
+                    for (final e in (task['requires'] as Map).entries)
+                      Chip(
+                        label: Text(
+                          '${e.key}: ${e.value == 1 ? 'ON (1)' : 'OFF (0)'}',
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                const Text(
+                  'Costs 1 charge. The machine does not advance. A wrong pattern ends this attempt. You can go back and keep testing.',
+                ),
+                if ((task['closes'] as List? ?? []).isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    'Passing seals test ports: ${(task['closes'] as List).join(', ')}.',
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              autofocus: true,
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Keep testing'),
+            ),
+            FilledButton(
+              key: const ValueKey('confirm-inspection'),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Submit · 1 charge'),
+            ),
+          ],
+        ),
+      );
+      _confirmingDelivery = false;
+      if (!mounted || accepted != true) return;
+    }
     await _runAction(action);
   }
 
@@ -316,10 +547,17 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
       await _playCellEffects(result.events, ++_effectGeneration);
       return;
     }
+    if (_hasVisualWorkbench) _mechanismAnimating = true;
+    final networkControl =
+        (_network?.config['controls'] as Map?)?[action.actionId];
+    if (networkControl?['type'] == 'pulse') {
+      _networkInput.sync(networkControl['inputs'] as Map);
+    }
     if (result.isLost) {
       _loseReason = result.loseReason;
     }
     _actorFacingHistory.add(_actorFacingAt);
+    _otherFacingHistory.add(_otherFacingAt);
     final tracking = _playtest.enabled;
     _playtest.move(
       action: action.actionId,
@@ -386,6 +624,11 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
       // will turn it; its engine-written `facing` param is the only record.
       _actorFacingAt = facingAfterTurnsInPlace(
         _actorFacingAt,
+        preState,
+        _engine.state,
+      );
+      _otherFacingAt = layeredFacingAfterTurnsInPlace(
+        _otherFacingAt,
         preState,
         _engine.state,
       );
@@ -1592,8 +1835,11 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
         layer: step.extra['layer'] as String? ?? 'objects',
         direction: _directionBetween(from, to),
         distance: (dx.abs() > dy.abs() ? dx.abs() : dy.abs()).toDouble(),
-        // Straight down and nothing else is a fall; anything else is carried.
-        falling: dx == 0 && dy > 0,
+        falling: isFallingMove(
+          widget.packService.game.entityKinds[step.entityKind],
+          from,
+          to,
+        ),
       ));
     }
     if (movers.isEmpty) return;
@@ -1603,9 +1849,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     // Per-cell pacing for carried travel — the engine's `moveDurationMs`
     // convention. A fall instead takes the time gravity would take, which
     // grows with the square root of the drop, not with the drop.
-    final perCellMs = moves.first.durationMs > 0
-        ? moves.first.durationMs.clamp(40, 400)
-        : 130;
+    final perCellMs = groupMoveDuration(moves);
     final travelMs = falls
         ? (_fallCellMs * sqrt(span)).round()
         : (perCellMs * span).round();
@@ -1650,6 +1894,11 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     }
     setState(() {
       _preAnimState = postState;
+      _otherFacingAt = layeredFacingAfterMoves(_otherFacingAt, [
+        for (final m in movers)
+          if (m.layer != 'actors' && m.direction != null)
+            (layer: m.layer, from: m.from, to: m.to, direction: m.direction!),
+      ]);
       _actorFacingAt = facingAfterMoves(_actorFacingAt, [
         for (final m in movers)
           if (m.layer == 'actors' && m.direction != null)
@@ -1738,6 +1987,18 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     setState(() {
       if (lastPaths) _hiddenTransforms = const [];
       _preAnimState = _heldBoard(pending: stillPending);
+      _otherFacingAt = layeredFacingAfterMoves(_otherFacingAt, [
+        for (final m in movers)
+          if (m.layer != 'actors' && !m.removedAtEnd)
+            if (_directionBetween(m.path[m.path.length - 2], m.path.last)
+                case final direction?)
+              (
+                layer: m.layer,
+                from: m.path.first,
+                to: m.path.last,
+                direction: direction,
+              ),
+      ]);
       _actorFacingAt = facingAfterMoves(_actorFacingAt, [
         for (final m in movers)
           if (m.layer == 'actors' && !m.removedAtEnd)
@@ -1808,7 +2069,10 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     }
 
     final kindDef = widget.packService.game.entityKinds[m.entity.kind];
-    final motionFrame = resolveEntityMotionFrame(kindDef, elapsedMs, travelled);
+    // The final controller tick is exactly travelMs: do not wrap the gait
+    // back to its first frame for one tick just before the idle sprite lands.
+    final frameMs = m.falling ? elapsedMs : min(elapsedMs, travelMs - 1.0);
+    final motionFrame = resolveEntityMotionFrame(kindDef, frameMs, travelled);
     final entity = m.direction == null
         ? m.entity
         : EntityInstance(m.entity.kind, {
@@ -1873,6 +2137,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
   /// Packs whose tap does not move anything produce empty sets and render
   /// nothing, so this costs them a handful of dry runs and no pixels.
   Map<Position, Set<Position>> _computeActionPreviews() {
+    if (widget.packService.game.ui.restrictedInformation) return const {};
     final gestureMap = widget.packService.theme?.controls?.gestureMap;
     final avatar = _engine.state.avatar;
     final origin = avatar.position;
@@ -1926,7 +2191,9 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
   }
 
   void _onUndo() {
+    if (!widget.packService.game.ui.undoAllowed) return;
     if (_aiRunning || _replaying || _animating) return;
+    if (_solver != null || _lessonActive) return;
     // Depth before the undo: "was n moves in, stepped back". Undoing out of a
     // loss re-arms the fail event — dying again is a fresh fact.
     final depthBefore = _engine.undoDepth;
@@ -1935,6 +2202,17 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
         // Facing is app-side, so the engine's undo cannot restore it.
         _actorFacingAt = _actorFacingHistory.isNotEmpty
             ? _actorFacingHistory.removeLast()
+            : {};
+        if (_network != null) {
+          final inputs = (_network!.config['inputs'] as List? ?? [])
+              .cast<String>();
+          _networkInput.sync({
+            for (final k in inputs)
+              k: (_networkRead('input_$k') as num?)?.toInt() ?? 0,
+          });
+        }
+        _otherFacingAt = _otherFacingHistory.isNotEmpty
+            ? _otherFacingHistory.removeLast()
             : {};
       }
       _lastFloodColor = null;
@@ -1958,6 +2236,15 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
   /// Call only once foreground motion has finished, so its controllers cannot
   /// write a previous attempt's positions back over the new board.
   void _clearPlaybackState() {
+    _mechanismAnimating = false;
+    _lessonActive = false;
+    _lessonBusy = false;
+    _lessonIndex = 0;
+    _assistedNetworkAttempt = false;
+    _solver = null;
+    _solverBusy = false;
+    _solverAuto = false;
+    _solverSteps = 0;
     _replayGeneration++;
     _effectGeneration++;
     _resetRequested = false;
@@ -1975,7 +2262,9 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     _cascadeFeedbacks = const {};
     _cascadeTransfers = const [];
     _actorFacingAt = {};
+    _otherFacingAt = {};
     _actorFacingHistory.clear();
+    _otherFacingHistory.clear();
     _hiddenTransforms = const [];
   }
 
@@ -1992,6 +2281,8 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     setState(() {
       _clearPlaybackState();
       _engine.reset();
+      _resetNetworkInput();
+      _controlsEpoch++;
       _wonHandled = false;
       _lastThinking = null;
       _lastResponse = null;
@@ -2002,6 +2293,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
       _cascadeFeedbacks = const {};
       _cascadeTransfers = const [];
       _actorFacingAt = {};
+      _otherFacingAt = {};
     });
   }
 
@@ -2217,6 +2509,16 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
   /// button first appears.
   Set<String> _hiddenActionIds(LevelState state) {
     final hidden = <String>{};
+    // Actions the network leaves unmapped are hidden only when no other
+    // system could use them on this level.
+    if (_network != null && _networkOnlyLevel) {
+      final configured = _networkControls.keys.toSet();
+      hidden.addAll(
+        widget.packService.game.actions
+            .where((action) => !configured.contains(action.id))
+            .map((action) => action.id),
+      );
+    }
     // Per-level effective systems, not the pack's raw ones — a level's
     // systemOverrides can disable a terrain_edit system or repoint its
     // action/budgetVariable/kind entirely, and reading the raw config here
@@ -2530,8 +2832,331 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     return result == true;
   }
 
+  bool get _humanNetworkHelp =>
+      kDebugMode &&
+      _network != null &&
+      !s.aiPlayEnabled &&
+      _levelDef.solution.goldPath.isNotEmpty;
+
+  void _startNetworkLesson() {
+    if (!_humanNetworkHelp || _animating || _replaying) return;
+    _onReset();
+    setState(() {
+      _lessonActive = true;
+      _assistedNetworkAttempt = true;
+    });
+  }
+
+  Future<void> _nextNetworkLessonStep() async {
+    if (!_lessonActive ||
+        _lessonBusy ||
+        _lessonIndex >= _levelDef.solution.goldPath.length)
+      return;
+    final epoch = _controlsEpoch;
+    final action = _levelDef.solution.goldPath[_lessonIndex];
+    setState(() => _lessonBusy = true);
+    await _runAction(action, source: 'lesson');
+    if (!mounted || !_lessonActive || epoch != _controlsEpoch) return;
+    setState(() {
+      _lessonIndex++;
+      _lessonBusy = false;
+    });
+  }
+
+  Widget? _networkGuidance() {
+    if (!_humanNetworkHelp) return null;
+    if (!_lessonActive) {
+      if (_levelDef.metadata?['networkLesson'] != null ||
+          _levelIndex != 0 ||
+          _engine.state.isWon ||
+          _engine.state.isLost)
+        return null;
+      final fresh = _networkRead('sample') == 'none';
+      final firstTask =
+          ((_network!.config['tasks'] as Map?) ?? const {}).entries.firstOrNull;
+      if (firstTask == null) return null;
+      final target = ((firstTask.value['requires'] as Map?) ?? const {}).entries
+          .map((e) => '${e.key} ${e.value == 1 ? 'ON' : 'OFF'}')
+          .join(', ');
+      return Text(
+        fresh
+            ? 'Start here: leave the test switches OFF and click Run test. Read ${_networkRead('probe')} beside its module. Need a walkthrough? Choose Teach me below.'
+            : 'The reading is one clue, not the answer. ${firstTask.key} needs $target together. Teach me explains a complete example, one move at a time.',
+        textAlign: TextAlign.center,
+        style: const TextStyle(fontSize: 13, color: Color(0xFF176C73)),
+      );
+    }
+    final path = _levelDef.solution.goldPath;
+    final done = _lessonIndex >= path.length || _engine.state.isWon;
+    var explanation =
+        'All inspections passed and every memory is OFF. Restart to try it yourself.';
+    if (!done) {
+      final c =
+          _network!.config['controls'][path[_lessonIndex].actionId] as Map;
+      final target = c['target'];
+      switch (c['type']) {
+        case 'pulse':
+          final switches = (c['inputs'] as Map).entries
+              .map(
+                (e) =>
+                    '${e.key.toString().toUpperCase()} ${e.value == 1 ? 'ON' : 'OFF'}',
+              )
+              .join(', ');
+          explanation =
+              'Run test with $switches. It costs 1 charge and advances every module, even with all switches OFF. Then the lead reads ${_networkRead('probe')}.';
+          break;
+        case 'probe':
+          explanation =
+              'Attach the test lead to socket $target. This is free. Moving the lead does not measure anything; the next test will.';
+          break;
+        case 'clamp':
+          explanation = target == ''
+              ? 'Release the hold. The output works normally again; the module memory was never cleared.'
+              : 'Hold $target OFF. Its output is forced to 0, including what downstream modules receive. Its memory still changes on each test. This setup is free.';
+          break;
+        case 'commit':
+          final required =
+              (_network!.config['tasks'][target]['requires'] as Map).entries
+                  .map((e) => '${e.key} ${e.value == 1 ? 'ON' : 'OFF'}')
+                  .join(', ');
+          explanation =
+              'Submit inspection $target: $required. The preceding example moves produced that pattern. This spends 1 charge without advancing the modules.';
+          break;
+      }
+    }
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 900),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE8F4F2),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            done
+                ? 'Demonstration complete'
+                : 'Guided example · move ${_lessonIndex + 1}/${path.length}',
+            style: const TextStyle(fontWeight: FontWeight.bold),
+          ),
+          Text(
+            explanation,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 13),
+          ),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (!done)
+                TextButton(
+                  key: const ValueKey('lesson-next'),
+                  onPressed: _lessonBusy ? null : _nextNetworkLessonStep,
+                  child: const Text('Do this step'),
+                ),
+              TextButton(
+                onPressed: _onReset,
+                child: Text(done ? 'Try yourself' : 'Exit lesson & restart'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _onSolve() async {
     await _replayPath(_levelDef.solution.goldPath.length, source: 'solve');
+  }
+
+  /// The level's explained solver, or its gold path as a plain move list.
+  PolicyCursor? _solverForLevel() {
+    final solver = _levelDef.metadata?['solver'];
+    if (solver is Map && solver['policy'] is Map) {
+      return PolicyCursor(solver['policy'] as Map);
+    }
+    final path = _levelDef.solution.goldPath;
+    if (path.isEmpty) return null;
+    return PolicyCursor.fromPath([for (final a in path) a.actionId]);
+  }
+
+  bool get _canSolveExplained =>
+      _network != null && !s.aiPlayEnabled && _solverForLevel() != null;
+
+  /// Restart the attempt and walk the solver on it, one explained move at a
+  /// time. The attempt counts as assisted, so it earns no progress.
+  void _startSolver() {
+    if (_animating || _replaying || _aiRunning) return;
+    _onReset();
+    final cursor = _solverForLevel();
+    if (cursor == null) return;
+    cursor.settle(Map<String, dynamic>.of(_engine.state.variables));
+    setState(() {
+      _solver = cursor;
+      _assistedNetworkAttempt = true;
+    });
+  }
+
+  Future<void> _solverStep() async {
+    final cursor = _solver;
+    final action = cursor?.nextAction;
+    if (cursor == null || action == null || _solverBusy) return;
+    final epoch = _controlsEpoch;
+    setState(() => _solverBusy = true);
+    await _runAction(GameAction(action, {}), source: 'solve');
+    // Let the workbench finish showing the move before reading its result.
+    while (mounted && _mechanismAnimating && epoch == _controlsEpoch) {
+      await Future.delayed(const Duration(milliseconds: 40));
+    }
+    if (!mounted || epoch != _controlsEpoch || _solver != cursor) return;
+    cursor.advance(Map<String, dynamic>.of(_engine.state.variables));
+    setState(() {
+      _solverBusy = false;
+      _solverSteps++;
+    });
+  }
+
+  Future<void> _solverPlayAll() async {
+    final cursor = _solver;
+    if (cursor == null) return;
+    setState(() => _solverAuto = true);
+    while (mounted &&
+        _solverAuto &&
+        _solver == cursor &&
+        cursor.onScript &&
+        cursor.nextAction != null &&
+        !_engine.state.isLost) {
+      await _solverStep();
+      await Future.delayed(const Duration(milliseconds: 900));
+    }
+    if (mounted && _solver == cursor) setState(() => _solverAuto = false);
+  }
+
+  /// Fallback explanation for a solver move the policy does not annotate.
+  String _plainStepNote(String actionId) {
+    final c = _network?.config['controls']?[actionId] as Map?;
+    switch (c?['type']) {
+      case 'pulse':
+        final switches = (c!['inputs'] as Map).entries
+            .map(
+              (e) =>
+                  '${e.key.toString().toUpperCase()} ${e.value == 1 ? 'on' : 'off'}',
+            )
+            .join(', ');
+        return 'Set $switches and run a cycle (1 power).';
+      case 'probe':
+        return 'Move the meter to ${c!['target']} (free).';
+      case 'clamp':
+        return c!['target'] == ''
+            ? 'Return the clamp (free).'
+            : 'Clamp ${c['target']} (free): its output counts as 0.';
+      case 'commit':
+        return 'Dispatch Job ${c!['target']} (1 power).';
+    }
+    return 'Play $actionId.';
+  }
+
+  Widget _buildSolverPanel() {
+    final cursor = _solver!;
+    final state = _engine.state;
+    final solver = _levelDef.metadata?['solver'] as Map?;
+    final action = cursor.nextAction;
+    final String title;
+    final String body;
+    if (state.isWon) {
+      title = 'Solved in $_solverSteps steps';
+      body =
+          'Every job is done and everything is off. Restart to try it yourself.';
+    } else if (state.isLost || !cursor.onScript) {
+      title = 'Off script';
+      body =
+          'The attempt went somewhere the solver did not expect. Restart and solve again.';
+    } else if (action == null) {
+      title = 'Solver finished';
+      body = '';
+    } else {
+      title = 'Solver · step ${_solverSteps + 1}';
+      body = 'Next: ${cursor.note ?? _plainStepNote(action)}';
+    }
+    final intro = _solverSteps == 0 ? (solver?['intro'] as String?) : null;
+    final learned = cursor.learned;
+    final running = action != null && cursor.onScript && !state.isLost;
+    return Container(
+      key: const ValueKey('solver-panel'),
+      constraints: const BoxConstraints(maxWidth: 900),
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE8F4F2),
+        border: Border.all(color: const Color(0xFF357D73)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
+          if (intro != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                intro,
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 13),
+              ),
+            ),
+          if (learned != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                learned,
+                key: const ValueKey('solver-learned'),
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFF176C73),
+                ),
+              ),
+            ),
+          if (body.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                body,
+                key: const ValueKey('solver-note'),
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 13),
+              ),
+            ),
+          const SizedBox(height: 6),
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 8,
+            children: [
+              if (running && !_solverAuto)
+                FilledButton(
+                  key: const ValueKey('solver-step'),
+                  onPressed: _solverBusy ? null : _solverStep,
+                  child: const Text('Do this step'),
+                ),
+              if (running)
+                OutlinedButton(
+                  key: const ValueKey('solver-auto'),
+                  onPressed: _solverAuto
+                      ? () => setState(() => _solverAuto = false)
+                      : _solverPlayAll,
+                  child: Text(_solverAuto ? 'Pause' : 'Play to the end'),
+                ),
+              TextButton(
+                key: const ValueKey('solver-stop'),
+                onPressed: _onReset,
+                child: Text(state.isWon ? 'Try yourself' : 'Stop & restart'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _playHint(int hintIndex) async {
@@ -2549,6 +3174,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
       _replaying = true;
       _wonHandled = false;
       _replayLabel = source == 'solve' ? 'Playing solution' : 'Playing hint';
+      _assistedNetworkAttempt = _network != null;
     });
     // The replay is the UI's time, not the tester's — pauses included.
     _playtest.beginBusy();
@@ -2716,7 +3342,9 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     _engine.reset();
     setState(() {
       _actorFacingAt = {};
+      _otherFacingAt = {};
       _actorFacingHistory.clear();
+      _otherFacingHistory.clear();
       _aiRunning = true;
       _lastThinking = null;
       _lastResponse = null;
@@ -2863,7 +3491,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
   }
 
   /// Resolves a theme `key_press` binding's `key` string to a
-  /// [LogicalKeyboardKey]. Accepts a single a-z letter (the original
+  /// [LogicalKeyboardKey]. Accepts a single a-z letter or 1-9 digit (the original
   /// convention) or one of `up`/`down`/`left`/`right`, so a pack can bind
   /// arrow keys to any action generically instead of only the hardcoded
   /// arrow-to-`move` fallback below.
@@ -2903,6 +3531,16 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
       'x': LogicalKeyboardKey.keyX,
       'y': LogicalKeyboardKey.keyY,
       'z': LogicalKeyboardKey.keyZ,
+      // Digits, for numbered verbs. `0` stays zoom-to-fit.
+      '1': LogicalKeyboardKey.digit1,
+      '2': LogicalKeyboardKey.digit2,
+      '3': LogicalKeyboardKey.digit3,
+      '4': LogicalKeyboardKey.digit4,
+      '5': LogicalKeyboardKey.digit5,
+      '6': LogicalKeyboardKey.digit6,
+      '7': LogicalKeyboardKey.digit7,
+      '8': LogicalKeyboardKey.digit8,
+      '9': LogicalKeyboardKey.digit9,
       // Named keys, for a verb with no letter to hang on (a stamp's press).
       ' ': LogicalKeyboardKey.space,
       'space': LogicalKeyboardKey.space,
@@ -2944,8 +3582,8 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
       _wonHandled = true;
       // `n` is the final path length — undone moves are gone from the depth,
       // so this divided by the gold length is the tester's efficiency.
-      _playtest.completed(_engine.undoDepth);
-      if (widget.progress != null) {
+      if (!_assistedNetworkAttempt) _playtest.completed(_engine.undoDepth);
+      if (widget.progress != null && !_assistedNetworkAttempt) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) widget.progress!.markCompleted(levelId);
         });
@@ -2959,7 +3597,9 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
         !_animating;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F0E8),
+      backgroundColor:
+          networkWorkbenchBackground(_mechanismScene) ??
+          const Color(0xFFF5F0E8),
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -3076,62 +3716,141 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
               ? null
               : _onPanCancel,
           child: SafeArea(
-            child: Column(
+            child: NetworkPageLayout(
+              network: _network != null && !_hasVisualWorkbench,
+              extraContentHeight: _levelDef.metadata?['networkLesson'] != null
+                  ? 260
+                  : 0,
               children: [
                 _buildStatusBar(state),
-                if (widget.packService.game.ui.showGoal ||
-                    widget.packService.game.ui.showGuide)
+                if (!_hasVisualWorkbench &&
+                    (widget.packService.game.ui.showGoal ||
+                        widget.packService.game.ui.showGuide))
                   _buildGoalGuidePanel(state),
                 Expanded(
                   child: Padding(
                     padding: const EdgeInsets.all(12),
-                    child: _buildZoomableBoard(
-                      state,
-                      BoardRenderer(
-                        key: _boardKey,
-                        state: state,
-                        game: widget.packService.game,
-                        packService: widget.packService,
-                        animationOverlays: _animOverlays,
-                        actorFacingAt: _actorFacingAt,
-                        onCellTap:
-                            (_hasCellTapGesture || _moveActionNeedsPosition)
-                            ? _onCellTap
-                            : null,
-                        selectedMultiCellObjectId:
-                            _selectedMultiCellObjectForRenderer(state),
-                        selectedActorPosition: _selectedActorPosition(state),
-                        selectedCellPosition: _selectedCellPosition,
-                        lineOfSightFeedbacks: _lineOfSightFeedbacks,
-                        cellEffects: _cellEffects,
-                        cascadeFeedbacks: _cascadeFeedbacks,
-                        cascadeTransfers: _cascadeTransfers,
-                        floatingNumbers: _floatingNumbers,
-                        floodedColorOverride: _lastFloodColor,
-                        avatarPositionOverride: _avatarSlidePos,
-                        avatarMotion: _avatarMotion,
-                        actionPreviews: showPreviews
-                            ? _actionPreviews
-                            : const {},
-                        hoveredPreviewTarget: _hoveredPreviewTarget,
-                        movingSprites: _movingSprites,
-                        history: _engine.history,
-                        movingMultiCellObjects: _movingMultiCellObjects,
-                        onCellHover: (x, y) {
-                          final pos = x == null || y == null
-                              ? null
-                              : Position(x, y);
-                          if (pos == _hoveredPreviewTarget) return;
-                          if (pos != null &&
-                              !_actionPreviews.containsKey(pos)) {
-                            if (_hoveredPreviewTarget == null) return;
-                            setState(() => _hoveredPreviewTarget = null);
-                            return;
-                          }
-                          setState(() => _hoveredPreviewTarget = pos);
-                        },
-                      ),
-                    ),
+                    child: _hasVisualWorkbench
+                        ? buildNetworkWorkbench(
+                            NetworkWorkbenchRequest(
+                              levelId: _levelDef.id,
+                              scene: _mechanismScene!,
+                              config: _network?.config,
+                              publicCircuit:
+                                  _levelDef.metadata?['publicCircuit']
+                                      as Map<String, dynamic>?,
+                              inputController: _networkInput,
+                              variables: Map<String, dynamic>.of(
+                                state.variables,
+                              ),
+                              revision: state.turnCount,
+                              enabled:
+                                  !state.isWon &&
+                                  !state.isLost &&
+                                  !_aiRunning &&
+                                  !_replaying &&
+                                  !_animating &&
+                                  _solver == null,
+                              onAction: (action) =>
+                                  _onAction(GameAction(action, {})),
+                              onAnimating: (busy) {
+                                if (_mechanismAnimating == busy) return;
+                                _mechanismAnimating = busy;
+                                if (!busy) {
+                                  WidgetsBinding.instance.addPostFrameCallback((
+                                    _,
+                                  ) {
+                                    if (mounted) setState(() {});
+                                  });
+                                }
+                              },
+                            ),
+                          )
+                        : _network != null
+                        ? NetworkBench(
+                            config: _network!.config,
+                            publicCircuit:
+                                _levelDef.metadata?['publicCircuit']
+                                    as Map<String, dynamic>?,
+                            lesson:
+                                _levelDef.metadata?['networkLesson']
+                                    as Map<String, dynamic>?,
+                            inputController: _networkInput,
+                            state: state,
+                            game: widget.packService.game,
+                            guidance: _solver != null
+                                ? _buildSolverPanel()
+                                : _networkGuidance(),
+                            board: BoardRenderer(
+                              key: _boardKey,
+                              state: state,
+                              game: widget.packService.game,
+                              packService: widget.packService,
+                              history: _engine.history,
+                            ),
+                            wrapBoard: (board) =>
+                                _buildZoomableBoard(state, board),
+                            onAction: _onAction,
+                            enabled:
+                                !state.isWon &&
+                                !state.isLost &&
+                                !_aiRunning &&
+                                !_animating &&
+                                !_replaying &&
+                                !_lessonActive &&
+                                _solver == null,
+                          )
+                        : _buildZoomableBoard(
+                            state,
+                            BoardRenderer(
+                              key: _boardKey,
+                              state: state,
+                              game: widget.packService.game,
+                              packService: widget.packService,
+                              animationOverlays: _animOverlays,
+                              actorFacingAt: _actorFacingAt,
+                              otherFacingAt: _otherFacingAt,
+                              onCellTap:
+                                  (_hasCellTapGesture ||
+                                      _moveActionNeedsPosition)
+                                  ? _onCellTap
+                                  : null,
+                              selectedMultiCellObjectId:
+                                  _selectedMultiCellObjectForRenderer(state),
+                              selectedActorPosition: _selectedActorPosition(
+                                state,
+                              ),
+                              selectedCellPosition: _selectedCellPosition,
+                              lineOfSightFeedbacks: _lineOfSightFeedbacks,
+                              cellEffects: _cellEffects,
+                              cascadeFeedbacks: _cascadeFeedbacks,
+                              cascadeTransfers: _cascadeTransfers,
+                              floatingNumbers: _floatingNumbers,
+                              floodedColorOverride: _lastFloodColor,
+                              avatarPositionOverride: _avatarSlidePos,
+                              avatarMotion: _avatarMotion,
+                              actionPreviews: showPreviews
+                                  ? _actionPreviews
+                                  : const {},
+                              hoveredPreviewTarget: _hoveredPreviewTarget,
+                              movingSprites: _movingSprites,
+                              history: _engine.history,
+                              movingMultiCellObjects: _movingMultiCellObjects,
+                              onCellHover: (x, y) {
+                                final pos = x == null || y == null
+                                    ? null
+                                    : Position(x, y);
+                                if (pos == _hoveredPreviewTarget) return;
+                                if (pos != null &&
+                                    !_actionPreviews.containsKey(pos)) {
+                                  if (_hoveredPreviewTarget == null) return;
+                                  setState(() => _hoveredPreviewTarget = null);
+                                  return;
+                                }
+                                setState(() => _hoveredPreviewTarget = pos);
+                              },
+                            ),
+                          ),
                   ),
                 ),
                 if (_replaying)
@@ -3142,7 +3861,9 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
                       style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
                   ),
-                if (state.isWon) _buildWinBanner(),
+                if (state.isWon &&
+                    (!_hasVisualWorkbench || !_mechanismAnimating))
+                  _buildWinBanner(),
                 if (state.isLost) _buildLossBanner(),
                 if (s.aiPlayEnabled &&
                     !state.isWon &&
@@ -3154,30 +3875,106 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
                     !state.isLost &&
                     !_aiRunning)
                   _buildAiStartButton(),
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 10),
-                  child: ControlsWidget(
-                    game: widget.packService.game,
-                    onAction: _onAction,
-                    onUndo: _onUndo,
-                    onReset: _onReset,
-                    onExit: _onExit,
-                    onHint: hintAvailable ? _onHint : null,
-                    onSolve: kDebugMode ? _onSolve : null,
-                    canUndo:
-                        _engine.undoDepth > 0 &&
-                        !_aiRunning &&
-                        !_replaying &&
-                        !_animating,
-                    hintStatuses: hintStatuses,
-                    availableActionIds: _availableFloodActions(state),
-                    presentEntityKinds: _presentEntityKinds(state),
-                    hiddenActionIds: _hiddenActionIds(state),
-                    actionSprites: _actionSprites(),
-                    palette: widget.packService.theme?.palette,
-                    gestureMap: widget.packService.theme?.controls?.gestureMap,
+                if (_hasVisualWorkbench && _solver != null) _buildSolverPanel(),
+                if (_hasVisualWorkbench)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        if (widget.packService.game.ui.undoAllowed)
+                          IconButton(
+                            key: const ValueKey('mechanism-undo'),
+                            tooltip: 'Undo',
+                            icon: const Icon(Icons.undo_rounded),
+                            onPressed:
+                                widget.packService.game.ui.undoAllowed &&
+                                    _engine.undoDepth > 0 &&
+                                    !_aiRunning &&
+                                    !_replaying
+                                ? _onUndo
+                                : null,
+                          ),
+                        const SizedBox(width: 24),
+                        IconButton(
+                          key: const ValueKey('mechanism-restart'),
+                          tooltip: 'Restart',
+                          icon: const Icon(Icons.restart_alt_rounded),
+                          onPressed: _onReset,
+                        ),
+                        if (_canSolveExplained) ...[
+                          const SizedBox(width: 24),
+                          IconButton(
+                            key: const ValueKey('mechanism-solve'),
+                            tooltip: 'Solve, explaining every step',
+                            icon: const Icon(Icons.auto_fix_high_rounded),
+                            onPressed: _solver == null ? _startSolver : null,
+                          ),
+                        ],
+                        const SizedBox(width: 24),
+                        IconButton(
+                          tooltip: 'Exit',
+                          icon: const Icon(Icons.exit_to_app_rounded),
+                          onPressed: _onExit,
+                        ),
+                      ],
+                    ),
+                  )
+                else
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    child: ControlsWidget(
+                      key: ValueKey(_controlsEpoch),
+                      networkInputController: _network == null
+                          ? null
+                          : _networkInput,
+                      game: widget.packService.game.withSystemOverrides(
+                        _levelDef.systemOverrides,
+                      ),
+                      publicVariables: Map<String, dynamic>.of(state.variables),
+                      enabled:
+                          !state.isWon &&
+                          !state.isLost &&
+                          !_aiRunning &&
+                          !_replaying &&
+                          !_animating &&
+                          !_lessonActive,
+                      onAction: _onAction,
+                      onUndo: _onUndo,
+                      onReset: _onReset,
+                      onExit: _onExit,
+                      onHint:
+                          hintAvailable &&
+                              !widget.packService.game.ui.restrictedInformation
+                          ? _onHint
+                          : null,
+                      onSolve: _canSolveExplained
+                          ? (_solver == null ? _startSolver : null)
+                          : kDebugMode
+                          ? _onSolve
+                          : null,
+                      onTeach: _humanNetworkHelp && !_canSolveExplained
+                          ? _startNetworkLesson
+                          : null,
+                      canUndo:
+                          widget.packService.game.ui.undoAllowed &&
+                          _engine.undoDepth > 0 &&
+                          !_aiRunning &&
+                          !_replaying &&
+                          !_animating &&
+                          _solver == null &&
+                          !_lessonActive,
+                      showRestart: !widget.packService.game.ui.undoAllowed,
+                      hintStatuses: hintStatuses,
+                      availableActionIds: _availableFloodActions(state),
+                      presentEntityKinds: _presentEntityKinds(state),
+                      hiddenActionIds: _hiddenActionIds(state),
+                      actionSprites: _actionSprites(),
+                      palette: widget.packService.theme?.palette,
+                      gestureMap:
+                          widget.packService.theme?.controls?.gestureMap,
+                    ),
                   ),
-                ),
               ],
             ),
           ),
@@ -3372,6 +4169,57 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
 
   Widget _buildGoalGuidePanel(LevelState state) {
     final ui = widget.packService.game.ui;
+    if (_network != null) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        child: Row(
+          children: [
+            const Icon(Icons.battery_charging_full, color: Color(0xFF176C73)),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '${_networkRead('energy')} charges left',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  if (_networkRead('reading') == 0 ||
+                      _networkRead('reading') == 1)
+                    Text(
+                      'Last test: ${_networkRead('sample')} ${_networkRead('reading') == 1 ? 'ON' : 'OFF'}',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF176C73),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            TextButton.icon(
+              onPressed: () => showDialog<void>(
+                context: context,
+                builder: (context) => AlertDialog(
+                  title: const Text('Bench handbook'),
+                  content: SizedBox(
+                    width: 640,
+                    child: SingleChildScrollView(child: _buildGuideContents()),
+                  ),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('Close'),
+                    ),
+                  ],
+                ),
+              ),
+              icon: const Icon(Icons.menu_book_outlined),
+              label: const Text('Guide'),
+            ),
+          ],
+        ),
+      );
+    }
     final showGoal = ui.showGoal && _levelDef.goals.isNotEmpty;
     final showGuide = ui.showGuide && (_levelDef.guide?.isNotEmpty ?? false);
     final readouts = ui.readouts
@@ -3418,7 +4266,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
 
   /// A row of live `state.variables` chips declared by `game.json`'s
   /// `ui.readouts`. Pack-agnostic: the app never learns what a given variable
-  /// means, only how to draw a labelled number.
+  /// means, only how to draw a labelled value.
   Widget _buildReadoutStrip(LevelState state, List<GameReadout> readouts) {
     final sprites = _variableSprites();
     return Wrap(
@@ -3430,6 +4278,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
           _buildReadoutChip(
             r,
             r.formatValue(state.variables),
+            state.variables[r.variable],
             sprites[r.variable],
           ),
       ],
@@ -3439,6 +4288,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
   Widget _buildReadoutChip(
     GameReadout readout,
     String displayValue,
+    Object? rawValue,
     ImageProvider? labelSprite,
   ) {
     final tint = readout.color == null
@@ -3448,7 +4298,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
             palette: widget.packService.theme?.palette,
           );
 
-    return Container(
+    final chip = Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
         color: tint.withValues(alpha: 0.14),
@@ -3480,16 +4330,48 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
                   ),
                 ),
           const SizedBox(width: 8),
-          Text(
-            displayValue,
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.bold,
-              fontFeatures: const [FontFeature.tabularFigures()],
-              color: tint,
+          Flexible(
+            child: Text(
+              displayValue,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                fontFeatures: const [FontFeature.tabularFigures()],
+                color: tint,
+              ),
             ),
           ),
         ],
+      ),
+    );
+    final bounded = ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 300),
+      child: chip,
+    );
+    if (rawValue is! String || rawValue.length < 20) return bounded;
+    return Tooltip(
+      message: 'Open ${readout.label.toLowerCase()}',
+      child: InkWell(
+        borderRadius: BorderRadius.circular(999),
+        onTap: () => showDialog<void>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: Text(readout.label),
+            content: SizedBox(
+              width: 640,
+              child: SingleChildScrollView(child: SelectableText(rawValue)),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Close'),
+              ),
+            ],
+          ),
+        ),
+        child: bounded,
       ),
     );
   }
@@ -3918,42 +4800,64 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildGuidePanel() {
-    return Container(
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: Colors.blue.shade50,
-        border: Border.all(color: Colors.blue.shade200),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
+  Widget _buildGuideContents() {
+    final sections = _levelDef.guide!.split('\n\n## ');
+    const style = TextStyle(fontSize: 16, height: 1.5);
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SelectableText(sections.first, style: style),
+        for (final section in sections.skip(1))
+          ExpansionTile(
+            tilePadding: EdgeInsets.zero,
+            title: Text(section.split('\n').first),
             children: [
-              Icon(Icons.info_outline, color: Colors.blue.shade600, size: 14),
-              const SizedBox(width: 4),
-              Text(
-                'Guide',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.blue.shade700,
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: SelectableText(
+                    section.substring(section.indexOf('\n') + 1),
+                    style: style,
+                  ),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 6),
-          Text(
-            _levelDef.guide!,
-            style: TextStyle(
-              fontSize: 11,
-              color: Colors.blue.shade900,
-              height: 1.4,
+      ],
+    );
+  }
+
+  Widget _buildGuidePanel() {
+    return Material(
+      color: Colors.blue.shade50,
+      shape: RoundedRectangleBorder(
+        side: BorderSide(color: Colors.blue.shade200),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: ListTile(
+        dense: true,
+        leading: const Icon(Icons.menu_book_outlined),
+        title: const Text('Guide'),
+        subtitle: const Text('Rules, wiring and order requirements'),
+        trailing: const Icon(Icons.open_in_new, size: 18),
+        onTap: () => showDialog<void>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Guide'),
+            content: SizedBox(
+              width: 640,
+              child: SingleChildScrollView(child: _buildGuideContents()),
             ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Close'),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -3968,7 +4872,9 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
         : null;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F0E8),
+      backgroundColor:
+          networkWorkbenchBackground(_mechanismScene) ??
+          const Color(0xFFF5F0E8),
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -4298,8 +5204,24 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     final customMessage = _loseReason == null
         ? null
         : widget.packService.game.loseDescriptions[_loseReason];
-    final title = customMessage == null ? 'Out of Moves!' : 'Game Over';
-    final subtitle = customMessage ?? 'Plan the order more carefully.';
+    var title = customMessage == null ? 'Out of Moves!' : 'Game Over';
+    var subtitle = customMessage ?? 'Plan the order more carefully.';
+    if (_network != null) {
+      final last = (_networkRead('journal') ?? '').toString().split(' | ').last;
+      if (last.endsWith(' failed')) {
+        final order = last.split(' ').first;
+        final requirements =
+            _network!.config['tasks'][order]['requires'] as Map;
+        title = 'Inspection $order did not pass';
+        subtitle =
+            'Required: ${requirements.entries.map((e) => '${e.key} ${e.value == 1 ? 'ON' : 'OFF'}').join(', ')}. '
+            'At least one module output differed. The input switches do not directly set these outputs. Restart to try again.';
+      } else {
+        title = 'Battery empty';
+        subtitle =
+            'The inspections and safe shutdown were not complete when the last charge was spent. Restart to try a different sequence.';
+      }
+    }
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 20),

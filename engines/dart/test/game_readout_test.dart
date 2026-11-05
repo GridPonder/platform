@@ -34,4 +34,10 @@ void main() {
     expect(readout.formatValue({'amount': -1, 'capacity': 3}), '—');
     expect(readout.formatValue({'capacity': 3}), '—');
   });
+
+  test('string readouts are shown verbatim', () {
+    const readout = GameReadout(variable: 'note', label: 'Note');
+    expect(readout.formatValue({'note': 'A=1 | B=0'}), 'A=1 | B=0');
+    expect(readout.formatValue({'note': true}), '—');
+  });
 }

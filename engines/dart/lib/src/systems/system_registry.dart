@@ -31,6 +31,7 @@ import 'terrain_edit_system.dart';
 import 'terrain_skip_system.dart';
 import 'tile_teleport_system.dart';
 import 'turn_cycle_system.dart';
+import 'state_network_system.dart';
 
 /// Creates a GameSystem instance from a SystemDef.
 typedef SystemFactory = GameSystem Function(
@@ -71,6 +72,7 @@ class SystemRegistry {
     'ice_slide': (id, _) => IceSlideSystem(id: id),
     'sonar': (id, _) => SonarSystem(id: id),
     'terrain_edit': (id, _) => TerrainEditSystem(id: id),
+    'state_network': (id, config) => StateNetworkSystem(id: id, config: config),
     'turn_cycle': (id, _) => TurnCycleSystem(id: id),
   };
 

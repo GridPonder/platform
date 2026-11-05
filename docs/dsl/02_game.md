@@ -310,6 +310,7 @@ A `motion` block on an entity kind sets per-cell motion durations the renderer u
 | `pathStepDurationMs` | Engine emits `entity_path` (multi-cell traversal, e.g. queued-emitter routes). Per cell. | 80 |
 | `spawnDurationMs` | Engine emits `entity_spawn` (e.g. queued-emitter spawn). | 120 |
 | `frameDurationMs` | Optional time per frame for `motion.sprites.walk`. When present, walk frames advance by elapsed motion time; otherwise they retain the legacy one-frame-per-cell cadence. | absent |
+| `fallOnDown` | A straight downward move is normally drawn as a gravity drop (accelerating, with a landing squash). Set `false` for kinds that walk south rather than fall, so the move uses linear per-cell travel. | `true` |
 
 #### How motion events are sequenced
 
@@ -740,7 +741,6 @@ Default values applied to levels when those fields are not specified. This reduc
 }
 ```
 
-
 ### Additional generic display and readout fields
 
 `ui.readouts[].maxVariable` optionally names a live capacity variable. A
@@ -758,3 +758,25 @@ For `circle_label`, `connections` selects vectors from `connectionMap`,
 small badge when no connection arms are drawn. `linkTarget` and `linkUsed`
 reference entity parameters for optional control-to-target links. All fields
 are presentation data; no game identity is interpreted by the renderer.
+
+### Restricted observation interfaces (additive)
+
+`ui.restrictedInformation` defaults to `false`. When true, the app suppresses
+undo, hint replay and predictive action previews; the Undo control is replaced
+by a visible Restart. Solve stays available: it replays the level's authored
+solution (for a `state_network`, an explained step-by-step policy) and the
+assisted attempt earns no progress. It does not hide
+arbitrary board entities or variables: systems/pack authors must explicitly
+project public observations and expose only public variables via `ui.readouts`.
+Readouts accept strings as well as numbers; text journals wrap in the app.
+Action definitions may set an optional `label` for human-facing control text;
+action ids remain the stable engine/agent API. Neither feature changes versions.
+
+### Undo policy
+
+Optional `ui.allowUndo` explicitly permits or disables UI undo independently
+of `restrictedInformation`. When omitted, undo remains allowed for ordinary
+games and disabled for restricted-information games, preserving the previous
+behavior. Enabling undo does not enable predictive previews, saved solutions
+or omniscient hints. It rewinds actual state; information the player has already
+observed is naturally retained in the player's memory.

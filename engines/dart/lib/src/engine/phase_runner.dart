@@ -209,7 +209,7 @@ class PhaseRunner {
             fromPos,
             pos,
             kind,
-            'actors',
+            _game.entityKinds[kind]?.layer ?? 'actors',
             durationMs: dur,
             stage: motionStage,
           ));

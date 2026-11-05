@@ -959,7 +959,7 @@ Choose the action most likely to reach the goal in fewest total actions (summed 
     final listed = _listNames(names);
     final requireEqual = (config['requireEqual'] as bool?) ?? true;
     final requireComplete = (config['requireComplete'] as bool?) ?? true;
-    final String head;
+    String head;
     if (requireComplete && requireEqual) {
       head =
           'Claim every claimable cell, and give $listed an equal number each';
@@ -971,6 +971,14 @@ Choose the action most likely to reach the goal in fewest total actions (summed 
       head = 'Claim cells for $listed';
     }
 
+    for (final raw in (config['quotas'] as List?) ?? const []) {
+      if (raw is! Map) continue;
+      final kind = raw['kind'] as String? ?? '';
+      final label = kindToLabel != null
+          ? (kindToLabel[kind] ?? kind)
+          : _resolveEntityName(game, kind, null);
+      head = '$head, and each must own exactly ${balanceQuotaCount(Map<String, dynamic>.from(raw))} $label cell(s)';
+    }
     if (owners.isEmpty) return head;
     final progress = _balanceProgress(config, state, game, names);
     var full = head;
@@ -1017,8 +1025,17 @@ Choose the action most likely to reach the goal in fewest total actions (summed 
       ].join(', ');
     }
     final owned = counts.values.fold(0, (a, b) => a + b);
-    if (claimable != 0) return '$tally — $owned of $claimable claimed';
-    return tally;
+    var withQuotas = tally;
+    for (final (quota, held, _) in balanceQuotaTally(config, state)) {
+      final marked = [
+        for (int i = 0; i < owners.length; i++)
+          '${names[i]} ${held[owners[i]] ?? 0}'
+      ].join(', ');
+      withQuotas = '$withQuotas; marked cells held: $marked '
+          '(need ${balanceQuotaCount(quota)} each)';
+    }
+    if (claimable != 0) return '$withQuotas — $owned of $claimable claimed';
+    return withQuotas;
   }
 
   static String _sequenceProgress(

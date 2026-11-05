@@ -8,6 +8,13 @@ The Gridponder DSL defines a JSON data format for:
 
 > **Deterministic, discrete, single-player, perfect-information, turn-based, 2D grid puzzle games.**
 
+Opt-in exception: `state_network` supports deterministic partial observation through
+an explicit public projection. Rules and allowed alternatives remain public;
+configuration and runtime internals remain trusted engine data. See the system
+contract and `ui.restrictedInformation`; this does not make arbitrary hidden
+board entities safe or turn client assets into a secret store.
+
+
 A game is a sequence of levels, each with goal conditions. The DSL is interpreted by a fixed engine — game packs contain data and assets, never executable code.
 
 ---

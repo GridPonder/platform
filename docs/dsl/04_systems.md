@@ -549,6 +549,8 @@ never half-apply an exchange, and every legal exchange stays reversible.
 | `tape` | object | — | Optional. Drives the system from a stored programme instead of from the action's direction. See [Tape-driven stepping](#tape-driven-stepping). |
 | `claim` | object | — | Optional. When present, an actor that reaches a new cell also claims it in a territory layer. See below. |
 | `excavate` | object | — | Optional. Lets actors cut through terrain that would otherwise block them, backfilling the cell they leave. See [Excavating movers](#excavating-movers). |
+| `blockingLayers` | array of strings | `[]` | Other layers whose occupied cells block a mover exactly like another actor — for example a patrol moved by a second, `tape`-driven instance of this system. Read once at the start of the move. Non-string or unknown layer ids are ignored. |
+| `rejectNoOpMoves` | boolean | `false` | Veto a move in which no actor changes cell, so pushing every actor into a wall is not a free wait. A vetoed move costs no action and never reaches NPC resolution, so `turn_cycle` clocks and tapes hold still. Read strictly: only the boolean `true` enables it. Ignored when `tape` is set. |
 
 `claim` object:
 
@@ -2369,3 +2371,70 @@ These types are reserved for future built-in systems:
 - `rule_tiles` — Baba-Is-You-style mutable rule objects
 - `rotate_flip_board` — rotate/flip the entire board (not just an overlay region)
 - `spawners` — periodic entity spawning
+
+## `state_network` — synchronous state and sampled observations
+
+An opt-in finite boolean network. Configuration is trusted engine data; only its
+explicit public projection is player-facing. Both engines implement the same
+order: apply a control, synchronously update on a pulse, sample the selected
+output, check completion/exhaustion, project public variables and board indicators.
+
+Configuration fields:
+
+- `inputs`: unique input identifiers. Every pulse control supplies every bit.
+- `nodes`: `{id, op, inputs, initial?}`. `copy`, `toggle`, `not` take one input;
+  `and`, `or`, `xor` take two. Sources name an input or node. Initial bit defaults
+  to zero. Nodes read **old** node outputs and the pulse's new input bits.
+  Declaration order has no effect; feedback reads the previous tick.
+- `counter2` and `counter3` are one-input node operations: their private phase starts
+  at zero, advances modulo 2/3 on a high feed, and emits 1 only on the wraparound
+  cycle. A low feed preserves phase and emits 0. Phase advances while clamped.
+  `latch` takes `[set, reset]`, holds its old bit without either input, and gives
+  reset priority. Its visible memory is an ordinary node bit.
+- `parkCounters`: optional boolean, default false. When true, completion also
+  requires every counter phase to be zero; ordinary `safe` only checks bits.
+- `energy`: positive integer shared by pulses and transactions.
+- `probes`: public socket name → node identifier; `initialProbe` selects a socket.
+- `controls`: action id → `{type, ...}`. `pulse` supplies `inputs`; `probe` selects
+  socket `target`; `clamp` selects node `target` (empty string releases it);
+  `commit` names a transaction `target`. Unmapped actions are left to other systems.
+- `tasks`: transaction name → `{requires: {node: bit}, closes?: [socket], after?: [transaction]}`.
+  `after` lists public prerequisites; attempting a transaction before them is
+  rejected without cost. Prerequisite identifiers must name declared transactions.
+  Commit spends one energy without pulsing, then checks current output conditions.
+  Failure is terminal and **accepted**, never a secret-dependent veto. Success
+  records the transaction and permanently closes its listed sockets. Duplicate
+  commits and closed-socket selection are rejected based only on public state.
+- `safe`: required **internal** bits at completion. A clamp cannot fake safety.
+- `readouts`: public field → variable name. Available fields are `energy`,
+  `probe`, `clamp`, `reading`, `sample`, `journal`, `complete`, `failed`,
+  `input_<input>`, `done_<transaction>`, `open_<socket>`. Private runtime names are reserved.
+- `indicators`: `{field, layer, position, kinds}` projects public fields onto
+  board entities. `kinds` maps stringified public values to entity kind ids.
+
+A clamp forces an output low immediately, including what downstream nodes read,
+without resetting memory; the node still updates on every pulse. Moving a probe
+or clamp is unpowered and does not refresh a reading. Sampling happens only after
+a pulse; `sample` records the socket that produced the last reading, independently
+of current selection. `reading=-1` means no sample or a closed socket. `journal`
+records each powered input, clamp position and sample, plus transaction outcomes.
+The internal runtime map `__network_<system id>` participates in undo/state copies
+but must never be serialized as a player observation. Only declared public readouts
+and projected board cells should be exposed. Events contain no hidden values.
+
+All transactions complete plus safe internal bits sets `complete=1`. A failed
+transaction or exhaustion without completion sets `failed=1`. Declare normal
+`variable_threshold` goals/lose conditions over their projected variables. Winning
+on the last energy unit is allowed. Configure positive budgets and at least one
+nontrivial obligation; no automatic initial-state victory is evaluated here.
+
+For restricted observations, use `ui.restrictedInformation: true` and explicit
+public rules listing permitted component/wiring alternatives. This suppresses app
+undo, hints and action previews; Solve still walks the authored solution, as an
+assisted attempt that earns no progress. Restart begins another attempt. This is
+an interface boundary, **not** protection against inspecting downloaded assets,
+engine configuration, debugger, trusted previews or full state. Evaluated agents
+must receive only observations/actions, without source, solutions or state dumps.
+Validate a single observation-dependent strategy across all permitted models;
+separate full-state solutions do not prove player solvability. Include the model
+identity in verifier memoization even when current node values coincide.
