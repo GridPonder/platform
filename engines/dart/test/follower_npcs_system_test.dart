@@ -263,6 +263,25 @@ void _expectRejects(
 }
 
 void main() {
+  test('singleton priority does not reorder trains', () {
+    final game = _shaftGame(behaviors: {
+      'walker': {'type': 'patrol'},
+      'priority': {'type': 'patrol', 'resolutionPriority': -1},
+    });
+    final engine = _engineFor(
+        game,
+        _shaftLevelJson([
+          (1, 0, 'walker', 'right', 'a'),
+          (3, 0, 'priority', 'left', 'b'),
+        ]));
+    _beat(engine);
+    expect(
+        engine.state.board
+            .getEntity('actors', const Position(2, 0))
+            ?.param('shaft'),
+        'a');
+  });
+
   test('resolution priority changes sight order while preserving the default',
       () {
     for (final priority in [0, -1]) {

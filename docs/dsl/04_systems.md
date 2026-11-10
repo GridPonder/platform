@@ -881,16 +881,15 @@ checked.
 | `lethalContact` | boolean | `false` | Allow the NPC to step onto the avatar. On contact it increments `contactVariable` and emits `avatar_caught`. When `false` the avatar's cell is impassable, so a seeking NPC with no other distance-reducing step stands still and a `patrol` or `clockwise` NPC turns around — which makes the avatar's body a usable, movable blocker. Applies to every behavior, so a patrolling hazard has to declare its lethality rather than inherit it. |
 | `gazeParam` | string | — | `toward_avatar` only: entity param to write each turn with the cardinal direction of the avatar while the NPC can see it, or `rest` when it cannot. Pair it with [`spriteParam`](02_game.md#entity-kinds) to give the NPC a per-direction look. Refreshed before the `frequency` gate and whether or not a step happens, since gaze is about seeing rather than moving. A behavior without `requiresLineOfSight` always counts as seeing the avatar, so it never rests. Levels should seed the param to match their opening geometry — the system only writes it during a turn, so the first frame shows whatever the level authored. |
 
-The Flutter sight pulse plays when a source first detects the avatar, then
-stays quiet during continuous detection. It appears after the avatar moves and
-before the source's movement animation. Losing sight re-arms that source's
-pulse independently of other sources. Detection events and rule execution
-still run every turn. A persistent status sprite can use
-[`display.followAvatar`](02_game.md#display) to follow the avatar's movement.
+Flutter packs may opt into an avatar sight pulse with
+[`avatar.sightPulse`](06_theme.md#additional-avatar-and-feedback-options).
+Detection events and rule execution still run every turn.
 
 **Behavior:**
-1. Collect NPCs from the `actors` layer by `resolutionPriority`, then row-major order. The board is
-   mutated as they resolve, so a later NPC sees earlier moves this turn.
+1. Collect NPCs from the `actors` layer in row-major order. Resolve linked
+   trains first, in that order, then single NPCs by `resolutionPriority`,
+   breaking ties in row-major order. The board is mutated as they resolve,
+   so a later NPC sees earlier moves this turn.
 2. Skip an NPC whose `frequency` gate does not admit this turn.
 3. Compute one candidate step:
    - `toward_avatar`, `toward_tag`, `toward_color` — the first passable cardinal

@@ -1054,12 +1054,14 @@ class BoardRenderer extends StatelessWidget {
                       painter: _LineOfSightFeedbackPainter(
                         lineOfSightFeedbacks,
                         cellSize,
+                        packService.theme?.avatar?.sightPulse ?? false,
                       ),
                     ),
                   ),
                 ),
               for (final feedback in lineOfSightFeedbacks)
-                if (feedback.kind != 'avatar')
+                if (feedback.kind != 'avatar' ||
+                    packService.theme?.avatar?.sightPulse != true)
                   _buildLineOfSightTargetFeedback(feedback, cellSize),
               if (cellEffects case final effects?)
                 Positioned.fill(
@@ -1887,7 +1889,13 @@ class _LineOfSightFeedbackPainter extends CustomPainter {
   final List<LineOfSightFeedback> feedbacks;
   final double cellSize;
 
-  const _LineOfSightFeedbackPainter(this.feedbacks, this.cellSize);
+  final bool avatarSightPulse;
+
+  const _LineOfSightFeedbackPainter(
+    this.feedbacks,
+    this.cellSize,
+    this.avatarSightPulse,
+  );
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1913,7 +1921,7 @@ class _LineOfSightFeedbackPainter extends CustomPainter {
         (feedback.target.x + 0.5) * cellSize,
         (feedback.target.y + 0.5) * cellSize,
       );
-      if (feedback.kind == 'avatar') {
+      if (avatarSightPulse && feedback.kind == 'avatar') {
         canvas.drawLine(source, target, avatarPaint);
       } else {
         canvas.drawLine(source, target, targetGlow);
@@ -1925,7 +1933,8 @@ class _LineOfSightFeedbackPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _LineOfSightFeedbackPainter oldDelegate) {
     return oldDelegate.feedbacks != feedbacks ||
-        oldDelegate.cellSize != cellSize;
+        oldDelegate.cellSize != cellSize ||
+        oldDelegate.avatarSightPulse != avatarSightPulse;
   }
 }
 

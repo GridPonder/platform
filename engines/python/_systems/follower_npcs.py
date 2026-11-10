@@ -58,13 +58,6 @@ class FollowerNpcsSystem(GameSystem):
 
         # Collect NPC positions first so the board can be mutated while iterating.
         npc_entries = self._npc_entries(state, game, config)
-        # Stable ordering preserves board order among equal priorities.
-        npc_entries.sort(key=lambda entry: (
-            behaviors.get(str(entry[1].param("behavior")), {}).get("resolutionPriority", 0)
-            if isinstance(behaviors.get(str(entry[1].param("behavior"))), dict)
-            else 0
-        ))
-
         # Cells occupied by NPCs after this turn's moves, seeded with every NPC
         # that has not moved yet, so two NPCs cannot land on the same cell.
         occupied_after_move: set[Pos] = {pos for pos, _ in npc_entries}
@@ -94,9 +87,12 @@ class FollowerNpcsSystem(GameSystem):
                     occupied_after_move, events,
                 )
 
-        for npc_pos, npc_entity in npc_entries:
-            if self._shaft_of(npc_entity) is not None:
-                continue  # already resolved in the train pass
+        def priority(entry: tuple[Pos, Entity]) -> int:
+            behavior = behaviors.get(str(entry[1].param("behavior")))
+            return behavior.get("resolutionPriority", 0) if isinstance(behavior, dict) else 0
+
+        singletons = (entry for entry in npc_entries if self._shaft_of(entry[1]) is None)
+        for npc_pos, npc_entity in sorted(singletons, key=priority):
             behavior_name = npc_entity.param("behavior")
             if behavior_name is None:
                 continue

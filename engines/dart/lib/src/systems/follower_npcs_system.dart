@@ -26,43 +26,14 @@ class FollowerNpcsSystem extends GameSystem {
   ) {
     final config = game.systemConfig(id, {});
 
-    final npcTagsRaw = config['npcTags'] as List<dynamic>? ?? ['npc'];
-    final npcTags = npcTagsRaw.map((t) => t.toString()).toList();
-
     final behaviorsConfig = config['behaviors'] as Map<String, dynamic>? ?? {};
 
     final contactVariable = config['contactVariable'] as String? ?? 'caught';
 
     final board = state.board;
-    final actorsLayer = board.layers['actors'];
-    if (actorsLayer == null) return const [];
-
+    final npcEntries = _npcEntries(state, game, config);
+    if (npcEntries.isEmpty) return const [];
     final events = <GameEvent>[];
-
-    // Collect all NPC positions first to avoid mutation during iteration
-    final npcEntries = <MapEntry<Position, EntityInstance>>[];
-    for (final entry in actorsLayer.entries()) {
-      final entity = entry.value;
-      final isNpc = npcTags.any((tag) => game.hasTag(entity.kind, tag));
-      if (isNpc) {
-        npcEntries.add(entry);
-      }
-    }
-
-    int priority(MapEntry<Position, EntityInstance> entry) {
-      final behavior =
-          behaviorsConfig[entry.value.param('behavior')?.toString()];
-      return behavior is Map
-          ? (behavior['resolutionPriority'] as int? ?? 0)
-          : 0;
-    }
-
-    npcEntries.sort((a, b) {
-      final byPriority = priority(a).compareTo(priority(b));
-      if (byPriority != 0) return byPriority;
-      final byRow = a.key.y.compareTo(b.key.y);
-      return byRow != 0 ? byRow : a.key.x.compareTo(b.key.x);
-    });
 
     // Track positions occupied by NPCs this turn (after moves) to avoid collisions
     final occupiedAfterMove = <Position>{};
@@ -107,11 +78,25 @@ class FollowerNpcsSystem extends GameSystem {
       }
     }
 
-    for (final entry in npcEntries) {
+    int priority(MapEntry<Position, EntityInstance> entry) {
+      final behavior =
+          behaviorsConfig[entry.value.param('behavior')?.toString()];
+      return behavior is Map
+          ? (behavior['resolutionPriority'] as int? ?? 0)
+          : 0;
+    }
+
+    final singletons =
+        npcEntries.where((entry) => _shaftOf(entry.value) == null).toList()
+          ..sort((a, b) {
+            final byPriority = priority(a).compareTo(priority(b));
+            if (byPriority != 0) return byPriority;
+            final byRow = a.key.y.compareTo(b.key.y);
+            return byRow != 0 ? byRow : a.key.x.compareTo(b.key.x);
+          });
+    for (final entry in singletons) {
       final npcPos = entry.key;
       final npcEntity = entry.value;
-
-      if (_shaftOf(npcEntity) != null) continue; // resolved in the train pass
 
       final behaviorName = npcEntity.param('behavior')?.toString();
       if (behaviorName == null) continue;

@@ -389,6 +389,11 @@ and `cell_claimed`.
 `avatar.walkBob` and `avatar.walkTiltDegrees` apply a one-step gait while
 the avatar moves. Both default to zero.
 
+Set `avatar.sightPulse` to `true` to show a red line on sight acquisition,
+after the avatar step and before the remaining staged motion. The line plays
+again when that source loses and reacquires sight. It replaces the default
+line and target highlight for avatar detections. The option defaults to `false`.
+
 The renderer can replay synchronous threshold events as charge, explosion,
 transfer, and switch phases. These are presentation only; each engine turn
 is still atomic. Theme palette keys `cascade_click`, `cascade_incoming`,

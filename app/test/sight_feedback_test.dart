@@ -127,7 +127,7 @@ void main() {
     expect(tracker.advance([_seen(0, 7)], _game), hasLength(1));
   });
 
-  test('non-avatar detections keep their per-event feedback', () {
+  test('non-avatar detections do not enter the avatar tracker', () {
     final tracker = SightFeedbackTracker();
     final event = GameEvent.lineOfSightDetected(
       const Position(0, 0),
@@ -136,7 +136,6 @@ void main() {
       'fixed',
       'camera',
     );
-    expect(tracker.advance([event], _game), [event]);
-    expect(tracker.advance([event], _game), [event]);
+    expect(tracker.advance([event], _game), isEmpty);
   });
 }

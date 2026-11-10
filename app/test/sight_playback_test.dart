@@ -13,7 +13,11 @@ import 'package:gridponder_app/src/widgets/board_renderer.dart';
 import 'package:gridponder_engine/engine.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-Future<PackService> _pack({int sensorX = 5}) => PackService.loadFromEntry(
+Future<PackService> _pack({
+  int sensorX = 5,
+  bool sightPulse = true,
+  bool syncMotion = false,
+}) => PackService.loadFromEntry(
   PackEntry(
     id: 'sight_playback_test',
     isInstalled: true,
@@ -38,6 +42,17 @@ Future<PackService> _pack({int sensorX = 5}) => PackService.loadFromEntry(
               'tags': ['walkable'],
               'symbol': '.',
             },
+            if (syncMotion)
+              'cart': {
+                'layer': 'actors',
+                'tags': ['npc'],
+                'symbol': 'c',
+                'display': {
+                  'type': 'label',
+                  'label': 'C',
+                  'moveWithAvatar': true,
+                },
+              },
             'sensor': {
               'layer': 'actors',
               'tags': ['npc'],
@@ -63,6 +78,7 @@ Future<PackService> _pack({int sensorX = 5}) => PackService.loadFromEntry(
               'type': 'follower_npcs',
               'config': {
                 'behaviors': {
+                  if (syncMotion) 'travel': {'type': 'patrol'},
                   'seek': {
                     'type': 'toward_avatar',
                     'requiresLineOfSight': true,
@@ -76,7 +92,7 @@ Future<PackService> _pack({int sensorX = 5}) => PackService.loadFromEntry(
           ],
         },
         'theme.json': {
-          'avatar': {'visible': false},
+          'avatar': {'visible': false, if (sightPulse) 'sightPulse': true},
         },
         'levels/level.json': {
           'id': 'level',
@@ -86,6 +102,13 @@ Future<PackService> _pack({int sensorX = 5}) => PackService.loadFromEntry(
               'actors': {
                 'format': 'sparse',
                 'entries': [
+                  if (syncMotion)
+                    {
+                      'position': [0, 0],
+                      'kind': 'cart',
+                      'behavior': 'travel',
+                      'facing': 'right',
+                    },
                   {
                     'position': [sensorX, 2],
                     'kind': 'sensor',
@@ -193,6 +216,69 @@ void main() {
     },
   );
 
+  testWidgets('opted-in movement overlaps a single avatar step', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final pack = await _pack(syncMotion: true);
+    final settings = await SettingsService.create();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PlayScreen(
+          packService: pack,
+          settings: settings,
+          startLevelId: 'level',
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 40));
+    final board = tester.widget<BoardRenderer>(find.byType(BoardRenderer));
+    expect(board.avatarMotion?.value, isNotNull);
+    expect(board.movingSprites?.value, hasLength(1));
+    expect(board.lineOfSightFeedbacks, isEmpty);
+    for (var i = 0; i < 30; i++) {
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+  });
+
+  testWidgets('default sight feedback plays after motion on every detection', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final pack = await _pack(sightPulse: false);
+    final settings = await SettingsService.create();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PlayScreen(
+          packService: pack,
+          settings: settings,
+          startLevelId: 'level',
+        ),
+      ),
+    );
+    await tester.pump();
+
+    for (final (key, source) in [
+      (LogicalKeyboardKey.arrowDown, const Position(4, 2)),
+      (LogicalKeyboardKey.arrowLeft, const Position(3, 2)),
+    ]) {
+      await tester.sendKeyEvent(key);
+      var sawFeedback = false;
+      for (var i = 0; i < 40; i++) {
+        await tester.pump(const Duration(milliseconds: 20));
+        final board = tester.widget<BoardRenderer>(find.byType(BoardRenderer));
+        if (board.lineOfSightFeedbacks.isEmpty) continue;
+        expect(board.lineOfSightFeedbacks.single.source, source);
+        expect(board.movingSprites?.value, isEmpty);
+        sawFeedback = true;
+      }
+      expect(sawFeedback, isTrue);
+    }
+  });
+
   testWidgets('a stationary observer does not leave the board held', (
     tester,
   ) async {
@@ -234,6 +320,7 @@ void main() {
     tester,
   ) async {
     final pack = await _pack();
+    final defaultPack = await _pack(sightPulse: false);
     final state = LevelState(
       board: Board.fromJson({
         'size': [4, 3],
@@ -242,15 +329,15 @@ void main() {
       variables: {},
     );
 
-    Future<void> show(String kind) => tester.pumpWidget(
+    Future<void> show(String kind, PackService service) => tester.pumpWidget(
       MaterialApp(
         home: SizedBox(
           width: 280,
           height: 210,
           child: BoardRenderer(
             state: state,
-            game: pack.game,
-            packService: pack,
+            game: service.game,
+            packService: service,
             lineOfSightFeedbacks: [
               LineOfSightFeedback(
                 source: const Position(0, 1),
@@ -272,7 +359,7 @@ void main() {
               painter.runtimeType.toString() == '_LineOfSightFeedbackPainter',
         );
 
-    await show('sensor');
+    await show('avatar', defaultPack);
     expect(find.byIcon(Icons.auto_awesome), findsOneWidget);
     expect(
       (Canvas canvas) => sightPainter().paint(canvas, const Size(280, 210)),
@@ -281,7 +368,16 @@ void main() {
         ..line(color: const Color(0xFFFFD54F).withValues(alpha: 0.9)),
     );
 
-    await show('avatar');
+    await show('sensor', pack);
+    expect(find.byIcon(Icons.auto_awesome), findsOneWidget);
+    expect(
+      (Canvas canvas) => sightPainter().paint(canvas, const Size(280, 210)),
+      paints
+        ..line(color: const Color(0xFFFFF176).withValues(alpha: 0.32))
+        ..line(color: const Color(0xFFFFD54F).withValues(alpha: 0.9)),
+    );
+
+    await show('avatar', pack);
     expect(find.byIcon(Icons.auto_awesome), findsNothing);
     expect(
       (Canvas canvas) => sightPainter().paint(canvas, const Size(280, 210)),

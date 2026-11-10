@@ -1,7 +1,7 @@
 import 'package:gridponder_engine/engine.dart';
 
 /// Origins of actors reported at their destinations in this turn's events.
-Map<Position, Position> sightSourceOrigins(Iterable<GameEvent> events) {
+Map<Position, Position> _sightSourceOrigins(Iterable<GameEvent> events) {
   final origins = <Position, Position>{};
   for (final event in events) {
     if (event.type != 'npc_moved' && event.type != 'actor_moved') continue;
@@ -15,20 +15,19 @@ Map<Position, Position> sightSourceOrigins(Iterable<GameEvent> events) {
 /// Pulses on acquiring the avatar, including when the source moves.
 /// Actor IDs can be derived from their starting cell, so actor relations use
 /// their end cell and resolve the next turn's origin through movement events.
-/// Non-avatar detections remain per-event feedback.
+/// Non-avatar detections are handled separately by the caller.
 class SightFeedbackTracker {
   Set<String> _active = {};
   final List<Set<String>> _history = [];
 
   List<GameEvent> advance(List<GameEvent> events, GameDefinition game) {
     _history.add(_active);
-    final origins = sightSourceOrigins(events);
+    final origins = _sightSourceOrigins(events);
     final current = <String>{};
     final acquired = <GameEvent>[];
     for (final event in events) {
-      if (event.type != 'line_of_sight_detected') continue;
-      if (event.payload['kind'] != 'avatar') {
-        acquired.add(event);
+      if (event.type != 'line_of_sight_detected' ||
+          event.payload['kind'] != 'avatar') {
         continue;
       }
       final position = event.payload['sourcePosition'];

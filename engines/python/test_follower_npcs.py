@@ -915,7 +915,21 @@ TESTS_SHAFT_STATUS = [
 ]
 
 
+def test_singleton_priority_does_not_reorder_trains():
+    game = _shaft_game(behaviors={
+        "walker": {"type": "patrol"},
+        "priority": {"type": "patrol", "resolutionPriority": -1},
+    })
+    engine = TurnEngine(game, _shaft_level([
+        (1, 0, "walker", "right", "a"),
+        (3, 0, "priority", "left", "b"),
+    ]))
+    engine.execute_turn("move", {"direction": "down"})
+    assert engine.state.board.get_entity("actors", Pos(2, 0)).param("shaft") == "a"
+
+
 TESTS_SHAFT = [
+    test_singleton_priority_does_not_reorder_trains,
     test_unshafted_board_is_unchanged_by_the_shaft_feature,
     test_shafted_pair_steps_in_lockstep,
     test_blocking_one_member_reverses_the_whole_train,
