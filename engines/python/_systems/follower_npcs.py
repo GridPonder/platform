@@ -58,6 +58,12 @@ class FollowerNpcsSystem(GameSystem):
 
         # Collect NPC positions first so the board can be mutated while iterating.
         npc_entries = self._npc_entries(state, game, config)
+        # Stable ordering preserves board order among equal priorities.
+        npc_entries.sort(key=lambda entry: (
+            behaviors.get(str(entry[1].param("behavior")), {}).get("resolutionPriority", 0)
+            if isinstance(behaviors.get(str(entry[1].param("behavior"))), dict)
+            else 0
+        ))
 
         # Cells occupied by NPCs after this turn's moves, seeded with every NPC
         # that has not moved yet, so two NPCs cannot land on the same cell.

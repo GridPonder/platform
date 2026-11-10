@@ -263,6 +263,34 @@ void _expectRejects(
 }
 
 void main() {
+  test('resolution priority changes sight order while preserving the default',
+      () {
+    for (final priority in [0, -1]) {
+      final game = _makeGame({
+        'type': 'toward_avatar',
+        'requiresLineOfSight': true,
+        'blockingLayers': ['objects', 'actors'],
+      });
+      final behaviors = game.systems[1].config['behaviors'] as Map;
+      behaviors['patrol'] = {'type': 'patrol', 'resolutionPriority': priority};
+      final level = _levelJson(avatar: [3, 0], watcher: [1, 1]);
+      final board = level['board'] as Map;
+      final layers = board['layers'] as Map;
+      final actors = layers['actors'] as Map;
+      (actors['entries'] as List).add({
+        'position': [2, 1],
+        'kind': 'watcher',
+        'behavior': 'patrol',
+        'facing': 'down',
+      });
+      final engine = _engineFor(game, level);
+      engine.executeTurn(_move('down'));
+      final expected = Position(priority == 0 ? 1 : 2, 1);
+      expect(
+          engine.state.board.getEntity('actors', expected)?.param('behavior'),
+          'hunt');
+    }
+  });
   group('follower_npcs lethal contact', () {
     test('stepping onto the avatar loses the level', () {
       final game = _makeGame({

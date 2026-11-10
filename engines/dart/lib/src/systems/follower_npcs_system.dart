@@ -49,6 +49,21 @@ class FollowerNpcsSystem extends GameSystem {
       }
     }
 
+    int priority(MapEntry<Position, EntityInstance> entry) {
+      final behavior =
+          behaviorsConfig[entry.value.param('behavior')?.toString()];
+      return behavior is Map
+          ? (behavior['resolutionPriority'] as int? ?? 0)
+          : 0;
+    }
+
+    npcEntries.sort((a, b) {
+      final byPriority = priority(a).compareTo(priority(b));
+      if (byPriority != 0) return byPriority;
+      final byRow = a.key.y.compareTo(b.key.y);
+      return byRow != 0 ? byRow : a.key.x.compareTo(b.key.x);
+    });
+
     // Track positions occupied by NPCs this turn (after moves) to avoid collisions
     final occupiedAfterMove = <Position>{};
     // Pre-populate with NPC positions that haven't moved yet

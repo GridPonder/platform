@@ -938,7 +938,24 @@ TESTS_SHAFT = [
 ]
 
 
+def test_resolution_priority_changes_sight_order_without_changing_default():
+    for priority, expected in ((0, Pos(1, 1)), (-1, Pos(2, 1))):
+        game = _make_game({"type": "toward_avatar", "requiresLineOfSight": True,
+                           "blockingLayers": ["objects", "actors"]})
+        game.systems[1]["config"]["behaviors"]["patrol"] = {
+            "type": "patrol", "resolutionPriority": priority,
+        }
+        level = _make_level(avatar=(3, 0), watcher=(1, 1))
+        level["board"]["layers"]["actors"]["entries"].append({
+            "position": [2, 1], "kind": "watcher", "behavior": "patrol", "facing": "down",
+        })
+        engine = TurnEngine(game, level)
+        engine.execute_turn("move", {"direction": "down"})
+        assert engine.state.board.get_entity("actors", expected).param("behavior") == "hunt"
+
+
 TESTS = [
+    test_resolution_priority_changes_sight_order_without_changing_default,
     test_lethal_contact_loses_the_level,
     test_contact_is_refused_without_lethal_contact,
     test_contact_variable_name_is_configurable,
