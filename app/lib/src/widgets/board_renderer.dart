@@ -625,6 +625,7 @@ class BoardRenderer extends StatelessWidget {
   /// Last known facing per actor cell, see [actorIdleFacing]. Used to render
   /// idle actor sprites after movement animation has finished.
   final Map<Position, String> actorFacingAt;
+  final Map<String, Map<Position, String>> otherFacingAt;
 
   /// When set, cell_flooded entities are rendered in this color instead of
   /// their default color — used by Flood Colors to show the last chosen color.
@@ -678,6 +679,7 @@ class BoardRenderer extends StatelessWidget {
     this.animationOverlays,
     this.onCellTap,
     this.actorFacingAt = const {},
+    this.otherFacingAt = const {},
     this.floodedColorOverride,
     this.avatarPositionOverride,
     this.avatarMotion,
@@ -743,6 +745,7 @@ class BoardRenderer extends StatelessWidget {
       cellSize: cellSize,
       entityOverride: sprite.entity,
       actorFacingAt: actorFacingAt,
+      otherFacingAt: otherFacingAt,
       floodedColorOverride: floodedColorOverride,
     );
     return Positioned(
@@ -907,6 +910,7 @@ class BoardRenderer extends StatelessWidget {
                             Position(x, y),
                           ),
                           actorFacingAt: actorFacingAt,
+                          otherFacingAt: otherFacingAt,
                           floodedColorOverride: floodedColorOverride,
                           bodyPaths: bodyPaths,
                         ),
@@ -2023,6 +2027,7 @@ class _Cell extends StatelessWidget {
   final double cellSize;
   final bool skipGround;
   final Map<Position, String> actorFacingAt;
+  final Map<String, Map<Position, String>> otherFacingAt;
   final Color? floodedColorOverride;
 
   /// When set, the cell draws this entity alone and ignores the board — used
@@ -2043,6 +2048,7 @@ class _Cell extends StatelessWidget {
     required this.cellSize,
     this.skipGround = false,
     this.actorFacingAt = const {},
+    this.otherFacingAt = const {},
     this.floodedColorOverride,
     this.entityOverride,
     this.bodyPaths = const {},
@@ -2179,9 +2185,15 @@ class _Cell extends StatelessWidget {
 
   Widget _entity(EntityInstance entity, String? layerId, [Position? pos]) {
     final kindDef = game.entityKinds[entity.kind];
-    final facingDirection = layerId == 'actors' && pos != null
-        ? actorIdleFacing(entity, pos, actorFacingAt)
-        : null;
+    final facingDirection = pos == null
+        ? null
+        : actorIdleFacing(
+            entity,
+            pos,
+            layerId == 'actors'
+                ? actorFacingAt
+                : (otherFacingAt[layerId] ?? const {}),
+          );
     // A `connectedBody` kind (e.g. the snake's trail) picks its sprite from
     // which of its neighbors are its actual predecessor/successor along the
     // owning actor's travel path, so adjacent segments connect into one

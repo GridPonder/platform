@@ -41,6 +41,34 @@ Map<Position, String> facingAfterMoves(
   return next;
 }
 
+/// Remember motion on auxiliary layers too (for example walking patrols).
+/// Separate maps prevent two entities sharing a cell on different layers
+/// from overwriting each other's facing. Never mutate undo snapshots.
+Map<String, Map<Position, String>> layeredFacingAfterMoves(
+  Map<String, Map<Position, String>> facingByLayer,
+  Iterable<({String layer, Position from, Position to, String direction})>
+  moves,
+) {
+  final byLayer =
+      <String, List<({Position from, Position to, String direction})>>{};
+  for (final move in moves) {
+    (byLayer[move.layer] ??= []).add((
+      from: move.from,
+      to: move.to,
+      direction: move.direction,
+    ));
+  }
+  if (byLayer.isEmpty) return facingByLayer;
+  return {
+    ...facingByLayer,
+    for (final entry in byLayer.entries)
+      entry.key: facingAfterMoves(
+        facingByLayer[entry.key] ?? const {},
+        entry.value,
+      ),
+  };
+}
+
 /// [facingAt] with every actor that turned this turn facing its new way.
 ///
 /// A turn is an actor whose `facing` param changed while it stayed on its
@@ -52,10 +80,11 @@ Map<Position, String> facingAfterMoves(
 Map<Position, String> facingAfterTurnsInPlace(
   Map<Position, String> facingAt,
   LevelState pre,
-  LevelState post,
-) {
-  final before = pre.board.layers['actors'];
-  final after = post.board.layers['actors'];
+  LevelState post, {
+  String layer = 'actors',
+}) {
+  final before = pre.board.layers[layer];
+  final after = post.board.layers[layer];
   if (before == null || after == null) return facingAt;
   Map<Position, String>? next;
   for (final entry in after.entries()) {
@@ -67,4 +96,26 @@ Map<Position, String> facingAfterTurnsInPlace(
     (next ??= Map<Position, String>.of(facingAt))[entry.key] = turned;
   }
   return next ?? facingAt;
+}
+
+/// [facingAfterTurnsInPlace] for every auxiliary layer whose facing is
+/// remembered, so a mover that reversed on the spot does not keep drawing its
+/// last travel direction.
+Map<String, Map<Position, String>> layeredFacingAfterTurnsInPlace(
+  Map<String, Map<Position, String>> facingByLayer,
+  LevelState pre,
+  LevelState post,
+) {
+  Map<String, Map<Position, String>>? next;
+  for (final entry in facingByLayer.entries) {
+    final turned = facingAfterTurnsInPlace(
+      entry.value,
+      pre,
+      post,
+      layer: entry.key,
+    );
+    if (identical(turned, entry.value)) continue;
+    (next ??= Map.of(facingByLayer))[entry.key] = turned;
+  }
+  return next ?? facingByLayer;
 }

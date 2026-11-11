@@ -3,6 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:gridponder_engine/engine.dart';
 import '../services/hint_service.dart';
 import 'board_renderer.dart' show cellNamedColor;
+import 'network_controls.dart';
+import 'network_input_controller.dart';
+import 'network_presentation.dart';
 
 typedef ActionCallback = void Function(GameAction action);
 
@@ -16,6 +19,7 @@ class ControlsWidget extends StatefulWidget {
   final VoidCallback onExit;
   final VoidCallback? onHint;
   final VoidCallback? onSolve;
+  final VoidCallback? onTeach;
   final bool canUndo;
   final GameDefinition game;
   final List<HintStatus> hintStatuses;
@@ -49,6 +53,15 @@ class ControlsWidget extends StatefulWidget {
   /// buttons. An action with no gestureMap entry at all, or with a `button`
   /// entry, still gets its default auto-rendered button.
   final List<GestureBinding>? gestureMap;
+  /// Replaces Undo with a visible Restart button. For restricted-information
+  /// play, where undo is disabled and restarting is the only way back.
+  final bool showRestart;
+  final Map<String, dynamic> publicVariables;
+  final bool enabled;
+  final NetworkInputController? networkInputController;
+  /// The level's network with all public fields. Without it, a network's
+  /// panel falls back to the fields its `readouts` copy into variables.
+  final NetworkView? networkView;
 
   const ControlsWidget({
     super.key,
@@ -58,6 +71,7 @@ class ControlsWidget extends StatefulWidget {
     required this.onExit,
     this.onHint,
     this.onSolve,
+    this.onTeach,
     required this.canUndo,
     required this.game,
     this.hintStatuses = const [],
@@ -67,6 +81,11 @@ class ControlsWidget extends StatefulWidget {
     this.actionSprites,
     this.palette,
     this.gestureMap,
+    this.showRestart = false,
+    this.publicVariables = const {},
+    this.enabled = true,
+    this.networkInputController,
+    this.networkView,
   });
 
   @override
@@ -108,24 +127,56 @@ class _ControlsWidgetState extends State<ControlsWidget> {
 
   @override
   Widget build(BuildContext context) {
-    final actions = _buttonActions.map((a) => _actionButton(a)).toList();
+    final networks = widget.game.systems
+        .where((s) => s.enabled && s.type == 'state_network').toList();
+    final networkActions = <String>{
+      for (final s in networks)
+        ...((s.config['controls'] as Map?)?.keys.cast<String>() ?? <String>[]),
+    };
+    final actions = _buttonActions
+        .where((a) => !networkActions.contains(a.id))
+        .map((a) => _actionButton(a)).toList();
+    final panels = [
+      for (final s in networks)
+        NetworkControls(
+          key: ValueKey(s.id),
+          view: widget.networkView?.systemId == s.id
+              ? widget.networkView!
+              : NetworkView(s.config, {
+                  for (final e in (s.config['readouts'] as Map? ?? {}).entries)
+                    e.key as String: widget.publicVariables[e.value],
+                }),
+          inputController: widget.networkInputController,
+          enabled: widget.enabled,
+          onAction: widget.onAction,
+        ),
+    ];
     final controls = Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
         if (widget.hintStatuses.isNotEmpty)
           _HintBtn(statuses: widget.hintStatuses, onTap: widget.onHint),
+        if (widget.onTeach != null)
+          _CtrlBtn(icon: Icons.school_outlined, label: 'Teach me', onTap: widget.onTeach),
         if (widget.onSolve != null)
           _CtrlBtn(
             icon: Icons.skip_next,
             label: 'Solve',
             onTap: widget.onSolve,
           ),
-        _CtrlBtn(
-          icon: Icons.undo,
-          label: 'Undo',
-          onTap: widget.canUndo ? widget.onUndo : null,
-          onLongPress: widget.onReset,
-        ),
+        if (widget.showRestart)
+          _CtrlBtn(
+            icon: Icons.refresh,
+            label: 'Restart',
+            onTap: widget.onReset,
+          )
+        else
+          _CtrlBtn(
+            icon: Icons.undo,
+            label: 'Undo',
+            onTap: widget.canUndo ? widget.onUndo : null,
+            onLongPress: widget.onReset,
+          ),
         _CtrlBtn(
           icon: Icons.exit_to_app,
           label: 'Exit',
@@ -141,11 +192,18 @@ class _ControlsWidgetState extends State<ControlsWidget> {
           )
         : null;
 
-    if (actions.isEmpty && diagBtns == null) return controls;
+    if (actions.isEmpty && diagBtns == null && panels.isEmpty) return controls;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
+        if (panels.isNotEmpty)
+          ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * .32,
+            ),
+            child: SingleChildScrollView(child: Column(children: panels)),
+          ),
         if (diagBtns != null) ...[diagBtns, const SizedBox(height: 6)],
         if (actions.isNotEmpty) ...[
           Wrap(
@@ -191,7 +249,7 @@ class _ControlsWidgetState extends State<ControlsWidget> {
         'place_forward_slash' => Icons.north_east,
         _ => Icons.play_arrow_outlined,
       };
-      final label = switch (actionDef.id) {
+      final label = actionDef.label ?? switch (actionDef.id) {
         'rotate' => 'Rotate',
         'flip' => 'Flip',
         'clone' => 'Clone',

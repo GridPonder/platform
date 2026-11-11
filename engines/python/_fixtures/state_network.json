@@ -1,0 +1,182 @@
+{
+  "game": {
+    "layers": [
+      {
+        "id": "ground",
+        "occupancy": "exactly_one",
+        "default": "empty"
+      }
+    ],
+    "entityKinds": {
+      "empty": {
+        "layer": "ground",
+        "symbol": ".",
+        "tags": []
+      }
+    },
+    "actions": [
+      {
+        "id": "on",
+        "params": {}
+      },
+      {
+        "id": "off",
+        "params": {}
+      },
+      {
+        "id": "mask",
+        "params": {}
+      },
+      {
+        "id": "unmask",
+        "params": {}
+      },
+      {
+        "id": "sample",
+        "params": {}
+      },
+      {
+        "id": "send",
+        "params": {}
+      }
+    ],
+    "systems": [
+      {
+        "id": "net",
+        "type": "state_network",
+        "config": {
+          "inputs": [
+            "p"
+          ],
+          "nodes": [
+            {
+              "id": "n",
+              "op": "toggle",
+              "inputs": [
+                "p"
+              ]
+            },
+            {
+              "id": "m",
+              "op": "copy",
+              "inputs": [
+                "n"
+              ]
+            }
+          ],
+          "energy": 6,
+          "probes": {
+            "port": "n"
+          },
+          "initialProbe": "port",
+          "safe": {
+            "n": 0,
+            "m": 0
+          },
+          "tasks": {
+            "job": {
+              "requires": {
+                "n": 1
+              }
+            }
+          },
+          "controls": {
+            "on": {
+              "type": "pulse",
+              "inputs": {
+                "p": 1
+              }
+            },
+            "off": {
+              "type": "pulse",
+              "inputs": {
+                "p": 0
+              }
+            },
+            "mask": {
+              "type": "clamp",
+              "target": "n"
+            },
+            "unmask": {
+              "type": "clamp",
+              "target": ""
+            },
+            "sample": {
+              "type": "probe",
+              "target": "port"
+            },
+            "send": {
+              "type": "commit",
+              "target": "job"
+            }
+          },
+          "readouts": {
+            "energy": "energy",
+            "reading": "reading",
+            "journal": "journal",
+            "complete": "complete",
+            "failed": "failed"
+          }
+        }
+      }
+    ],
+    "ui": {
+      "readouts": [
+        {
+          "variable": "energy",
+          "label": "energy"
+        },
+        {
+          "variable": "reading",
+          "label": "reading"
+        },
+        {
+          "variable": "journal",
+          "label": "journal"
+        },
+        {
+          "variable": "complete",
+          "label": "complete"
+        },
+        {
+          "variable": "failed",
+          "label": "failed"
+        }
+      ]
+    }
+  },
+  "level": {
+    "id": "fixture",
+    "board": {
+      "size": [
+        1,
+        1
+      ],
+      "layers": {}
+    },
+    "state": {
+      "avatar": {
+        "enabled": false
+      }
+    },
+    "goals": [
+      {
+        "id": "complete",
+        "type": "variable_threshold",
+        "config": {
+          "variable": "complete",
+          "target": 1
+        }
+      }
+    ],
+    "loseConditions": [
+      {
+        "type": "variable_threshold",
+        "config": {
+          "variable": "failed",
+          "target": 1
+        }
+      }
+    ]
+  }
+}

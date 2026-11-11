@@ -552,8 +552,8 @@ class GoalEvaluator {
         result[entry.key] = null;
         continue;
       }
-      final source = Position((rawSource[0] as num).toInt(),
-          (rawSource[1] as num).toInt());
+      final source = Position(
+          (rawSource[0] as num).toInt(), (rawSource[1] as num).toInt());
       if (!cells.contains(source)) {
         result[entry.key] = null;
         continue;
@@ -614,9 +614,8 @@ class GoalEvaluator {
     var connectedOwned = owned;
     if (requireConnected) {
       final reachedByOwner = _balanceConnected(goal.config, positions);
-      connectedOwned = reachedByOwner.values
-          .whereType<int>()
-          .fold(0, (a, b) => a + b);
+      connectedOwned =
+          reachedByOwner.values.whereType<int>().fold(0, (a, b) => a + b);
       for (final owner in owners) {
         final reached = reachedByOwner[owner];
         if (reached == null || reached != positions[owner]!.length) {
@@ -627,12 +626,124 @@ class GoalEvaluator {
     final progressNumerator = requireConnected ? connectedOwned : owned;
     final progress = claimable != 0 ? progressNumerator / claimable : 0.0;
 
+    final quotasMet = balanceQuotaTally(goal.config, state).every((t) {
+      final need = balanceQuotaCount(t.$1);
+      return t.$2.values.every((n) => n == need);
+    });
+
     final requireEqual = (goal.config['requireEqual'] as bool?) ?? true;
     final requireComplete = (goal.config['requireComplete'] as bool?) ?? true;
     final done = owned > 0 &&
         (equal || !requireEqual) &&
         (complete || !requireComplete) &&
-        connected;
+        connected &&
+        quotasMet;
     return (done, progress);
   }
+}
+
+/// Per `quotas` entry of a balance goal config: the entry, how many marked
+/// cells each owner holds, and how many marked cells are still unowned.
+///
+/// A quota `{"layer": L, "kind": K, "count": N}` requires every owner to own
+/// exactly N cells whose layer L holds an entity of kind K — e.g. one site
+/// each. One pass serves the goal, the lose condition and the renderer.
+/// Mirrors `balance_quota_tally` in engines/python/_goal.py.
+List<(Map<String, dynamic>, Map<String, int>, int)> balanceQuotaTally(
+    Map<String, dynamic> cfg, LevelState state) {
+  final territoryId = cfg['layer'] as String? ?? '';
+  final owners = (cfg['owners'] as List?)?.cast<String>() ?? const <String>[];
+  final out = <(Map<String, dynamic>, Map<String, int>, int)>[];
+  for (final raw in (cfg['quotas'] as List?) ?? const []) {
+    if (raw is! Map) continue;
+    final quota = raw.cast<String, dynamic>();
+    final marks = state.board.layers[quota['layer'] as String? ?? ''];
+    final held = {for (final o in owners) o: 0};
+    var unowned = 0;
+    if (marks != null) {
+      for (final entry in marks.entries()) {
+        if (entry.value.kind != quota['kind']) continue;
+        final owner = state.board.getEntity(territoryId, entry.key);
+        if (owner != null && held.containsKey(owner.kind)) {
+          held[owner.kind] = held[owner.kind]! + 1;
+        } else {
+          unowned++;
+        }
+      }
+    }
+    out.add((quota, held, unowned));
+  }
+  return out;
+}
+
+/// The `count` of a quota entry; anything but a non-negative int reads as 1.
+int balanceQuotaCount(Map<String, dynamic> quota) {
+  final count = quota['count'];
+  return count is int && count >= 0 ? count : 1;
+}
+
+/// True when `requireConnected` is set and some owner holds a cell that can no
+/// longer reach its `connectionSources` cell through that owner's own cells or
+/// unclaimed claimable cells. Claimed cells never change owner, so such a
+/// supply line can never be mended.
+///
+/// Only claimability decides passability — never this turn's solidity — so a
+/// closed crossing is not a cut. An owner without a valid source is never
+/// reported. `defaultKind` is the claimable layer's default kind, used when
+/// `claimableKind` is absent. Mirrors `balance_supply_cut` in
+/// engines/python/_goal.py.
+bool balanceSupplyCut(Map<String, dynamic> cfg, LevelState state,
+    {String? defaultKind}) {
+  if (cfg['requireConnected'] != true) return false;
+  final board = state.board;
+  final territoryId = cfg['layer'] as String? ?? '';
+  final groundId = cfg['claimableLayer'] as String? ?? 'ground';
+  final territory = board.layers[territoryId];
+  if (territory == null || board.layers[groundId] == null) return false;
+  final raw = cfg['claimableKind'];
+  final kinds = raw is List
+      ? raw.map((k) => k.toString()).toSet()
+      : {(raw as String?) ?? defaultKind ?? 'empty'};
+  final owners = (cfg['owners'] as List?)?.cast<String>() ?? const <String>[];
+  final positions = {for (final o in owners) o: <Position>{}};
+  for (final entry in territory.entries()) {
+    positions[entry.value.kind]?.add(entry.key);
+  }
+  final sources = cfg['connectionSources'] as Map? ?? const {};
+  for (final MapEntry(key: owner, value: cells) in positions.entries) {
+    final rawSource = sources[owner];
+    if (cells.isEmpty || rawSource is! List || rawSource.length != 2) continue;
+
+    bool passable(Position p) {
+      if (!board.isInBounds(p)) return false;
+      final mark = board.getEntity(territoryId, p);
+      if (mark != null) return mark.kind == owner;
+      final ground = board.getEntity(groundId, p);
+      return kinds.contains(ground?.kind ?? defaultKind);
+    }
+
+    final source =
+        Position((rawSource[0] as num).toInt(), (rawSource[1] as num).toInt());
+    final reached = <Position>{};
+    if (passable(source)) {
+      reached.add(source);
+      final frontier = [source];
+      while (frontier.isNotEmpty) {
+        final c = frontier.removeLast();
+        for (final n in [
+          Position(c.x + 1, c.y),
+          Position(c.x - 1, c.y),
+          Position(c.x, c.y + 1),
+          Position(c.x, c.y - 1),
+        ]) {
+          if (!reached.contains(n) && passable(n)) {
+            reached.add(n);
+            frontier.add(n);
+          }
+        }
+      }
+    }
+    if (!reached.containsAll(cells)) return true;
+  }
+  return false;
 }

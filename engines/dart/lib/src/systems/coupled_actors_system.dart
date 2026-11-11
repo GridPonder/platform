@@ -1,6 +1,7 @@
 import '../engine/game_system.dart';
 import '../models/direction.dart';
 import '../models/direction_transform.dart';
+import '../models/board.dart';
 import '../models/entity.dart';
 import '../models/event.dart';
 import '../models/game_action.dart';
@@ -85,6 +86,15 @@ String? _tapeDirection(Map<String, dynamic> tape, LevelState state) {
 /// `clearedKind`, the actor takes it, and the cell it left is backfilled with
 /// `backfillKind` unless another actor ends the turn standing there. See
 /// `excavate_policy.dart` for the semantics and the tolerance contract.
+///
+/// Optionally, `blockingLayers` lists other layers whose occupied cells block
+/// a mover like another actor (e.g. a patrol moved by a second, taped
+/// instance).
+///
+/// Optionally, `rejectNoOpMoves: true` vetoes a move in which no actor
+/// changes cell, so pushing every actor into a wall is not a free wait: a
+/// vetoed move costs no action and never reaches NPC resolution. Ignored with
+/// a `tape`.
 class CoupledActorsSystem extends GameSystem {
   const CoupledActorsSystem({required super.id})
       : super(type: 'coupled_actors');
@@ -189,6 +199,7 @@ class CoupledActorsSystem extends GameSystem {
     }
 
     final occupied = {for (final e in actors) e.key};
+    final blockers = _blockingCells(board, config);
     final events = <GameEvent>[];
     final pendingBackfill = <Position>[];
 
@@ -204,8 +215,10 @@ class CoupledActorsSystem extends GameSystem {
       // walking open ground stays an ordinary move and never backfills.
       final digging = solid &&
           isDiggable(board, game, groundLayerId, target, excavate, entity.kind);
-      final blocked =
-          !inBounds || (solid && !digging) || occupied.contains(target);
+      final blocked = !inBounds ||
+          (solid && !digging) ||
+          occupied.contains(target) ||
+          blockers.contains(target);
 
       if (blocked) {
         events.add(GameEvent.actorBlocked(entity.kind, pos));
@@ -230,6 +243,16 @@ class CoupledActorsSystem extends GameSystem {
       if (claimEvent != null) events.add(claimEvent);
     }
 
+    // A turn in which nobody moved is a free "wait" unless the game opts to
+    // veto it. A veto never reaches NPC resolution, so clocks and tapes hold
+    // still. Read strictly, like `tape.cycle`. A tape-driven machine is not
+    // the player's move, so it is never vetoed.
+    if (tape == null &&
+        config['rejectNoOpMoves'] == true &&
+        !events.any((e) => e.type == 'actor_moved')) {
+      return [GameEvent.actionVetoed()];
+    }
+
     // After every actor has resolved: `occupied` is now the final positions
     // for the turn, which is exactly what decides whether a trailing partner
     // hauled each excavator's spoil out.
@@ -238,5 +261,22 @@ class CoupledActorsSystem extends GameSystem {
     );
 
     return events;
+  }
+
+  /// Cells occupied on any `blockingLayers` layer: they block a mover just as
+  /// another actor does. Read once, before anyone moves — entities on those
+  /// layers are moved by other systems, not this one. A non-list value, or a
+  /// non-string or unknown layer id, contributes nothing. Mirrors
+  /// `_blocking_cells` in engines/python/_systems/coupled_actors.py.
+  Set<Position> _blockingCells(Board board, Map<String, dynamic> config) {
+    final raw = config['blockingLayers'];
+    if (raw is! List) return const {};
+    final cells = <Position>{};
+    for (final layerId in raw) {
+      if (layerId is! String) continue;
+      final layer = board.layers[layerId];
+      if (layer != null) cells.addAll(layer.entries().map((e) => e.key));
+    }
+    return cells;
   }
 }
