@@ -532,6 +532,21 @@ List<String> resolveBoardLayerOrder(GameDefinition game) =>
       for (final layer in game.layers) layer.id,
     ]);
 
+/// Render-only attachments. Their board cells and engine rules stay intact.
+List<EntityInstance> avatarAttachedEntities(
+  LevelState state,
+  GameDefinition game,
+) {
+  final position = state.avatar.position;
+  if (!state.avatar.enabled || position == null) return const [];
+  return [
+    for (final layer in state.board.layers.keys)
+      if (state.board.getEntity(layer, position) case final entity?)
+        if (game.entityKinds[entity.kind]?.display?['followAvatar'] == true)
+          entity,
+  ];
+}
+
 String? _motionSpritePath(
   Map<String, dynamic> motion,
   EntityInstance entity, {
@@ -640,6 +655,9 @@ class BoardRenderer extends StatelessWidget {
   /// rebuilding every cell under it — the same reason [movingSprites] is one.
   final ValueListenable<AvatarMotion?>? avatarMotion;
 
+  /// Hold the previous turn's attachments until motion has finished.
+  final List<EntityInstance>? avatarAttachmentsOverride;
+
   /// UI-only selection state for direct-manipulation multi-cell objects.
   final String? selectedMultiCellObjectId;
 
@@ -683,6 +701,7 @@ class BoardRenderer extends StatelessWidget {
     this.floodedColorOverride,
     this.avatarPositionOverride,
     this.avatarMotion,
+    this.avatarAttachmentsOverride,
     this.selectedMultiCellObjectId,
     this.selectedActorPosition,
     this.selectedCellPosition,
@@ -1039,12 +1058,15 @@ class BoardRenderer extends StatelessWidget {
                       painter: _LineOfSightFeedbackPainter(
                         lineOfSightFeedbacks,
                         cellSize,
+                        packService.theme?.avatar?.sightPulse ?? false,
                       ),
                     ),
                   ),
                 ),
               for (final feedback in lineOfSightFeedbacks)
-                _buildLineOfSightTargetFeedback(feedback, cellSize),
+                if (feedback.kind != 'avatar' ||
+                    packService.theme?.avatar?.sightPulse != true)
+                  _buildLineOfSightTargetFeedback(feedback, cellSize),
               if (cellEffects case final effects?)
                 Positioned.fill(
                   child: IgnorePointer(
@@ -1063,25 +1085,11 @@ class BoardRenderer extends StatelessWidget {
                 if (avatarMotion case final motion?)
                   ValueListenableBuilder<AvatarMotion?>(
                     valueListenable: motion,
-                    builder: (context, inFlight, _) => _buildAvatar(
-                      avatarPositionOverride != null
-                          ? state.avatar.copyWith(
-                              position: avatarPositionOverride,
-                            )
-                          : state.avatar,
-                      cellSize,
-                      motion: inFlight,
-                    ),
+                    builder: (context, inFlight, _) =>
+                        _buildAvatarLayer(cellSize, inFlight),
                   )
                 else
-                  _buildAvatar(
-                    avatarPositionOverride != null
-                        ? state.avatar.copyWith(
-                            position: avatarPositionOverride,
-                          )
-                        : state.avatar,
-                    cellSize,
-                  ),
+                  _buildAvatarLayer(cellSize, null),
               if (floatingNumbers case final numbers?)
                 Positioned.fill(
                   child: IgnorePointer(
@@ -1323,6 +1331,49 @@ class BoardRenderer extends StatelessWidget {
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAvatarLayer(double cellSize, AvatarMotion? motion) {
+    final avatar = avatarPositionOverride != null
+        ? state.avatar.copyWith(position: avatarPositionOverride)
+        : state.avatar;
+    return Positioned.fill(
+      child: Stack(
+        children: [
+          _buildAvatar(avatar, cellSize, motion: motion),
+          _buildAvatarAttachments(cellSize, motion),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAvatarAttachments(double cellSize, AvatarMotion? motion) {
+    final position = avatarPositionOverride ?? state.avatar.position!;
+    final entities =
+        avatarAttachmentsOverride ?? avatarAttachedEntities(state, game);
+    return Positioned(
+      left: (motion?.x ?? position.x.toDouble()) * cellSize,
+      top: (motion?.y ?? position.y.toDouble()) * cellSize,
+      width: cellSize,
+      height: cellSize,
+      child: IgnorePointer(
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            for (final entity in entities)
+              _Cell(
+                x: position.x,
+                y: position.y,
+                state: state,
+                game: game,
+                packService: packService,
+                cellSize: cellSize,
+                entityOverride: entity,
+              ),
+          ],
         ),
       ),
     );
@@ -1842,15 +1893,25 @@ class _LineOfSightFeedbackPainter extends CustomPainter {
   final List<LineOfSightFeedback> feedbacks;
   final double cellSize;
 
-  const _LineOfSightFeedbackPainter(this.feedbacks, this.cellSize);
+  final bool avatarSightPulse;
+
+  const _LineOfSightFeedbackPainter(
+    this.feedbacks,
+    this.cellSize,
+    this.avatarSightPulse,
+  );
 
   @override
   void paint(Canvas canvas, Size size) {
-    final linePaint = Paint()
+    final avatarPaint = Paint()
+      ..color = const Color(0xFFFF3030).withValues(alpha: 0.9)
+      ..strokeWidth = (cellSize * 0.035).clamp(1.5, 3.0)
+      ..strokeCap = StrokeCap.round;
+    final targetPaint = Paint()
       ..color = const Color(0xFFFFD54F).withValues(alpha: 0.9)
       ..strokeWidth = (cellSize * 0.075).clamp(3.0, 7.0)
       ..strokeCap = StrokeCap.round;
-    final glowPaint = Paint()
+    final targetGlow = Paint()
       ..color = const Color(0xFFFFF176).withValues(alpha: 0.32)
       ..strokeWidth = (cellSize * 0.19).clamp(8.0, 16.0)
       ..strokeCap = StrokeCap.round;
@@ -1864,15 +1925,20 @@ class _LineOfSightFeedbackPainter extends CustomPainter {
         (feedback.target.x + 0.5) * cellSize,
         (feedback.target.y + 0.5) * cellSize,
       );
-      canvas.drawLine(source, target, glowPaint);
-      canvas.drawLine(source, target, linePaint);
+      if (avatarSightPulse && feedback.kind == 'avatar') {
+        canvas.drawLine(source, target, avatarPaint);
+      } else {
+        canvas.drawLine(source, target, targetGlow);
+        canvas.drawLine(source, target, targetPaint);
+      }
     }
   }
 
   @override
   bool shouldRepaint(covariant _LineOfSightFeedbackPainter oldDelegate) {
     return oldDelegate.feedbacks != feedbacks ||
-        oldDelegate.cellSize != cellSize;
+        oldDelegate.cellSize != cellSize ||
+        oldDelegate.avatarSightPulse != avatarSightPulse;
   }
 }
 
@@ -2144,6 +2210,11 @@ class _Cell extends StatelessWidget {
   Widget _layer(String layerId, Position pos) {
     final entity = state.board.getEntity(layerId, pos);
     if (entity == null) return const SizedBox.shrink();
+    if (state.avatar.enabled &&
+        state.avatar.position == pos &&
+        game.entityKinds[entity.kind]?.display?['followAvatar'] == true) {
+      return const SizedBox.shrink();
+    }
 
     // When a kind declares "groundBeneath": true (top-level, or nested in a
     // `display` block — the older form, kept for existing packs), render the

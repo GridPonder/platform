@@ -870,6 +870,7 @@ checked.
 |-------|------|---------|-------------|
 | `type` | string | — | `toward_avatar`, `toward_tag`, `toward_color`, `patrol`, or `clockwise`. |
 | `frequency` | integer | `1` | Act only when `turnCount % frequency == 0`. The counter is incremented after this phase, so the first turn always acts. The turn counter is not part of the state key, so while an NPC with `frequency > 1` is on the board the system reports that its behaviour depends on the counter (`depends_on_turn_count` / `dependsOnTurnCount`); the benchmark's valid-action probe then counts a turn that only advanced the beat (e.g. an off-beat `wait`) as effectful. |
+| `resolutionPriority` | integer | `0` | Must be a JSON integer (fractional numbers, strings, booleans and null are rejected at load). Single NPCs with lower values resolve first; ties use board order. Linked trains resolve before single NPCs independently of this field. |
 | `solidBlocking` | boolean | `true` | Whether entities tagged `solid` on the `objects` layer block the NPC. |
 | `targetTag` | string | — | `toward_tag` only: seek the nearest entity with this tag on the `objects` or `markers` layer. |
 | `targetColor` | string | — | `toward_color` only: seek the nearest entity whose `color` param matches, on the `objects` or `actors` layer. |
@@ -880,9 +881,15 @@ checked.
 | `lethalContact` | boolean | `false` | Allow the NPC to step onto the avatar. On contact it increments `contactVariable` and emits `avatar_caught`. When `false` the avatar's cell is impassable, so a seeking NPC with no other distance-reducing step stands still and a `patrol` or `clockwise` NPC turns around — which makes the avatar's body a usable, movable blocker. Applies to every behavior, so a patrolling hazard has to declare its lethality rather than inherit it. |
 | `gazeParam` | string | — | `toward_avatar` only: entity param to write each turn with the cardinal direction of the avatar while the NPC can see it, or `rest` when it cannot. Pair it with [`spriteParam`](02_game.md#entity-kinds) to give the NPC a per-direction look. Refreshed before the `frequency` gate and whether or not a step happens, since gaze is about seeing rather than moving. A behavior without `requiresLineOfSight` always counts as seeing the avatar, so it never rests. Levels should seed the param to match their opening geometry — the system only writes it during a turn, so the first frame shows whatever the level authored. |
 
+Flutter packs may opt into an avatar sight pulse with
+[`avatar.sightPulse`](06_theme.md#additional-avatar-and-feedback-options).
+Detection events and rule execution still run every turn.
+
 **Behavior:**
-1. Collect NPCs from the `actors` layer in row-major order. The board is
-   mutated as they resolve, so a later NPC sees earlier moves this turn.
+1. Collect NPCs from the `actors` layer in row-major order. Resolve linked
+   trains first, in that order, then single NPCs by `resolutionPriority`,
+   breaking ties in row-major order. The board is mutated as they resolve,
+   so a later NPC sees earlier moves this turn.
 2. Skip an NPC whose `frequency` gate does not admit this turn.
 3. Compute one candidate step:
    - `toward_avatar`, `toward_tag`, `toward_color` — the first passable cardinal

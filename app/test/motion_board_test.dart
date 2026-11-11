@@ -53,6 +53,43 @@ String? _groundAt(LevelState s, int x) =>
     s.board.getEntity('ground', Position(x, 0))?.kind;
 
 void main() {
+  test('avatar concurrency preserves stage and shared-cell dependencies', () {
+    final game = GameDefinition.fromJson({
+      'entityKinds': {
+        'cinder': {
+          'layer': 'actors',
+          'symbol': 'c',
+          'display': {'moveWithAvatar': true},
+        },
+      },
+    }, id: 'motion_test');
+    AnimationStep step(int from, int to, int stage) => AnimationStep.entityMove(
+      Position(from, 0),
+      Position(to, 0),
+      'cinder',
+      'actors',
+      stage: stage,
+    );
+    final first = step(0, 1, 2);
+    final linked = step(1, 2, 3);
+    final independent = step(3, 4, 2);
+    final later = step(5, 6, 3);
+    final travellers = {
+      first: _cinder(0, 1),
+      linked: _cinder(1, 2),
+      independent: _cinder(3, 4),
+      later: _cinder(5, 6),
+    };
+    expect(
+      avatarConcurrentMoves(
+        [first, independent, linked, later],
+        travellers,
+        game,
+      ),
+      [independent],
+    );
+  });
+
   group('boardDuringMotion', () {
     test('does not rewind the avatar while a later mover is in flight', () {
       final post = _state(avatarX: 1, actorX: 3, burnt: {2, 3});

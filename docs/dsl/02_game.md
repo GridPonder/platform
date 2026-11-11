@@ -385,6 +385,8 @@ A `display` block on an entity kind tells the renderer how to draw the entity pr
 | `color` | string | Optional. A palette name (`"red"`), `@param:<key>` (read colour name from instance param), or `@hue:<source>` (derive an HSL colour from a numeric string — useful for value-coloured tiles). See *substitution tokens* below. |
 | `value` | string | Optional. The glyph (for `emoji`) or icon name (for `icon`). |
 | `label` | string | Optional. Text shown by the `label` type. May use the substitution tokens below. |
+| `followAvatar` | boolean | Optional Flutter render hint. An entity on the avatar's logical cell is drawn above the avatar and shares its interpolated movement position. Entities on other cells render at their own positions. Its logical cell and rules remain unchanged. The previous turn's attachments remain visible until turn motion finishes. Defaults to `false`. |
+| `moveWithAvatar` | boolean | Optional Flutter render hint. Independent moves of this kind in the first motion stage can play alongside a single-cell avatar move. Moves sharing a start or end cell with another move on the same layer keep their normal order. Turns with avatar slides, pushes, or elastic motion use normal staged playback. Defaults to `false` and does not affect turn resolution. |
 
 A `circle_label` display with `"overlay": true` keeps the kind's sprite and draws its label as a small badge in the corner; when the label resolves to nothing (an `@param:` the instance does not carry) no badge is drawn, so a kind can badge only the cells that hold the value. Optional `badgeScale` scales the badge (default `1`); smaller multi-character badges use a wider pill to preserve legibility.
 

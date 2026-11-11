@@ -12,6 +12,7 @@ import 'package:llm_dart/llm_dart.dart';
 import '../animation/actor_facing.dart';
 import '../animation/cascade_playback.dart';
 import '../animation/motion_board.dart';
+import '../animation/sight_feedback.dart';
 import '../services/hint_service.dart';
 import '../services/pack_service.dart';
 import '../services/playtest_codec.dart';
@@ -34,6 +35,7 @@ import '../widgets/board_renderer.dart'
         elasticBlockRect,
         elasticBlockRectTween,
         elasticPushObjectTravel,
+        avatarAttachedEntities,
         resolveEntityMotionFrame;
 import '../widgets/balance_panel.dart';
 import '../widgets/catalog_panel.dart';
@@ -153,6 +155,8 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
   LevelState? _preAnimState;
   Map<Position, String>? _animOverlays;
   List<LineOfSightFeedback> _lineOfSightFeedbacks = const [];
+  final _sightFeedback = SightFeedbackTracker();
+  List<EntityInstance>? _avatarAttachmentsBeforeTurn;
   Map<Position, CascadeCellFeedback> _cascadeFeedbacks = const {};
   List<CascadeTransferFeedback> _cascadeTransfers = const [];
   int _cascadePulseId = 0;
@@ -492,6 +496,11 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     }
     _actorFacingHistory.add(_actorFacingAt);
     _otherFacingHistory.add(_otherFacingAt);
+    final avatarSightPulse =
+        widget.packService.theme?.avatar?.sightPulse == true;
+    final acquiredSight = avatarSightPulse
+        ? _sightFeedback.advance(result.events, widget.packService.game)
+        : const <GameEvent>[];
     final tracking = _playtest.enabled;
     _playtest.move(
       action: action.actionId,
@@ -553,6 +562,11 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
       // with no travelling entities at all — leaves it as the correct
       // starting point for whatever reveal animation runs next.
       _preAnimState = preState;
+      _avatarAttachmentsBeforeTurn = avatarAttachedEntities(
+        preState,
+        widget.packService.game,
+      );
+      if (avatarSightPulse) _lineOfSightFeedbacks = const [];
       if (selectedCell != null) _selectedCellPosition = selectedCell;
       // A machine that reversed on the spot moved nowhere, so no animation
       // will turn it; its engine-written `facing` param is the only record.
@@ -570,7 +584,14 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     // Input is held until the animation ends; that time is not the tester's.
     _playtest.beginBusy();
     try {
-      await _playTurnMotion(result, preState, avatarMoves, hasSlide);
+      await _playTurnMotion(
+        result,
+        preState,
+        avatarMoves,
+        hasSlide,
+        acquiredSight,
+        generation,
+      );
     } finally {
       _playtest.endBusy();
     }
@@ -581,6 +602,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     if (!mounted) return;
     setState(() {
       _animating = false;
+      _avatarAttachmentsBeforeTurn = null;
       // Safety net for a turn whose animation never touched _preAnimState
       // at all — no travelling entities, no beam reveal, nothing (e.g. a
       // pure select tap, or a placement before any source is aimed). Every
@@ -597,7 +619,12 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     }
 
     unawaited(_playFloatingNumbers(result.events, generation));
-    await _playLineOfSightFeedback(result.events, generation);
+    await _playLineOfSightFeedback(
+      avatarSightPulse
+          ? result.events.where((e) => e.payload['kind'] != 'avatar').toList()
+          : result.events,
+      generation,
+    );
     await _playCellEffects(result.events, generation);
   }
 
@@ -608,6 +635,8 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     LevelState preState,
     List<AnimationStep> avatarMoves,
     bool hasSlide,
+    List<GameEvent> acquiredSight,
+    int generation,
   ) async {
     await _playCascadePlayback(preState, result.events);
     if (!mounted) return;
@@ -653,10 +682,40 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
       setState(() => _preAnimState = _heldBoard(pending: unplayed));
     }
 
-    // An ordinary one-cell step: walk it. (An ice slide is several avatar_move
-    // steps and has its own path below.)
-    if (!hasSlide && avatarMoves.length == 1) {
-      await _playAvatarStep(avatarMoves.single);
+    Future<void> playMoves(List<AnimationStep> moves) async {
+      final inFlight = [
+        for (final step in moves)
+          if (travellers[step] case final mover?) mover,
+      ];
+      unplayed.removeWhere(inFlight.contains);
+      await _playSlideMotion(moves, inFlight: inFlight, stillPending: unplayed);
+    }
+
+    final pushEvents = result.events
+        .where((event) => event.type == 'object_pushed')
+        .toList();
+    final elasticMotionEvent = result.events
+        .where(
+          (event) =>
+              event.type == 'elastic_block_inflated' ||
+              event.type == 'elastic_block_collapsed',
+        )
+        .firstOrNull;
+    final avatarStep = avatarMoves.length == 1 ? avatarMoves.single : null;
+    final canSynchronize =
+        !hasSlide &&
+        pushEvents.isEmpty &&
+        elasticMotionEvent == null &&
+        (avatarStep != null || acquiredSight.isNotEmpty);
+    final synchronized = canSynchronize
+        ? avatarConcurrentMoves(remaining, travellers, widget.packService.game)
+        : const <AnimationStep>[];
+    if (avatarStep != null || synchronized.isNotEmpty) {
+      remaining.removeWhere(synchronized.contains);
+      await Future.wait([
+        if (avatarStep != null) _playAvatarStep(avatarStep),
+        if (synchronized.isNotEmpty) playMoves(synchronized),
+      ]);
       if (!mounted) return;
     }
 
@@ -682,16 +741,6 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     // Animate objects that were pushed. Two cases:
     //   (a) Pip slid on ice and pushed an object at the end of her slide.
     //   (b) An object was pushed onto ice and slid on its own (2+ push events).
-    final pushEvents = result.events
-        .where((e) => e.type == 'object_pushed')
-        .toList();
-    final elasticMotionEvent = result.events
-        .where(
-          (event) =>
-              event.type == 'elastic_block_inflated' ||
-              event.type == 'elastic_block_collapsed',
-        )
-        .firstOrNull;
     var elasticMotionPlayed = false;
     if (pushEvents.isNotEmpty) {
       final trackedPushEvents = pushEvents
@@ -736,6 +785,30 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
       });
     }
 
+    // The avatar has moved; hold the remaining actors at their origins while
+    // a newly acquired sightline flashes, then play their movement stages.
+    if (acquiredSight.isNotEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _preAnimState = _heldBoard(pending: unplayed)
+          ..isWon = preState.isWon
+          ..isLost = preState.isLost;
+        _avatarAttachmentsBeforeTurn = avatarAttachedEntities(
+          _engine.state,
+          widget.packService.game,
+        );
+      });
+      await _playLineOfSightFeedback(
+        acquiredSight,
+        generation,
+        sourceOrigins: {
+          for (final mover in unplayed)
+            if (mover.layer == 'actors') mover.to: mover.from,
+        },
+      );
+      if (!mounted) return;
+    }
+
     // Play each stage to completion before starting the next.
     int? currentStage;
     final stageBuf = <AnimationStep>[];
@@ -746,19 +819,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
       final anims = stageBuf
           .where((s) => s.type == 'entity_animation')
           .toList();
-      if (moves.isNotEmpty) {
-        final inFlight = [
-          for (final step in moves)
-            if (travellers[step] case final t?) t,
-        ];
-        // This stage's movers stop being pending the moment they take off.
-        unplayed.removeWhere(inFlight.contains);
-        await _playSlideMotion(
-          moves,
-          inFlight: inFlight,
-          stillPending: unplayed,
-        );
-      }
+      if (moves.isNotEmpty) await playMoves(moves);
       if (paths.isNotEmpty) {
         final inFlight = [
           for (final step in paths)
@@ -792,7 +853,9 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     }
     await flushStage();
 
-    if (remaining.isNotEmpty) {
+    if (remaining.isNotEmpty ||
+        synchronized.isNotEmpty ||
+        acquiredSight.isNotEmpty) {
       if (!mounted) return;
       setState(() {
         _preAnimState = null;
@@ -1270,8 +1333,9 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
 
   Future<void> _playLineOfSightFeedback(
     List<GameEvent> events,
-    int generation,
-  ) async {
+    int generation, {
+    Map<Position, Position> sourceOrigins = const {},
+  }) async {
     final feedbacks = <LineOfSightFeedback>[];
     for (final event in events) {
       if (event.type != 'line_of_sight_detected') continue;
@@ -1280,7 +1344,11 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
       final kind = event.payload['kind'] as String?;
       if (source == null || target == null || kind == null) continue;
       feedbacks.add(
-        LineOfSightFeedback(source: source, target: target, kind: kind),
+        LineOfSightFeedback(
+          source: sourceOrigins[source] ?? source,
+          target: target,
+          kind: kind,
+        ),
       );
     }
     if (feedbacks.isEmpty) {
@@ -2133,6 +2201,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     final depthBefore = _engine.undoDepth;
     setState(() {
       if (_engine.undo()) {
+        _sightFeedback.undo();
         // Facing is app-side, so the engine's undo cannot restore it.
         _actorFacingAt = _actorFacingHistory.isNotEmpty
             ? _actorFacingHistory.removeLast()
@@ -2193,6 +2262,8 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     _cellEffects.value = const [];
     _floatingNumbers.value = const [];
     _lineOfSightFeedbacks = const [];
+    _sightFeedback.clear();
+    _avatarAttachmentsBeforeTurn = null;
     _cascadeFeedbacks = const {};
     _cascadeTransfers = const [];
     _actorFacingAt = {};
@@ -3172,12 +3243,10 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
       return;
     }
 
-    _engine.reset();
+    if (!mounted || _animating || _replaying || _aiRunning) return;
     setState(() {
-      _actorFacingAt = {};
-      _otherFacingAt = {};
-      _actorFacingHistory.clear();
-      _otherFacingHistory.clear();
+      _clearPlaybackState();
+      _engine.reset();
       _aiRunning = true;
       _lastThinking = null;
       _lastResponse = null;
@@ -3662,6 +3731,8 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
                               floodedColorOverride: _lastFloodColor,
                               avatarPositionOverride: _avatarSlidePos,
                               avatarMotion: _avatarMotion,
+                              avatarAttachmentsOverride:
+                                  _avatarAttachmentsBeforeTurn,
                               actionPreviews: showPreviews
                                   ? _actionPreviews
                                   : const {},

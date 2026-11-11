@@ -263,6 +263,72 @@ void _expectRejects(
 }
 
 void main() {
+  test('resolution priority requires a JSON integer at load', () {
+    for (final priority in [1.0, 0.5, '1', true, null]) {
+      expect(
+          () => _engineFor(
+                _makeGame({'type': 'patrol', 'resolutionPriority': priority}),
+                _levelJson(avatar: [0, 0], watcher: [3, 1]),
+              ),
+          throwsA(isA<FormatException>().having(
+            (e) => e.message,
+            'message',
+            contains('resolutionPriority must be an integer'),
+          )));
+    }
+    for (final priority in [-2, 0, 2]) {
+      _engineFor(_makeGame({'type': 'patrol', 'resolutionPriority': priority}),
+          _levelJson(avatar: [0, 0], watcher: [3, 1]));
+    }
+  });
+
+  test('singleton priority does not reorder trains', () {
+    final game = _shaftGame(behaviors: {
+      'walker': {'type': 'patrol'},
+      'priority': {'type': 'patrol', 'resolutionPriority': -1},
+    });
+    final engine = _engineFor(
+        game,
+        _shaftLevelJson([
+          (1, 0, 'walker', 'right', 'a'),
+          (3, 0, 'priority', 'left', 'b'),
+        ]));
+    _beat(engine);
+    expect(
+        engine.state.board
+            .getEntity('actors', const Position(2, 0))
+            ?.param('shaft'),
+        'a');
+  });
+
+  test('resolution priority changes sight order while preserving the default',
+      () {
+    for (final priority in [0, -1]) {
+      final game = _makeGame({
+        'type': 'toward_avatar',
+        'requiresLineOfSight': true,
+        'blockingLayers': ['objects', 'actors'],
+      });
+      final behaviors = game.systems[1].config['behaviors'] as Map;
+      behaviors['patrol'] = {'type': 'patrol', 'resolutionPriority': priority};
+      final level = _levelJson(avatar: [3, 0], watcher: [1, 1]);
+      final board = level['board'] as Map;
+      final layers = board['layers'] as Map;
+      final actors = layers['actors'] as Map;
+      (actors['entries'] as List).add({
+        'position': [2, 1],
+        'kind': 'watcher',
+        'behavior': 'patrol',
+        'facing': 'down',
+      });
+      final engine = _engineFor(game, level);
+      engine.executeTurn(_move('down'));
+      final expected = Position(priority == 0 ? 1 : 2, 1);
+      expect(
+          engine.state.board.getEntity('actors', expected)?.param('behavior'),
+          'hunt');
+    }
+  });
   group('follower_npcs lethal contact', () {
     test('stepping onto the avatar loses the level', () {
       final game = _makeGame({
