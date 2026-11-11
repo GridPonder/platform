@@ -968,7 +968,22 @@ def test_resolution_priority_changes_sight_order_without_changing_default():
         assert engine.state.board.get_entity("actors", expected).param("behavior") == "hunt"
 
 
+def test_resolution_priority_requires_json_integer_at_load():
+    for priority in (1.0, 0.5, "1", True, None):
+        try:
+            TurnEngine(_make_game({"type": "patrol", "resolutionPriority": priority}),
+                       _make_level(avatar=(0, 0), watcher=(3, 1)))
+        except ValueError as exc:
+            assert "resolutionPriority must be an integer" in str(exc)
+        else:
+            raise AssertionError(f"accepted invalid resolutionPriority: {priority!r}")
+    for priority in (-2, 0, 2):
+        TurnEngine(_make_game({"type": "patrol", "resolutionPriority": priority}),
+                   _make_level(avatar=(0, 0), watcher=(3, 1)))
+
+
 TESTS = [
+    test_resolution_priority_requires_json_integer_at_load,
     test_resolution_priority_changes_sight_order_without_changing_default,
     test_lethal_contact_loses_the_level,
     test_contact_is_refused_without_lethal_contact,

@@ -348,6 +348,13 @@ class FollowerNpcsSystem(GameSystem):
         """
         config = game.system_config(self.id)
         behaviors = config.get("behaviors", {}) or {}
+        for name, behavior in behaviors.items():
+            if isinstance(behavior, dict) and "resolutionPriority" in behavior:
+                priority = behavior["resolutionPriority"]
+                if type(priority) is not int:
+                    raise ValueError(
+                        f"behavior '{name}': resolutionPriority must be an integer"
+                    )
         for shaft_id, members in self._partition_trains(
             self._npc_entries(state, game, config)
         ):

@@ -263,6 +263,25 @@ void _expectRejects(
 }
 
 void main() {
+  test('resolution priority requires a JSON integer at load', () {
+    for (final priority in [1.0, 0.5, '1', true, null]) {
+      expect(
+          () => _engineFor(
+                _makeGame({'type': 'patrol', 'resolutionPriority': priority}),
+                _levelJson(avatar: [0, 0], watcher: [3, 1]),
+              ),
+          throwsA(isA<FormatException>().having(
+            (e) => e.message,
+            'message',
+            contains('resolutionPriority must be an integer'),
+          )));
+    }
+    for (final priority in [-2, 0, 2]) {
+      _engineFor(_makeGame({'type': 'patrol', 'resolutionPriority': priority}),
+          _levelJson(avatar: [0, 0], watcher: [3, 1]));
+    }
+  });
+
   test('singleton priority does not reorder trains', () {
     final game = _shaftGame(behaviors: {
       'walker': {'type': 'patrol'},

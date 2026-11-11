@@ -536,12 +536,16 @@ List<String> resolveBoardLayerOrder(GameDefinition game) =>
 List<EntityInstance> avatarAttachedEntities(
   LevelState state,
   GameDefinition game,
-) => [
-  for (final layer in state.board.layers.values)
-    for (final entry in layer.entries())
-      if (game.entityKinds[entry.value.kind]?.display?['followAvatar'] == true)
-        entry.value,
-];
+) {
+  final position = state.avatar.position;
+  if (!state.avatar.enabled || position == null) return const [];
+  return [
+    for (final layer in state.board.layers.keys)
+      if (state.board.getEntity(layer, position) case final entity?)
+        if (game.entityKinds[entity.kind]?.display?['followAvatar'] == true)
+          entity,
+  ];
+}
 
 String? _motionSpritePath(
   Map<String, dynamic> motion,
@@ -2207,7 +2211,7 @@ class _Cell extends StatelessWidget {
     final entity = state.board.getEntity(layerId, pos);
     if (entity == null) return const SizedBox.shrink();
     if (state.avatar.enabled &&
-        state.avatar.position != null &&
+        state.avatar.position == pos &&
         game.entityKinds[entity.kind]?.display?['followAvatar'] == true) {
       return const SizedBox.shrink();
     }

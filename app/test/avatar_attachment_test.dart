@@ -34,6 +34,12 @@ Future<PackService> _pack() => PackService.loadFromEntry(
               'symbol': 'a',
               'display': {'type': 'label', 'label': 'A', 'followAvatar': true},
             },
+            'remote': {
+              'layer': 'markers',
+              'tags': [],
+              'symbol': 'r',
+              'display': {'type': 'label', 'label': 'R', 'followAvatar': true},
+            },
             'tile': {
               'layer': 'markers',
               'tags': [],
@@ -65,6 +71,10 @@ void main() {
             'entries': [
               {
                 'position': [2, 2],
+                'kind': 'remote',
+              },
+              {
+                'position': [1, 1],
                 'kind': 'badge',
               },
               {
@@ -110,11 +120,13 @@ void main() {
     expect(find.text('A'), findsOneWidget);
     expect(tester.getCenter(find.text('A')), center(1, 1));
     expect(tester.getCenter(find.text('G')), center(0, 0));
+    expect(tester.getCenter(find.text('R')), center(2, 2));
 
     motion.value = (x: 1.25, y: 1.0, progress: 0.25);
     await tester.pump();
     expect(tester.getCenter(find.text('A')), center(1.25, 1));
     expect(tester.getCenter(find.text('G')), center(0, 0));
+    expect(tester.getCenter(find.text('R')), center(2, 2));
     motion.value = (x: 1.75, y: 1.0, progress: 0.75);
     await tester.pump();
     expect(tester.getCenter(find.text('A')), center(1.75, 1));
@@ -125,7 +137,7 @@ void main() {
     expect(find.text('G'), findsOneWidget);
 
     // Keep an old attachment through motion even if the logical mark is gone.
-    state.board.setEntity('markers', const Position(2, 2), null);
+    state.board.setEntity('markers', const Position(1, 1), null);
     await show(attachments: const [EntityInstance('badge')]);
     expect(tester.getCenter(find.text('A')), center(1.75, 1));
     motion.value = null;
@@ -136,6 +148,7 @@ void main() {
     expect(tester.getCenter(find.text('A')), center(3, 1));
     await show();
     expect(find.text('A'), findsNothing);
+    expect(tester.getCenter(find.text('R')), center(2, 2));
     expect(tester.takeException(), isNull);
   });
 }

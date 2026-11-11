@@ -416,6 +416,16 @@ class FollowerNpcsSystem extends GameSystem {
   List<GameEvent> executeLoadSettle(LevelState state, GameDefinition game) {
     final config = game.systemConfig(id, {});
     final behaviorsConfig = config['behaviors'] as Map<String, dynamic>? ?? {};
+    for (final entry in behaviorsConfig.entries) {
+      final behavior = entry.value;
+      if (behavior is Map &&
+          behavior.containsKey('resolutionPriority') &&
+          behavior['resolutionPriority'] is! int) {
+        throw FormatException(
+          "behavior '${entry.key}': resolutionPriority must be an integer",
+        );
+      }
+    }
     for (final train in _partitionTrains(_npcEntries(state, game, config))) {
       _validateTrain(train.key, train.value, behaviorsConfig);
       state.variables['shaft_${train.key}_size'] = train.value.length;

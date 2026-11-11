@@ -870,7 +870,7 @@ checked.
 |-------|------|---------|-------------|
 | `type` | string | — | `toward_avatar`, `toward_tag`, `toward_color`, `patrol`, or `clockwise`. |
 | `frequency` | integer | `1` | Act only when `turnCount % frequency == 0`. The counter is incremented after this phase, so the first turn always acts. The turn counter is not part of the state key, so while an NPC with `frequency > 1` is on the board the system reports that its behaviour depends on the counter (`depends_on_turn_count` / `dependsOnTurnCount`); the benchmark's valid-action probe then counts a turn that only advanced the beat (e.g. an off-beat `wait`) as effectful. |
-| `resolutionPriority` | integer | `0` | Single NPCs with lower values resolve first; ties use board order. Linked trains resolve before single NPCs independently of this field. |
+| `resolutionPriority` | integer | `0` | Must be a JSON integer (fractional numbers, strings, booleans and null are rejected at load). Single NPCs with lower values resolve first; ties use board order. Linked trains resolve before single NPCs independently of this field. |
 | `solidBlocking` | boolean | `true` | Whether entities tagged `solid` on the `objects` layer block the NPC. |
 | `targetTag` | string | — | `toward_tag` only: seek the nearest entity with this tag on the `objects` or `markers` layer. |
 | `targetColor` | string | — | `toward_color` only: seek the nearest entity whose `color` param matches, on the `objects` or `actors` layer. |

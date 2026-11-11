@@ -3243,12 +3243,10 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
       return;
     }
 
-    _engine.reset();
+    if (!mounted || _animating || _replaying || _aiRunning) return;
     setState(() {
-      _actorFacingAt = {};
-      _otherFacingAt = {};
-      _actorFacingHistory.clear();
-      _otherFacingHistory.clear();
+      _clearPlaybackState();
+      _engine.reset();
       _aiRunning = true;
       _lastThinking = null;
       _lastResponse = null;
@@ -3733,7 +3731,8 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
                               floodedColorOverride: _lastFloodColor,
                               avatarPositionOverride: _avatarSlidePos,
                               avatarMotion: _avatarMotion,
-                              avatarAttachmentsOverride: _avatarAttachmentsBeforeTurn,
+                              avatarAttachmentsOverride:
+                                  _avatarAttachmentsBeforeTurn,
                               actionPreviews: showPreviews
                                   ? _actionPreviews
                                   : const {},

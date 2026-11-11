@@ -17,6 +17,7 @@ Future<PackService> _pack({
   int sensorX = 5,
   bool sightPulse = true,
   bool syncMotion = false,
+  bool restartCase = false,
 }) => PackService.loadFromEntry(
   PackEntry(
     id: 'sight_playback_test',
@@ -42,6 +43,8 @@ Future<PackService> _pack({
               'tags': ['walkable'],
               'symbol': '.',
             },
+            if (restartCase)
+              'void': {'layer': 'ground', 'tags': [], 'symbol': '#'},
             if (syncMotion)
               'cart': {
                 'layer': 'actors',
@@ -66,7 +69,9 @@ Future<PackService> _pack({
               'params': {
                 'direction': {
                   'type': 'direction',
-                  'values': ['up', 'down', 'left', 'right'],
+                  'values': restartCase
+                      ? ['up']
+                      : ['up', 'down', 'left', 'right'],
                 },
               },
             },
@@ -99,6 +104,16 @@ Future<PackService> _pack({
           'board': {
             'size': [7, 4],
             'layers': {
+              if (restartCase)
+                'ground': {
+                  'format': 'sparse',
+                  'entries': [
+                    {
+                      'position': [2, 0],
+                      'kind': 'void',
+                    },
+                  ],
+                },
               'actors': {
                 'format': 'sparse',
                 'entries': [
@@ -110,7 +125,7 @@ Future<PackService> _pack({
                       'facing': 'right',
                     },
                   {
-                    'position': [sensorX, 2],
+                    'position': [sensorX, restartCase ? 1 : 2],
                     'kind': 'sensor',
                     'behavior': 'seek',
                   },
@@ -132,6 +147,45 @@ Future<PackService> _pack({
 );
 
 void main() {
+  testWidgets('starting AI clears sight acquired in the previous attempt', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({
+      'ai_play_enabled': true,
+      'playback_mode': 'step',
+      'step_delay_ms': 0,
+    });
+    final pack = await _pack(restartCase: true);
+    final settings = await SettingsService.create();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PlayScreen(
+          packService: pack,
+          settings: settings,
+          startLevelId: 'level',
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    for (var i = 0; i < 35; i++) {
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+    await tester.tap(find.text('Start AI'));
+    await tester.pump();
+    await tester.pump();
+    await tester.tap(find.text('Take over'));
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    var sawPulse = false;
+    for (var i = 0; i < 35; i++) {
+      await tester.pump(const Duration(milliseconds: 20));
+      final board = tester.widget<BoardRenderer>(find.byType(BoardRenderer));
+      sawPulse |= board.lineOfSightFeedbacks.isNotEmpty;
+    }
+    expect(sawPulse, isTrue);
+  });
+
   testWidgets(
     'new sight flashes after avatar movement and before actor motion',
     (tester) async {
