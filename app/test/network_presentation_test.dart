@@ -4,13 +4,17 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gridponder_app/src/services/solver_policy.dart';
+import 'package:gridponder_app/src/widgets/controls_widget.dart';
 import 'package:gridponder_app/src/widgets/network_controls.dart';
 import 'package:gridponder_app/src/widgets/network_presentation.dart';
 import 'package:gridponder_engine/engine.dart';
 
 /// The engine's network fixture with a second task `job` that waits for
 /// `first`. Neither task's `done_` field is copied into a variable.
-({TurnEngine engine, SystemDef system}) chainedFixture({Map? labels}) {
+({TurnEngine engine, SystemDef system}) chainedFixture({
+  Map? labels,
+  Map<String, dynamic>? systemOverrides,
+}) {
   final json = jsonDecode(
     File('../engines/python/_fixtures/state_network.json').readAsStringSync(),
   );
@@ -23,12 +27,15 @@ import 'package:gridponder_engine/engine.dart';
     'id': 'first',
     'params': <String, dynamic>{},
   });
+  if (systemOverrides != null)
+    json['level']['systemOverrides'] = systemOverrides;
   final game = GameDefinition.fromJson(json['game']);
-  final engine = TurnEngine(
-    game,
-    LevelDefinition.fromJson(json['level'], game.layers),
+  final level = LevelDefinition.fromJson(json['level'], game.layers);
+  final engine = TurnEngine(game, level);
+  return (
+    engine: engine,
+    system: game.withSystemOverrides(level.systemOverrides).systems.single,
   );
-  return (engine: engine, system: game.systems.single);
 }
 
 void main() {
@@ -60,6 +67,45 @@ void main() {
               view: NetworkView.of(f.system, f.engine.state),
               enabled: true,
               onAction: (_) {},
+            ),
+          ),
+        ),
+      );
+      expect(find.text('Submit Task job…'), findsOneWidget);
+      expect(find.text('Submit Task first…'), findsNothing);
+    });
+    testWidgets('ControlsWidget offers the next task under systemOverrides', (
+      tester,
+    ) async {
+      // Each withSystemOverrides call builds fresh config maps, as the
+      // play screen does for the controls' game and the network view.
+      final f = chainedFixture(
+        systemOverrides: {
+          'net': {'energy': 8},
+        },
+      );
+      final level = f.engine.level;
+      GameDefinition overridden() =>
+          f.engine.game.withSystemOverrides(level.systemOverrides);
+      f.engine.executeTurn(const GameAction('first'));
+      expect(f.engine.state.variables.containsKey('done_first'), isFalse);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ControlsWidget(
+              onAction: (_) {},
+              onUndo: () {},
+              onReset: () {},
+              onExit: () {},
+              canUndo: false,
+              game: overridden(),
+              publicVariables: Map<String, dynamic>.of(
+                f.engine.state.variables,
+              ),
+              networkView: NetworkView.of(
+                overridden().systems.single,
+                f.engine.state,
+              ),
             ),
           ),
         ),

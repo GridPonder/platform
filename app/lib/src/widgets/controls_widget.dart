@@ -140,7 +140,7 @@ class _ControlsWidgetState extends State<ControlsWidget> {
       for (final s in networks)
         NetworkControls(
           key: ValueKey(s.id),
-          view: identical(widget.networkView?.config, s.config)
+          view: widget.networkView?.systemId == s.id
               ? widget.networkView!
               : NetworkView(s.config, {
                   for (final e in (s.config['readouts'] as Map? ?? {}).entries)

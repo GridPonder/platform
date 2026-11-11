@@ -68,11 +68,18 @@ class NetworkView {
   final Map<String, dynamic> fields;
   final NetworkTerms terms;
 
-  NetworkView(this.config, this.fields) : terms = NetworkTerms.of(config);
+  /// The id of the `state_network` system this view reads, when known.
+  /// Callers match a view to its system by this id, not by config identity:
+  /// a level's `systemOverrides` rebuild the config map on every lookup.
+  final String? systemId;
+
+  NetworkView(this.config, this.fields, {this.systemId})
+    : terms = NetworkTerms.of(config);
 
   factory NetworkView.of(SystemDef system, LevelState state) => NetworkView(
     system.config,
     StateNetworkSystem(id: system.id, config: system.config).publicView(state),
+    systemId: system.id,
   );
 
   Object? read(String field) => fields[field];
