@@ -28,7 +28,7 @@ void main() {
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
-  Future<RecordingTracker> open(WidgetTester tester, String levelId) async {
+  Future<RecordingTracker> open(WidgetTester tester, String? levelId) async {
     await tester.runAsync(() async {
       settings = await SettingsService.create();
       pack = await PackService.load(_pack);
@@ -47,6 +47,24 @@ void main() {
     await tester.pump();
     return tracker;
   }
+
+  testWidgets('opening on a story loads the first level only after continuing', (
+    tester,
+  ) async {
+    final tracker = await open(tester, null);
+    expect(tester.takeException(), isNull);
+    expect(find.text('The Great Carrot Shortage'), findsOneWidget);
+    expect(tracker.events, isEmpty);
+
+    await tester.tap(find.text("Let's go!"));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    expect(tracker.names, ['level_start']);
+    expect(tracker.events.single['level'], pack.levelIds.first);
+
+    await tester.pumpWidget(const SizedBox());
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('leaving a level for a story page logs the exit at once', (
     tester,

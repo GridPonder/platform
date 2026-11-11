@@ -4748,9 +4748,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
         : null;
 
     return Scaffold(
-      backgroundColor:
-          networkWorkbenchBackground(_mechanismScene) ??
-          const Color(0xFFF5F0E8),
+      backgroundColor: const Color(0xFFF5F0E8),
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
