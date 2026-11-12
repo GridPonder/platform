@@ -93,6 +93,9 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
   late int _seqIndex;
   late List<String> _levelIds;
   late LevelDefinition _levelDef;
+
+  /// False until the first level loads; a pack can open on a story page.
+  bool _levelLoaded = false;
   late TurnEngine _engine;
   int _controlsEpoch = 0;
   final _networkInput = NetworkInputController();
@@ -279,6 +282,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     _trackLevelExit();
     _stopAgent();
     _levelDef = widget.packService.level(levelId);
+    _levelLoaded = true;
     _engine = TurnEngine(widget.packService.game, _levelDef);
     _resetNetworkInput();
     _hintService = HintService(hintStops: _levelDef.solution.hintStops);
@@ -321,8 +325,9 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     return systems.length == 1 ? systems.first : null;
   }
 
-  Map<String, dynamic>? get _mechanismScene =>
-      _levelDef.metadata?['mechanismScene'] as Map<String, dynamic>?;
+  Map<String, dynamic>? get _mechanismScene => _levelLoaded
+      ? (_levelDef.metadata?['mechanismScene'] as Map<String, dynamic>?)
+      : null;
 
   void _resetNetworkInput() {
     _networkInput.reset(
