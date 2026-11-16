@@ -37,6 +37,7 @@ import '../widgets/board_renderer.dart'
 import '../widgets/balance_panel.dart';
 import '../widgets/catalog_panel.dart';
 import '../widgets/controls_widget.dart';
+import '../widgets/tile_placement_board.dart';
 import 'cell_selection_state.dart';
 
 /// One entity travelling from [from] to [to] during a turn's animation.
@@ -2022,6 +2023,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
   bool get _nextIsLocked {
     final progress = widget.progress;
     if (progress == null) return false;
+    if (progress.isDeveloperMode) return false;
     final next = _nextLevelEntry;
     if (next == null) return false;
     return !progress.isUnlocked(next.ref!, _sequence);
@@ -2921,6 +2923,15 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
 
     final state = _preAnimState ?? _engine.state;
     final levelId = _currentEntry.ref!;
+    final effectiveGame = widget.packService.game.withSystemOverrides(
+      _levelDef.systemOverrides,
+    );
+    final placementSystem = effectiveGame.systems
+        .where((s) => s.enabled && s.type == 'tile_placement')
+        .firstOrNull;
+    final placementConfig = placementSystem == null
+        ? null
+        : effectiveGame.systemConfig(placementSystem.id, {});
 
     // Refresh the previews whenever the board or the avatar has actually
     // moved. Dry runs are cheap, but there is no reason to repeat them for
@@ -2959,7 +2970,9 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
         !_animating;
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F0E8),
+      backgroundColor: placementSystem != null
+          ? const Color(0xfff5f6fa)
+          : const Color(0xFFF5F0E8),
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
@@ -3085,53 +3098,67 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
                 Expanded(
                   child: Padding(
                     padding: const EdgeInsets.all(12),
-                    child: _buildZoomableBoard(
-                      state,
-                      BoardRenderer(
-                        key: _boardKey,
-                        state: state,
-                        game: widget.packService.game,
-                        packService: widget.packService,
-                        animationOverlays: _animOverlays,
-                        actorFacingAt: _actorFacingAt,
-                        onCellTap:
-                            (_hasCellTapGesture || _moveActionNeedsPosition)
-                            ? _onCellTap
-                            : null,
-                        selectedMultiCellObjectId:
-                            _selectedMultiCellObjectForRenderer(state),
-                        selectedActorPosition: _selectedActorPosition(state),
-                        selectedCellPosition: _selectedCellPosition,
-                        lineOfSightFeedbacks: _lineOfSightFeedbacks,
-                        cellEffects: _cellEffects,
-                        cascadeFeedbacks: _cascadeFeedbacks,
-                        cascadeTransfers: _cascadeTransfers,
-                        floatingNumbers: _floatingNumbers,
-                        floodedColorOverride: _lastFloodColor,
-                        avatarPositionOverride: _avatarSlidePos,
-                        avatarMotion: _avatarMotion,
-                        actionPreviews: showPreviews
-                            ? _actionPreviews
-                            : const {},
-                        hoveredPreviewTarget: _hoveredPreviewTarget,
-                        movingSprites: _movingSprites,
-                        history: _engine.history,
-                        movingMultiCellObjects: _movingMultiCellObjects,
-                        onCellHover: (x, y) {
-                          final pos = x == null || y == null
-                              ? null
-                              : Position(x, y);
-                          if (pos == _hoveredPreviewTarget) return;
-                          if (pos != null &&
-                              !_actionPreviews.containsKey(pos)) {
-                            if (_hoveredPreviewTarget == null) return;
-                            setState(() => _hoveredPreviewTarget = null);
-                            return;
-                          }
-                          setState(() => _hoveredPreviewTarget = pos);
-                        },
-                      ),
-                    ),
+                    child: placementSystem != null
+                        ? TilePlacementBoard(
+                            key: ValueKey('placement-$levelId'),
+                            systemId: placementSystem.id,
+                            config: placementConfig!,
+                            state: state,
+                            onAction: (_animating || _replaying || _aiRunning)
+                                ? null
+                                : _onAction,
+                            onReset: _onReset,
+                          )
+                        : _buildZoomableBoard(
+                            state,
+                            BoardRenderer(
+                              key: _boardKey,
+                              state: state,
+                              game: widget.packService.game,
+                              packService: widget.packService,
+                              animationOverlays: _animOverlays,
+                              actorFacingAt: _actorFacingAt,
+                              onCellTap:
+                                  (_hasCellTapGesture ||
+                                      _moveActionNeedsPosition)
+                                  ? _onCellTap
+                                  : null,
+                              selectedMultiCellObjectId:
+                                  _selectedMultiCellObjectForRenderer(state),
+                              selectedActorPosition: _selectedActorPosition(
+                                state,
+                              ),
+                              selectedCellPosition: _selectedCellPosition,
+                              lineOfSightFeedbacks: _lineOfSightFeedbacks,
+                              cellEffects: _cellEffects,
+                              cascadeFeedbacks: _cascadeFeedbacks,
+                              cascadeTransfers: _cascadeTransfers,
+                              floatingNumbers: _floatingNumbers,
+                              floodedColorOverride: _lastFloodColor,
+                              avatarPositionOverride: _avatarSlidePos,
+                              avatarMotion: _avatarMotion,
+                              actionPreviews: showPreviews
+                                  ? _actionPreviews
+                                  : const {},
+                              hoveredPreviewTarget: _hoveredPreviewTarget,
+                              movingSprites: _movingSprites,
+                              history: _engine.history,
+                              movingMultiCellObjects: _movingMultiCellObjects,
+                              onCellHover: (x, y) {
+                                final pos = x == null || y == null
+                                    ? null
+                                    : Position(x, y);
+                                if (pos == _hoveredPreviewTarget) return;
+                                if (pos != null &&
+                                    !_actionPreviews.containsKey(pos)) {
+                                  if (_hoveredPreviewTarget == null) return;
+                                  setState(() => _hoveredPreviewTarget = null);
+                                  return;
+                                }
+                                setState(() => _hoveredPreviewTarget = pos);
+                              },
+                            ),
+                          ),
                   ),
                 ),
                 if (_replaying)
@@ -3163,7 +3190,11 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
                     onReset: _onReset,
                     onExit: _onExit,
                     onHint: hintAvailable ? _onHint : null,
-                    onSolve: kDebugMode ? _onSolve : null,
+                    onSolve:
+                        (kDebugMode ||
+                            (widget.progress?.isDeveloperMode ?? false))
+                        ? _onSolve
+                        : null,
                     canUndo:
                         _engine.undoDepth > 0 &&
                         !_aiRunning &&
@@ -3172,7 +3203,17 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
                     hintStatuses: hintStatuses,
                     availableActionIds: _availableFloodActions(state),
                     presentEntityKinds: _presentEntityKinds(state),
-                    hiddenActionIds: _hiddenActionIds(state),
+                    hiddenActionIds: {
+                      ..._hiddenActionIds(state),
+                      if (placementConfig != null) ...[
+                        placementConfig['placeAction'] as String? ??
+                            'place_piece',
+                        placementConfig['removeAction'] as String? ??
+                            'remove_piece',
+                        placementConfig['nextAction'] as String? ??
+                            'next_target',
+                      ],
+                    },
                     actionSprites: _actionSprites(),
                     palette: widget.packService.theme?.palette,
                     gestureMap: widget.packService.theme?.controls?.gestureMap,
@@ -4068,6 +4109,13 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
 
   /// Returns "Moves: 13/25" if there is a max_actions limit, else "Moves: 13".
   String _movesLabel(LevelState state) {
+    final effective=widget.packService.game.withSystemOverrides(_levelDef.systemOverrides);
+    final system=effective.systems.where((s)=>s.enabled && s.type=='tile_placement').firstOrNull;
+    if(system!=null) {
+      final config=effective.systemConfig(system.id,{});
+      final limits=config['limits'] as Map?;
+      if(limits!=null) return 'Moves: ${state.variables['${system.id}.movesUsed'] ?? 0}/${limits['moves']}';
+    }
     final limitCond = _levelDef.loseConditions
         .where((c) => c.type == 'max_actions')
         .firstOrNull;
