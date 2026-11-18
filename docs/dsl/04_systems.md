@@ -25,7 +25,6 @@ Configuration is pack vocabulary, not fixed engine entity names:
 | `queuedVariable` | Optional 0/1 variable indicating whether this press loaded a new store. |
 | `collisions` | Default `true`: same-wave opposites cancel; a perpendicular pair bursts. Cancellation takes precedence. `false` disables both effects. |
 | `bursts` | Default `true`. Set `false` to merge perpendicular arrivals into one flip without forwarding from ordinary cells. Opposite cancellation still follows `collisions`. |
-| `trace` | Default `false`: emit read-only `pulse_trace` diagnostic events. |
 | `activateMovedRelays` | Default `false`. With movement events enabled, a light permutation that changes a relay from OFF to ON seeds the same first wave as a direct activation. Changed destinations are protected from further pulses that press. ON-to-OFF and unchanged states do not seed. |
 
 A ready control outside `flipKinds`, `writeKinds`, and `delayKinds` simply
@@ -37,13 +36,10 @@ once per press, including cancellation. Later arrivals are ignored.
 Directions are bit sets combined with OR, never arithmetic counts. Current
 and next waves use separate buffers, so arrivals from different waves cannot
 collide. Only the board, control availability, stores and optional queue flag
-persist; buffers and diagnostic bookkeeping are local to one execution.
+persist; wave buffers are local to one execution.
 
 Events include the usual `cell_transformed`, fuse-removal and optional queue
-`variable_changed` notifications. `pulse_trace` has `record` (a diagnostic
-record name) and `wave` (integer), and never creates state variables. Records
-identify direct hits, relay seeds, store releases, writes, wave arrivals,
-ignored arrivals, relays and bursts. Trace output does not affect gameplay.
+`variable_changed` notifications.
 
 The built-in engine systems, their execution order, and the per-system configuration reference.
 

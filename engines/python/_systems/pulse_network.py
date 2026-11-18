@@ -42,10 +42,6 @@ class PulseNetworkSystem(GameSystem):
             board.set_entity(layer, p, Entity(target, dict(entity.params)))
             events.append(ev.cell_transformed(p, entity.kind, target, layer))
 
-        def trace(name, wave=1):
-            if c.get("trace") is True:
-                events.append(ev.pulse_trace(name, wave))
-
         def number(p):
             return p.y * board.width + p.x
 
@@ -94,10 +90,8 @@ class PulseNetworkSystem(GameSystem):
                 routed.add(p)
                 if before.get(p) == off and event["kind"] == on and kind(object_layer, p) == relay:
                     emit(p, incoming)
-                    trace(f"seed_{number(p)}")
         for p, _ in loaded:
             emit(p, incoming)
-            trace(f"delay_{number(p)}")
         direct = [q for q, _ in neighbours(source)]
         if source_kind in (c.get("flipKinds") or []):
             direct = ([source] if source in lights else []) + direct
@@ -108,7 +102,6 @@ class PulseNetworkSystem(GameSystem):
             target = writes.get(source_kind, on if old == off else off)
             if kind(object_layer, p) == relay and old == off and target == on:
                 emit(p, incoming)
-                trace(f"seed_{number(p)}")
                 change(object_layer, p, relay)
         if source_kind in delays:
             change(object_layer, source, delays[source_kind])
@@ -120,10 +113,8 @@ class PulseNetworkSystem(GameSystem):
             change(signal_layer, p, c["hitKind"])
             if source_kind in writes:
                 target = writes[source_kind]
-                trace(f"write_{number(source)}_{number(p)}_{'ON' if target == on else 'OFF'}")
                 change(light_layer, p, target)
             else:
-                trace(f"direct_{number(source)}_{number(p)}")
                 flip(p)
         if source_kind in fuses:
             change(object_layer, source, fuses[source_kind])
@@ -137,7 +128,6 @@ class PulseNetworkSystem(GameSystem):
             output = {}
             for p, mask in sorted(incoming.items(), key=lambda item: number(item[0])):
                 if p in seen:
-                    trace(f"ignored_{number(p)}_{mask}", wave)
                     continue
                 seen.add(p)
                 collisions = c.get("collisions") is not False
@@ -148,12 +138,7 @@ class PulseNetworkSystem(GameSystem):
                 if burst or forwarding:
                     emit(p, output)
                 if forwarding:
-                    trace(f"relay_{number(p)}", wave)
                     change(object_layer, p, relay)
-                if burst:
-                    trace(f"burst_{number(p)}", wave)
-                outcome = "cancel" if cancel else "burst" if burst else "normal"
-                trace(f"arrival_{number(p)}_{mask}_{outcome}", wave)
                 change(signal_layer, p, c["cancelledKind"] if cancel else c["burstKind"] if burst else c["hitKind"])
                 if not cancel:
                     flip(p)

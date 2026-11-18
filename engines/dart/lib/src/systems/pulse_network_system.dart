@@ -50,12 +50,6 @@ class PulseNetworkSystem extends GameSystem {
       events.add(GameEvent.cellTransformed(p, entity.kind, target, layer));
     }
 
-    void trace(String name, [int wave = 1]) {
-      if (c['trace'] == true) {
-        events.add(GameEvent.pulseTrace(name, wave));
-      }
-    }
-
     int number(Position p) => p.y * board.width + p.x;
     final positions = [
       for (var y = 0; y < board.height; y++)
@@ -117,13 +111,11 @@ class PulseNetworkSystem extends GameSystem {
             e['kind'] == on &&
             kind(objectLayer, p) == relay) {
           emit(p, incoming);
-          trace('seed_${number(p)}');
         }
       }
     }
     for (final (p, _) in loaded) {
       emit(p, incoming);
-      trace('delay_${number(p)}');
     }
     var direct = neighbours(source).map((edge) => edge.$1).toList();
     if ((c['flipKinds'] as List? ?? []).contains(sourceKind)) {
@@ -136,7 +128,6 @@ class PulseNetworkSystem extends GameSystem {
       final target = writes[sourceKind] ?? (old == off ? on : off);
       if (kind(objectLayer, p) == relay && old == off && target == on) {
         emit(p, incoming);
-        trace('seed_${number(p)}');
         change(objectLayer, p, relay);
       }
     }
@@ -152,11 +143,8 @@ class PulseNetworkSystem extends GameSystem {
       change(signals, p, c['hitKind'] as String);
       if (writes.containsKey(sourceKind)) {
         final target = writes[sourceKind]!;
-        trace(
-            'write_${number(source)}_${number(p)}_${target == on ? 'ON' : 'OFF'}');
         change(lightLayer, p, target);
       } else {
-        trace('direct_${number(source)}_${number(p)}');
         flip(p);
       }
     }
@@ -180,7 +168,6 @@ class PulseNetworkSystem extends GameSystem {
       for (final p in cells) {
         final mask = incoming[p]!;
         if (seen.contains(p)) {
-          trace('ignored_${number(p)}_$mask', wave);
           continue;
         }
         seen.add(p);
@@ -198,18 +185,8 @@ class PulseNetworkSystem extends GameSystem {
           emit(p, output);
         }
         if (forwarding) {
-          trace('relay_${number(p)}', wave);
           change(objectLayer, p, relay);
         }
-        if (burst) {
-          trace('burst_${number(p)}', wave);
-        }
-        final outcome = cancel
-            ? 'cancel'
-            : burst
-                ? 'burst'
-                : 'normal';
-        trace('arrival_${number(p)}_${mask}_$outcome', wave);
         change(
             signals,
             p,

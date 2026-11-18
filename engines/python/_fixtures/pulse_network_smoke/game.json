@@ -160,7 +160,6 @@
           "charge": "charged"
         },
         "queuedVariable": "queued",
-        "trace": true,
         "collisions": true
       }
     }
