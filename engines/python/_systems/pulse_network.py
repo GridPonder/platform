@@ -97,6 +97,8 @@ class PulseNetworkSystem(GameSystem):
             direct = ([source] if source in lights else []) + direct
         elif source_kind not in writes:
             direct = []
+        if routed:
+            direct = [p for p in direct if p not in routed]
         for p in direct:
             old = kind(light_layer, p)
             target = writes.get(source_kind, on if old == off else off)
@@ -120,7 +122,7 @@ class PulseNetworkSystem(GameSystem):
             change(object_layer, source, fuses[source_kind])
             old = kind(controls, source)
             board.set_entity(controls, source, None)
-            events.extend([ev.object_removed(source, old), ev.cell_cleared(source, old)])
+            events.extend([ev.object_removed(source, old), ev.cell_cleared(source, old, controls)])
         for p, empty in loaded:
             change(object_layer, p, empty)
         wave = 1

@@ -123,6 +123,9 @@ class PulseNetworkSystem extends GameSystem {
     } else if (!writes.containsKey(sourceKind)) {
       direct = [];
     }
+    if (routed.isNotEmpty) {
+      direct = direct.where((p) => !routed.contains(p)).toList();
+    }
     for (final p in direct) {
       final old = kind(lightLayer, p);
       final target = writes[sourceKind] ?? (old == off ? on : off);
@@ -154,7 +157,7 @@ class PulseNetworkSystem extends GameSystem {
       board.setEntity(controls, source, null);
       events.addAll([
         GameEvent.objectRemoved(source, old),
-        GameEvent.cellCleared(source, old)
+        GameEvent.cellCleared(source, old, layer: controls)
       ]);
     }
     for (final (p, empty) in loaded) {

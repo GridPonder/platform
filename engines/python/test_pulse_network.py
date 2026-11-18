@@ -38,6 +38,36 @@ class MovedRelayTest(unittest.TestCase):
                         self.assertEqual(state.board.get_entity('lights', Pos(2, 0)).kind, expected)
                         self.assertEqual(state.board.get_entity('lights', Pos(1, 0)).kind, new)
 
+    def test_moved_relay_protected_from_same_press_direct_hit(self):
+        data = json.loads((ROOT / 'game.json').read_text())
+        data['systems'][1]['config']['activateMovedRelays'] = True
+        game = GameDef(data)
+        level = json.loads((ROOT / 'levels/relay_on.json').read_text())
+        state = TurnEngine(game, level).state
+        state.board.set_entity('objects', Pos(0, 0), Entity('button'))
+        state.board.set_entity('lights', Pos(0, 0), Entity('dark'))
+        state.board.set_entity('lights', Pos(1, 0), Entity('lit'))
+        state.board.set_entity('controls', Pos(0, 0), Entity('pressed'))
+        PulseNetworkSystem('network').execute_cascade_resolution([
+            ev.tile_moved(Pos(0, 0), Pos(1, 0), 'lit', layer='lights'),
+            ev.tile_moved(Pos(1, 0), Pos(0, 0), 'dark', layer='lights'),
+            ev.cell_transformed(Pos(0, 0), 'ready', 'pressed', 'controls'),
+        ], state, game)
+        self.assertEqual(state.board.get_entity('lights', Pos(1, 0)).kind, 'lit')
+        self.assertEqual(state.board.get_entity('lights', Pos(2, 0)).kind, 'lit')
+
+    def test_fuse_cell_cleared_reports_controls_layer(self):
+        game = GameDef(json.loads((ROOT / 'game.json').read_text()))
+        level = json.loads((ROOT / 'levels/fuse.json').read_text())
+        state = TurnEngine(game, level).state
+        state.board.set_entity('controls', Pos(0, 0), Entity('pressed'))
+        events = PulseNetworkSystem('network').execute_cascade_resolution([
+            ev.cell_transformed(Pos(0, 0), 'ready', 'pressed', 'controls'),
+        ], state, game)
+        cleared = [e for e in events if e.get('type') == 'cell_cleared']
+        self.assertEqual(len(cleared), 1)
+        self.assertEqual(cleared[0].get('layer'), 'controls')
+
     def test_existing_fixture_solutions(self):
         game = GameDef(json.loads((ROOT / 'game.json').read_text()))
         for path in (ROOT / 'levels').glob('*.json'):

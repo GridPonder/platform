@@ -61,6 +61,48 @@ void main() {
     }
     expect(state.board.getEntity('controls', pos)?.kind, 'ready');
   });
+  test('moved relay is protected from same-press direct hit', () {
+    final data = jsonDecode(File('${root.path}/game.json').readAsStringSync())
+        as Map<String, dynamic>;
+    ((data['systems'] as List)[1] as Map<String, dynamic>)['config']
+        ['activateMovedRelays'] = true;
+    final customGame = GameDefinition.fromJson(data, id: 'pulse_network_smoke');
+    final level = LevelDefinition.fromJson(
+        read('levels/relay_on.json'), customGame.layers);
+    final state = level.initialState();
+    state.board
+        .setEntity('objects', const Position(0, 0), const EntityInstance('button'));
+    state.board
+        .setEntity('lights', const Position(0, 0), const EntityInstance('dark'));
+    state.board
+        .setEntity('lights', const Position(1, 0), const EntityInstance('lit'));
+    state.board.setEntity(
+        'controls', const Position(0, 0), const EntityInstance('pressed'));
+    const PulseNetworkSystem(id: 'network').executeCascadeResolution([
+      GameEvent.tileMoved(const Position(0, 0), const Position(1, 0), 'lit',
+          layer: 'lights'),
+      GameEvent.tileMoved(const Position(1, 0), const Position(0, 0), 'dark',
+          layer: 'lights'),
+      GameEvent.cellTransformed(
+          const Position(0, 0), 'ready', 'pressed', 'controls'),
+    ], state, customGame);
+    expect(state.board.getEntity('lights', const Position(1, 0))?.kind, 'lit');
+    expect(state.board.getEntity('lights', const Position(2, 0))?.kind, 'lit');
+  });
+  test('spent fuse cell_cleared reports controlsLayer', () {
+    final level =
+        LevelDefinition.fromJson(read('levels/fuse.json'), game.layers);
+    final state = level.initialState();
+    const pos = Position(0, 0);
+    state.board.setEntity('controls', pos, const EntityInstance('pressed'));
+    final events = const PulseNetworkSystem(id: 'network')
+        .executeCascadeResolution([
+      GameEvent.cellTransformed(pos, 'ready', 'pressed', 'controls'),
+    ], state, game);
+    final cleared = events.where((e) => e.type == 'cell_cleared').toList();
+    expect(cleared, hasLength(1));
+    expect(cleared.single['layer'], 'controls');
+  });
   for (final file
       in Directory('${root.path}/levels').listSync().whereType<File>()) {
     test('pulse_network ${file.uri.pathSegments.last}', () {
