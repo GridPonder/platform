@@ -53,7 +53,7 @@ stock variables, and counts of concealed demand entities.
   `image` is a pack-relative illustration; `stock` is an optional variable name
   tracking available units.
 - `catalog.products`: array of product definition objects:
-  `{name, productKind, demandKind, inputs, image}`. `inputs` lists one or more
+  `{name, productKind, demandKind, inputs, image}`. `inputs` lists zero or more
   input IDs required for the product. `productKind` is the resulting entity kind,
   `demandKind` is the target demand entity kind.
 - `catalog.concealedDemandKinds`: array of entity kinds representing concealed
@@ -64,12 +64,22 @@ stock variables, and counts of concealed demand entities.
 - `catalog.labels`: optional user-facing strings and templates. Supported keys:
   `title`, `showGuide`, `hideGuide`, `completed`, `emptySlot`, `activeItem`,
   `remaining`, `compactRemaining`, `concealedHint`, `stock`,
-  `demandSingular`/`demandPlural`, and `productSingular`/`productPlural`.
+  `demandSingular`/`demandPlural`, and `remainingSingular`/`remainingPlural`.
   Templates accept `{item}`, `{count}`, and `{noun}`.
 - Layout: on wide screens, the panel displays beside the board; on narrow screens,
   it docks above the board with a bounded height so the board remains prominent.
 
 *Note:* Non-Flutter renderers may omit this panel.
+Malformed catalog fields fall back to the plain board. Input references must
+name entries in `inputs`; names, image paths, kind IDs, variable names and
+label values must be strings. Invalid color strings use theme defaults.
+
+### Expandable goal preview (Flutter)
+
+With `ui.goalPreviewSize` in the game definition, `presentation.labels` may
+override `enlargeGoalTarget`, `goalTarget`, and `tapToEnlarge`. The dialog's
+close button uses the application's Material localization. The inline preview
+is bounded by viewport height to leave space for the board.
 
 ### Surface and grid styling (Flutter)
 
@@ -80,6 +90,9 @@ stock variables, and counts of concealed demand entities.
   keeping internal joins seamless.
 - `solidLineColor` and `solidLineWidth`: optional internal dividers between
   adjacent solid cells.
+
+These grid styles are Flutter-only; Python vision-mode benchmark images do
+not reproduce the custom surface lines or bevels.
 
 
 ---

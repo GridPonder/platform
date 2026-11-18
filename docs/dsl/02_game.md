@@ -49,7 +49,7 @@ Visual presentation and input bindings are defined separately in `theme.json` �
 |-------|------|---------|-------------|
 | `showGoal` | boolean | `false` | Show the goal panel during play. |
 | `showGuide` | boolean | `false` | Show the level's `guide` text during play. |
-| `goalPreviewSize` | number | unset | Optional maximum target-preview size in logical pixels. Enables a larger, responsive board-match preview and a tap-to-enlarge view. Unset preserves the existing display. |
+| `goalPreviewSize` | number | unset | Optional positive maximum target-preview size in logical pixels. Enables a responsive board-match preview and a tap-to-enlarge view in Flutter. Unset preserves the existing display. Text can be customized through `presentation.labels` in the theme. |
 | `showGoalPreview` | boolean | `true` | Whether a `board_match` goal is drawn as a miniature target board. Turn it off for a game that uses `board_match` to say "this entity stands here" rather than to specify a pattern — a two-row board with one marked square explains less than the sentence does. The panel then falls back to `goalDescriptions`, listing every goal the level has. |
 | `showMoves` | boolean | `true` | Whether to show the generic "Moves: N" action counter. Turn it off for a game whose action count includes non-move actions (e.g. cell selection in a `beam`-based game) and so doesn't read as a meaningful tally — surface progress via `readouts` instead. |
 | `readouts` | array | `[]` | Live `state.variables` chips shown during play. Each entry: `{"variable": "...", "label": "...", "color": "..."?, "blankWhen": N?, "maxVariable": "..."?}`. Pack-agnostic — the app only knows how to draw a labelled number, never what it means. |
@@ -400,7 +400,7 @@ An `image_label` display overlays a text label and optional status badge onto an
 - `badgeLabel`: optional accessibility label for vector icons (defaults to `"Completed"`).
 - `image`: optional pack-relative image path drawn alongside the sprite.
 - `heldImage`: `true` presents an image authored with the standard transparent carrying offset in a square viewport.
-- `spriteInsets`: `[left, top, right, bottom]` reserves illustration margins as fractions of a cell, preventing artwork from overlapping text.
+- `spriteInsets`: Flutter-only `[left, top, right, bottom]` reserves illustration margins as fractions of a cell, preventing artwork from overlapping text. The Python benchmark renderer does not apply these margins.
 - `imageSize`, `imageRight`, `imageTop`: position and size the optional secondary image as fractions of a cell.
 
 #### Substitution tokens

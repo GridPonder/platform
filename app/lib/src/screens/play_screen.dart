@@ -4359,7 +4359,12 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
       );
       final size = widget.packService.game.ui.goalPreviewSize;
       if (size != null) {
-        targetPreview = ExpandableGoalPreview(maxSize: size, preview: targetPreview);
+        final labels = widget.packService.presentation?['labels'];
+        targetPreview = ExpandableGoalPreview(
+          maxSize: size,
+          preview: targetPreview,
+          labels: labels is Map<String, dynamic> ? labels : const {},
+        );
       }
     }
     return Column(
@@ -4737,7 +4742,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
         dense: true,
         leading: const Icon(Icons.menu_book_outlined),
         title: const Text('Guide'),
-        subtitle: const Text('Rules, wiring and order requirements'),
+        subtitle: const Text('Level rules and requirements'),
         trailing: const Icon(Icons.open_in_new, size: 18),
         onTap: () => showDialog<void>(
           context: context,
