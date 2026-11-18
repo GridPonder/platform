@@ -549,6 +549,8 @@ never half-apply an exchange, and every legal exchange stays reversible.
 | `tape` | object | — | Optional. Drives the system from a stored programme instead of from the action's direction. See [Tape-driven stepping](#tape-driven-stepping). |
 | `claim` | object | — | Optional. When present, an actor that reaches a new cell also claims it in a territory layer. See below. |
 | `excavate` | object | — | Optional. Lets actors cut through terrain that would otherwise block them, backfilling the cell they leave. See [Excavating movers](#excavating-movers). |
+| `blockingLayers` | array of strings | `[]` | Other layers whose occupied cells block a mover exactly like another actor — for example a patrol moved by a second, `tape`-driven instance of this system. Read once at the start of the move. Non-string or unknown layer ids are ignored. |
+| `rejectNoOpMoves` | boolean | `false` | Veto a move in which no actor changes cell, so pushing every actor into a wall is not a free wait. A vetoed move costs no action and never reaches NPC resolution, so `turn_cycle` clocks and tapes hold still. Read strictly: only the boolean `true` enables it. Ignored when `tape` is set. |
 
 `claim` object:
 
@@ -868,6 +870,7 @@ checked.
 |-------|------|---------|-------------|
 | `type` | string | — | `toward_avatar`, `toward_tag`, `toward_color`, `patrol`, or `clockwise`. |
 | `frequency` | integer | `1` | Act only when `turnCount % frequency == 0`. The counter is incremented after this phase, so the first turn always acts. The turn counter is not part of the state key, so while an NPC with `frequency > 1` is on the board the system reports that its behaviour depends on the counter (`depends_on_turn_count` / `dependsOnTurnCount`); the benchmark's valid-action probe then counts a turn that only advanced the beat (e.g. an off-beat `wait`) as effectful. |
+| `resolutionPriority` | integer | `0` | Must be a JSON integer (fractional numbers, strings, booleans and null are rejected at load). Single NPCs with lower values resolve first; ties use board order. Linked trains resolve before single NPCs independently of this field. |
 | `solidBlocking` | boolean | `true` | Whether entities tagged `solid` on the `objects` layer block the NPC. |
 | `targetTag` | string | — | `toward_tag` only: seek the nearest entity with this tag on the `objects` or `markers` layer. |
 | `targetColor` | string | — | `toward_color` only: seek the nearest entity whose `color` param matches, on the `objects` or `actors` layer. |
@@ -878,9 +881,15 @@ checked.
 | `lethalContact` | boolean | `false` | Allow the NPC to step onto the avatar. On contact it increments `contactVariable` and emits `avatar_caught`. When `false` the avatar's cell is impassable, so a seeking NPC with no other distance-reducing step stands still and a `patrol` or `clockwise` NPC turns around — which makes the avatar's body a usable, movable blocker. Applies to every behavior, so a patrolling hazard has to declare its lethality rather than inherit it. |
 | `gazeParam` | string | — | `toward_avatar` only: entity param to write each turn with the cardinal direction of the avatar while the NPC can see it, or `rest` when it cannot. Pair it with [`spriteParam`](02_game.md#entity-kinds) to give the NPC a per-direction look. Refreshed before the `frequency` gate and whether or not a step happens, since gaze is about seeing rather than moving. A behavior without `requiresLineOfSight` always counts as seeing the avatar, so it never rests. Levels should seed the param to match their opening geometry — the system only writes it during a turn, so the first frame shows whatever the level authored. |
 
+Flutter packs may opt into an avatar sight pulse with
+[`avatar.sightPulse`](06_theme.md#additional-avatar-and-feedback-options).
+Detection events and rule execution still run every turn.
+
 **Behavior:**
-1. Collect NPCs from the `actors` layer in row-major order. The board is
-   mutated as they resolve, so a later NPC sees earlier moves this turn.
+1. Collect NPCs from the `actors` layer in row-major order. Resolve linked
+   trains first, in that order, then single NPCs by `resolutionPriority`,
+   breaking ties in row-major order. The board is mutated as they resolve,
+   so a later NPC sees earlier moves this turn.
 2. Skip an NPC whose `frequency` gate does not admit this turn.
 3. Compute one candidate step:
    - `toward_avatar`, `toward_tag`, `toward_color` — the first passable cardinal
@@ -2421,6 +2430,18 @@ Presentation may optionally supply `targetLabels` (one display name per target),
 `{position: [x,y], radius: number, color: hex}`). Decoration coordinates use
 canvas cell units and have no effect on occupancy, clues or completion.
 
+The dedicated placement surface is Flutter-only. Python benchmark images
+show the logical board, without the tray or interactive target-preview dialog.
+UI colors default to the application's Material color scheme. Theme palette
+keys `placementSurface`, `placementSurfaceAlt`, `placementBorder`,
+`placementText`, `placementMuted`, `placementPrimary`, `placementPrimarySoft`,
+`placementWarning`, and `placementError` override these roles. Invalid color
+strings use defaults.
+`presentation.tilePlacement.labels` may override static control text using
+the neutral English default as its key (for example `{"Target":"Reference"}`).
+Malformed label values are ignored. Missing target names fall back to numbered
+shapes. These settings affect presentation only.
+
 #### Optional side-entry assembly
 
 `insertion: {area: [[x,y], ...]}` permits temporary travel cells as well as target
@@ -2576,3 +2597,85 @@ These types are reserved for future built-in systems:
 - `rule_tiles` — Baba-Is-You-style mutable rule objects
 - `rotate_flip_board` — rotate/flip the entire board (not just an overlay region)
 - `spawners` — periodic entity spawning
+
+## `state_network` — synchronous state and sampled observations
+
+An opt-in finite boolean network. Configuration is trusted engine data; only its
+explicit public projection is player-facing. Both engines implement the same
+order: apply a control, synchronously update on a pulse, sample the selected
+output, check completion/exhaustion, project public variables and board indicators.
+
+Configuration fields:
+
+- `inputs`: unique input identifiers. Every pulse control supplies every bit.
+- `nodes`: `{id, op, inputs, initial?}`. `copy`, `toggle`, `not` take one input;
+  `and`, `or`, `xor` take two. Sources name an input or node. Initial bit defaults
+  to zero. Nodes read **old** node outputs and the pulse's new input bits.
+  Declaration order has no effect; feedback reads the previous tick.
+- `counter2` and `counter3` are one-input node operations: their private phase starts
+  at zero, advances modulo 2/3 on a high feed, and emits 1 only on the wraparound
+  cycle. A low feed preserves phase and emits 0. Phase advances while clamped.
+  `latch` takes `[set, reset]`, holds its old bit without either input, and gives
+  reset priority. Its visible memory is an ordinary node bit.
+- `parkCounters`: optional boolean, default false. When true, completion also
+  requires every counter phase to be zero; ordinary `safe` only checks bits.
+- `energy`: positive integer shared by pulses and transactions.
+- `probes`: public socket name → node identifier; `initialProbe` selects a socket.
+- `controls`: action id → `{type, ...}`. `pulse` supplies `inputs`; `probe` selects
+  socket `target`; `clamp` selects node `target` (empty string releases it);
+  `commit` names a transaction `target`. Unmapped actions are left to other systems.
+- `tasks`: transaction name → `{requires: {node: bit}, closes?: [socket], after?: [transaction]}`.
+  `after` lists public prerequisites; attempting a transaction before them is
+  rejected without cost. Prerequisite identifiers must name declared transactions.
+  Commit spends one energy without pulsing, then checks current output conditions.
+  Failure is terminal and **accepted**, never a secret-dependent veto. Success
+  records the transaction and permanently closes its listed sockets. Duplicate
+  commits and closed-socket selection are rejected based only on public state.
+- `safe`: required **internal** bits at completion. A clamp cannot fake safety.
+- `readouts`: public field → variable name. Available fields are `energy`,
+  `probe`, `clamp`, `reading`, `sample`, `journal`, `complete`, `failed`,
+  `input_<input>`, `done_<transaction>`, `open_<socket>`. Private runtime names are reserved.
+- `indicators`: `{field, layer, position, kinds}` projects public fields onto
+  board entities. `kinds` maps stringified public values to entity kind ids.
+- `labels`: optional presentation vocabulary; engines ignore it. Keys `task`,
+  `energy`, `input`, `node`, `probe`, `pulse` and `clamp` name those concepts in
+  the app's generic network controls, each with an optional `<key>Plural`.
+  Defaults are neutral ("task", "energy", "input", "node", "probe", "step",
+  "hold"). A task may also carry a `label` used as its title. Example:
+  `{"task": "inspection", "energy": "charge", "input": "switch", "inputPlural": "switches"}`.
+
+`readouts` decide which public fields become level variables (for goals, lose
+conditions, `ui.readouts` and agent observations). The app's own network
+controls do not depend on them: they read every public field through
+`publicView` (`public_view` in Python), which returns the same values the
+projection uses without modifying state. A loss is explained as a network
+failure only when its reason is the `variable_threshold` on the variable
+`failed` is copied to; a pack's `loseDescriptions` entry still takes precedence,
+and losses caused by other systems keep their own text.
+
+A clamp forces an output low immediately, including what downstream nodes read,
+without resetting memory; the node still updates on every pulse. Moving a probe
+or clamp is unpowered and does not refresh a reading. Sampling happens only after
+a pulse; `sample` records the socket that produced the last reading, independently
+of current selection. `reading=-1` means no sample or a closed socket. `journal`
+records each powered input, clamp position and sample, plus transaction outcomes.
+The internal runtime map `__network_<system id>` participates in undo/state copies
+but must never be serialized as a player observation. Only declared public readouts
+and projected board cells should be exposed. Events contain no hidden values.
+
+All transactions complete plus safe internal bits sets `complete=1`. A failed
+transaction or exhaustion without completion sets `failed=1`. Declare normal
+`variable_threshold` goals/lose conditions over their projected variables. Winning
+on the last energy unit is allowed. Configure positive budgets and at least one
+nontrivial obligation; no automatic initial-state victory is evaluated here.
+
+For restricted observations, use `ui.restrictedInformation: true` and explicit
+public rules listing permitted component/wiring alternatives. This suppresses app
+undo, hints and action previews; Solve still walks the authored solution, as an
+assisted attempt that earns no progress. Restart begins another attempt. This is
+an interface boundary, **not** protection against inspecting downloaded assets,
+engine configuration, debugger, trusted previews or full state. Evaluated agents
+must receive only observations/actions, without source, solutions or state dumps.
+Validate a single observation-dependent strategy across all permitted models;
+separate full-state solutions do not prove player solvability. Include the model
+identity in verifier memoization even when current node values coincide.

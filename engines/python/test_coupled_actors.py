@@ -857,6 +857,146 @@ def test_malformed_extra_diggable_tags_are_ignored() -> None:
     print("  OK  malformed_extra_diggable_tags_are_ignored")
 
 
+
+def _make_noop_game(reject) -> GameDef:
+    """A coupled game with a two-phase `turn_cycle` clock on the ground layer,
+    so a test can see whether a move reached NPC resolution."""
+    config: dict = {}
+    if reject is not None:
+        config["rejectNoOpMoves"] = reject
+    data = {
+        "id": "com.gridponder.test_coupled_actors_noop",
+        "layers": [
+            {"id": "ground", "occupancy": "exactly_one", "default": "empty"},
+            {"id": "actors", "occupancy": "zero_or_one"},
+        ],
+        "entityKinds": {
+            "empty": {"layer": "ground", "tags": ["walkable"]},
+            "wall":  {"layer": "ground", "tags": ["solid"]},
+            "tick":  {"layer": "ground", "tags": ["walkable"]},
+            "tock":  {"layer": "ground", "tags": ["walkable"]},
+            "unit_a": {"layer": "actors", "tags": ["actor"]},
+            "unit_b": {"layer": "actors", "tags": ["actor"]},
+        },
+        "actions": [
+            {"id": "move", "params": {"direction": {"type": "direction", "values": ["up", "down", "left", "right"]}}},
+        ],
+        "systems": [
+            {"id": "movement", "type": "coupled_actors", "config": config},
+            {"id": "clock", "type": "turn_cycle",
+             "config": {"layer": "ground", "cycles": {"tick": "tock", "tock": "tick"}}},
+        ],
+    }
+    return GameDef.from_dict(data, id="test_coupled_actors_noop")
+
+
+def _noop_level(actors, walls, width=6) -> dict:
+    level = _make_level(actors=actors, walls=walls, width=width)
+    level["board"]["layers"]["ground"]["entries"].append(
+        {"position": [0, 0], "kind": "tick"})
+    return level
+
+
+def _clock(engine) -> str:
+    return engine.state.board.get_entity("ground", Pos(0, 0)).kind
+
+
+def test_reject_noop_all_blocked_vetoes() -> None:
+    """With rejectNoOpMoves, a move in which no actor changes cell is vetoed:
+    no action is charged and the turn never reaches NPC resolution."""
+    engine = TurnEngine(_make_noop_game(True), _noop_level(
+        actors=[(3, 0, "unit_a"), (4, 0, "unit_b")], walls=[], width=5))
+    result = engine.execute_turn("move", {"direction": "right"})
+    assert not result.accepted, "an all-blocked move must be vetoed"
+    assert engine.state.action_count == 0, f"vetoed move charged: {engine.state.action_count}"
+    assert _clock(engine) == "tick", "a vetoed move must not advance turn_cycle"
+    print("  OK  reject_noop_all_blocked_vetoes")
+
+
+def test_reject_noop_partial_block_accepted() -> None:
+    """A peel (one actor blocked, another moves) is a real move."""
+    engine = TurnEngine(_make_noop_game(True), _noop_level(
+        actors=[(1, 0, "unit_a"), (4, 0, "unit_b")], walls=[], width=5))
+    result = engine.execute_turn("move", {"direction": "right"})
+    assert result.accepted
+    assert _actor_pos(engine, "unit_a") == Pos(2, 0)
+    assert _actor_pos(engine, "unit_b") == Pos(4, 0)
+    assert engine.state.action_count == 1
+    assert _clock(engine) == "tock"
+    print("  OK  reject_noop_partial_block_accepted")
+
+
+def test_reject_noop_default_off() -> None:
+    """Without the flag an all-blocked move is accepted (pre-existing behaviour)."""
+    engine = TurnEngine(_make_noop_game(None), _noop_level(
+        actors=[(3, 0, "unit_a"), (4, 0, "unit_b")], walls=[], width=5))
+    result = engine.execute_turn("move", {"direction": "right"})
+    assert result.accepted
+    assert engine.state.action_count == 1
+    assert _clock(engine) == "tock"
+    print("  OK  reject_noop_default_off")
+
+
+def test_reject_noop_non_boolean_is_off() -> None:
+    """Read strictly: only the boolean true enables the veto."""
+    engine = TurnEngine(_make_noop_game("yes"), _noop_level(
+        actors=[(3, 0, "unit_a"), (4, 0, "unit_b")], walls=[], width=5))
+    assert engine.execute_turn("move", {"direction": "right"}).accepted
+    print("  OK  reject_noop_non_boolean_is_off")
+
+
+
+def _make_blocking_game(blocking) -> GameDef:
+    data = {
+        "id": "com.gridponder.test_coupled_actors_blocking",
+        "layers": [
+            {"id": "ground", "occupancy": "exactly_one", "default": "empty"},
+            {"id": "actors", "occupancy": "zero_or_one"},
+            {"id": "patrols", "occupancy": "zero_or_one"},
+        ],
+        "entityKinds": {
+            "empty": {"layer": "ground", "tags": ["walkable"]},
+            "unit_a": {"layer": "actors", "tags": ["actor"]},
+            "unit_b": {"layer": "actors", "tags": ["actor"]},
+            "patrol": {"layer": "patrols", "tags": []},
+        },
+        "actions": [
+            {"id": "move", "params": {"direction": {"type": "direction", "values": ["up", "down", "left", "right"]}}},
+        ],
+        "systems": [
+            {"id": "movement", "type": "coupled_actors",
+             "config": {} if blocking is None else {"blockingLayers": blocking}},
+        ],
+    }
+    return GameDef.from_dict(data, id="test_coupled_actors_blocking")
+
+
+def _blocking_level() -> dict:
+    level = _make_level(actors=[(1, 0, "unit_a"), (4, 0, "unit_b")], walls=[], width=7)
+    level["board"]["layers"]["patrols"] = {
+        "format": "sparse", "entries": [{"position": [2, 0], "kind": "patrol"}]}
+    return level
+
+
+def test_blocking_layer_stops_a_mover() -> None:
+    """An entity on a blockingLayers layer blocks like another actor; the
+    actor behind it stays and the free one still moves."""
+    engine = TurnEngine(_make_blocking_game(["patrols"]), _blocking_level())
+    result = engine.execute_turn("move", {"direction": "right"})
+    assert result.accepted
+    assert _actor_pos(engine, "unit_a") == Pos(1, 0)
+    assert _actor_pos(engine, "unit_b") == Pos(5, 0)
+    print("  OK  blocking_layer_stops_a_mover")
+
+
+def test_without_blocking_layers_other_layers_are_ignored() -> None:
+    for cfg in (None, "patrols", [3, None], ["no_such_layer"]):
+        engine = TurnEngine(_make_blocking_game(cfg), _blocking_level())
+        engine.execute_turn("move", {"direction": "right"})
+        assert _actor_pos(engine, "unit_a") == Pos(2, 0), f"cfg={cfg!r}"
+    print("  OK  without_blocking_layers_other_layers_are_ignored")
+
+
 def run_all() -> bool:
     tests = [
         test_open_move_shifts_and_trains_both_actors,
@@ -890,6 +1030,12 @@ def run_all() -> bool:
         test_extra_diggable_tags_are_additive_not_a_replacement,
         test_extra_diggable_tags_grant_only_the_listed_tags,
         test_malformed_extra_diggable_tags_are_ignored,
+        test_reject_noop_all_blocked_vetoes,
+        test_reject_noop_partial_block_accepted,
+        test_reject_noop_default_off,
+        test_reject_noop_non_boolean_is_off,
+        test_blocking_layer_stops_a_mover,
+        test_without_blocking_layers_other_layers_are_ignored,
     ]
     passed = 0
     failed = 0

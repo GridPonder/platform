@@ -3,9 +3,38 @@ import 'dart:math' show min, max;
 import 'package:flutter/material.dart';
 import 'package:gridponder_engine/engine.dart';
 
+class _PlacementStyle {
+  final ColorScheme scheme;
+  final Map<String, String> palette;
+  const _PlacementStyle(this.scheme, this.palette);
+
+  Color color(String role) {
+    final raw =
+        palette['placement${role[0].toUpperCase()}${role.substring(1)}'];
+    final hex = raw?.replaceAll('#', '');
+    if (hex != null &&
+        RegExp(r'^(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$').hasMatch(hex)) {
+      return Color(int.parse(hex.length == 6 ? 'ff$hex' : hex, radix: 16));
+    }
+    return switch (role) {
+      'surface' => scheme.surface,
+      'surfaceAlt' => scheme.surfaceContainerHighest,
+      'border' => scheme.outlineVariant,
+      'text' => scheme.onSurface,
+      'muted' => scheme.onSurfaceVariant,
+      'primary' => scheme.primary,
+      'primarySoft' => scheme.primaryContainer,
+      'warning' => scheme.tertiary,
+      'error' => scheme.error,
+      _ => scheme.onSurface,
+    };
+  }
+}
+
 Color _tileColor(dynamic raw) => Color(
   0xff000000 |
-      (int.tryParse('$raw'.replaceAll('#', ''), radix: 16) ?? 0x608b95),
+      (int.tryParse('$raw'.replaceAll('#', ''), radix: 16) ??
+          Colors.blueGrey.toARGB32()),
 );
 
 Color _darken(Color c, [double factor = 0.16]) {
@@ -20,6 +49,8 @@ class TilePlacementBoard extends StatefulWidget {
   final LevelState state;
   final ValueChanged<GameAction>? onAction;
   final VoidCallback onReset;
+  final Map<String, String> palette;
+  final Map<String, dynamic> labels;
   const TilePlacementBoard({
     super.key,
     required this.systemId,
@@ -27,12 +58,18 @@ class TilePlacementBoard extends StatefulWidget {
     required this.state,
     required this.onAction,
     required this.onReset,
+    this.palette = const {},
+    this.labels = const {},
   });
   @override
   State<TilePlacementBoard> createState() => _TilePlacementBoardState();
 }
 
 class _TilePlacementBoardState extends State<TilePlacementBoard> {
+  _PlacementStyle get style =>
+      _PlacementStyle(Theme.of(context).colorScheme, widget.palette);
+  String label(String text) =>
+      widget.labels[text] is String ? widget.labels[text] as String : text;
   String? selected;
   final _zoom = TransformationController();
 
@@ -44,7 +81,7 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
 
   final rotations = <String, int>{};
   Position? hover;
-  Position grabOffset = const Position(0, 0);
+  Position grabOffset = Position(0, 0);
   Map<String, dynamic> get c => widget.config;
   String get prefix => '${widget.systemId}.';
   dynamic value(String key) => widget.state.variables['$prefix$key'];
@@ -86,7 +123,7 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
     final old = placed[id] as List?;
     grabOffset = grabbed != null && old != null
         ? Position(grabbed.x - (old[0] as int), grabbed.y - (old[1] as int))
-        : const Position(0, 0);
+        : Position(0, 0);
     hover = grabbed != null && old != null
         ? Position(old[0] as int, old[1] as int)
         : null;
@@ -94,8 +131,12 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
         ? (placed[id] as List)[2] as int
         : angle(id);
   });
-  String targetName(int index) =>
-      (c['targetLabels'] as List?)?[index] as String? ?? 'Shape ${index + 1}';
+  String targetName(int index) {
+    final names = c['targetLabels'];
+    return names is List && index < names.length && names[index] is String
+        ? names[index] as String
+        : '${label('Shape')} ${index + 1}';
+  }
 
   void _showTargetPreviewDialog(BuildContext context, int initialIndex) {
     final targets = c['targets'] as List;
@@ -107,92 +148,98 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
       builder: (dialogContext) => StatefulBuilder(
         builder: (context, setDialogState) {
           final targetCells = targets[active] as List;
-          final maxW = min(460.0, MediaQuery.of(context).size.width - 64);
-          final aspect = w / max(1.0, h);
-          final paintW = aspect >= 1.0 ? maxW : min(maxW, 320.0 * aspect);
-          final paintH = min(340.0, paintW / max(0.25, aspect));
+          final viewport = MediaQuery.sizeOf(context);
+          final scale = min(
+            min(460.0, max(1.0, viewport.width - 148)) / w,
+            min(340.0, max(48.0, viewport.height - 220)) / h,
+          );
+          final paintW = w * scale, paintH = h * scale;
           return Dialog(
-            backgroundColor: Colors.white,
+            backgroundColor: style.color('surface'),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(20),
             ),
-            child: Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              targets.length > 1
-                                  ? '${targetName(active)} (${active + 1}/${targets.length})'
-                                  : 'Target Goal',
-                              style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700,
-                                color: Color(0xff303747),
-                              ),
-                            ),
-                            Text(
-                              '${targetCells.length} squares to fill',
-                              style: const TextStyle(
-                                fontSize: 12,
-                                color: Color(0xff6b7280),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      IconButton(
-                        onPressed: () => Navigator.of(dialogContext).pop(),
-                        icon: const Icon(Icons.close_rounded),
-                        tooltip: 'Close',
-                      ),
-                    ],
-                  ),
-                  if (targets.length > 1) ...[
-                    const SizedBox(height: 10),
-                    Wrap(
-                      spacing: 8,
+            child: SingleChildScrollView(
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
                       children: [
-                        for (var i = 0; i < targets.length; i++)
-                          ChoiceChip(
-                            label: Text(targetName(i)),
-                            selected: i == active,
-                            onSelected: (_) => setDialogState(() => active = i),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                targets.length > 1
+                                    ? '${targetName(active)} (${active + 1}/${targets.length})'
+                                    : 'Target Goal',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                  color: style.color('primary'),
+                                ),
+                              ),
+                              Text(
+                                '${targetCells.length} squares to fill',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: style.color('muted'),
+                                ),
+                              ),
+                            ],
                           ),
+                        ),
+                        IconButton(
+                          onPressed: () => Navigator.of(dialogContext).pop(),
+                          icon: Icon(Icons.close_rounded),
+                          tooltip: label('Close'),
+                        ),
                       ],
                     ),
-                  ],
-                  const SizedBox(height: 16),
-                  Container(
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      color: const Color(0xfff8f9fc),
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: const Color(0xffe2e8f0)),
-                    ),
-                    child: SizedBox(
-                      width: paintW,
-                      height: paintH,
-                      child: CustomPaint(
-                        painter: _TilePainter(
-                          c,
-                          {},
-                          active,
-                          const [],
-                          null,
-                          null,
-                          false,
+                    if (targets.length > 1) ...[
+                      SizedBox(height: 10),
+                      Wrap(
+                        spacing: 8,
+                        children: [
+                          for (var i = 0; i < targets.length; i++)
+                            ChoiceChip(
+                              label: Text(targetName(i)),
+                              selected: i == active,
+                              onSelected: (_) =>
+                                  setDialogState(() => active = i),
+                            ),
+                        ],
+                      ),
+                    ],
+                    SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: style.color('primarySoft'),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: style.color('surfaceAlt')),
+                      ),
+                      child: SizedBox(
+                        width: paintW,
+                        height: paintH,
+                        child: CustomPaint(
+                          painter: _TilePainter(
+                            style,
+                            c,
+                            {},
+                            active,
+                            const [],
+                            null,
+                            null,
+                            false,
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           );
@@ -237,7 +284,7 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
     setState(() {
       selected = null;
       hover = null;
-      grabOffset = const Position(0, 0);
+      grabOffset = Position(0, 0);
     });
   }
 
@@ -257,7 +304,7 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
     );
     setState(() {
       hover = null;
-      grabOffset = const Position(0, 0);
+      grabOffset = Position(0, 0);
     });
   }
 
@@ -280,7 +327,7 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
       );
       setState(() {
         hover = null;
-        grabOffset = const Position(0, 0);
+        grabOffset = Position(0, 0);
       });
     } else {
       setState(() => rotations[selected!] = (angle(selected!) + 1) % 4);
@@ -296,7 +343,7 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
     );
     setState(() {
       hover = null;
-      grabOffset = const Position(0, 0);
+      grabOffset = Position(0, 0);
     });
   }
 
@@ -309,7 +356,7 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
     );
     setState(() {
       hover = null;
-      grabOffset = const Position(0, 0);
+      grabOffset = Position(0, 0);
     });
   }
 
@@ -321,17 +368,17 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
         SnackBar(
           content: Row(
             children: [
-              const Icon(Icons.info_outline, color: Colors.white, size: 18),
-              const SizedBox(width: 8),
+              Icon(Icons.info_outline, color: Colors.white, size: 18),
+              SizedBox(width: 8),
               Expanded(child: Text(problem)),
             ],
           ),
-          backgroundColor: const Color(0xff344156),
+          backgroundColor: style.color('primary'),
           behavior: SnackBarBehavior.floating,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(10),
           ),
-          duration: const Duration(seconds: 2),
+          duration: Duration(seconds: 2),
         ),
       );
       return;
@@ -452,22 +499,28 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
             margin: const EdgeInsets.only(bottom: 8),
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
-              color: const Color(0xfffef3c7),
+              color: style.color('border'),
               borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: const Color(0xfffde68a)),
+              border: Border.all(color: style.color('border')),
             ),
-            child: const Row(
+            child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.layers_outlined, size: 16, color: Color(0xffb45309)),
+                Icon(
+                  Icons.layers_outlined,
+                  size: 16,
+                  color: style.color('warning'),
+                ),
                 SizedBox(width: 6),
                 Flexible(
                   child: Text(
-                    'Build from the floor up. Remove upper pieces before their supports.',
+                    label(
+                      'Build from the floor up. Remove upper pieces before their supports.',
+                    ),
                     style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.bold,
-                      color: Color(0xff92400e),
+                      color: style.color('warning'),
                     ),
                   ),
                 ),
@@ -481,14 +534,14 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
             margin: const EdgeInsets.only(bottom: 8),
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
-              color: const Color(0xff0f172a),
+              color: style.color('primary'),
               borderRadius: BorderRadius.circular(10),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Text(
-                  'Light goal: ',
+                Text(
+                  label('Light goal: '),
                   style: TextStyle(color: Colors.white70, fontSize: 12),
                 ),
                 SizedBox(
@@ -496,6 +549,7 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                   height: 48,
                   child: CustomPaint(
                     painter: _TilePainter(
+                      style,
                       c,
                       {},
                       phase,
@@ -507,11 +561,11 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                     ),
                   ),
                 ),
-                const SizedBox(width: 8),
+                SizedBox(width: 8),
                 Text(
                   '${value('lightErrors') ?? 0} lights to match',
-                  style: const TextStyle(
-                    color: Color(0xfffbbf24),
+                  style: TextStyle(
+                    color: style.color('warning'),
                     fontSize: 12,
                     fontWeight: FontWeight.bold,
                   ),
@@ -522,7 +576,7 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
       ];
       final board = selectionRegion(
         SizedBox(
-          key: const ValueKey('tile-placement-board'),
+          key: ValueKey('tile-placement-board'),
           width: w * cell,
           height: h * cell,
           child: MouseRegion(
@@ -577,6 +631,7 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                       },
                 child: CustomPaint(
                   painter: _TilePainter(
+                    style,
                     c,
                     placed,
                     phase,
@@ -622,7 +677,11 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Row(
+            Wrap(
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 8,
+              runSpacing: 4,
               children: [
                 Text(
                   targets.length > 1
@@ -630,25 +689,24 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                             ? '${targetName(phase).toUpperCase()} / ${phase + 1} OF ${targets.length}'
                             : 'TARGET ${phase + 1} OF ${targets.length}'
                       : 'THE BOARD',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 10,
                     letterSpacing: 2,
                     fontWeight: FontWeight.w700,
-                    color: Color(0xff818594),
+                    color: style.color('muted'),
                   ),
                 ),
-                const Spacer(),
                 TextButton.icon(
-                  key: const ValueKey('tile-view-target'),
+                  key: ValueKey('tile-view-target'),
                   onPressed: () => _showTargetPreviewDialog(context, phase),
                   style: TextButton.styleFrom(
-                    foregroundColor: const Color(0xff655b99),
-                    minimumSize: const Size(44, 28),
+                    foregroundColor: style.color('primary'),
+                    minimumSize: Size(44, 28),
                     padding: const EdgeInsets.symmetric(horizontal: 8),
                   ),
-                  icon: const Icon(Icons.open_in_full_rounded, size: 13),
-                  label: const Text(
-                    'Target',
+                  icon: Icon(Icons.open_in_full_rounded, size: 13),
+                  label: Text(
+                    label('Target'),
                     style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
                   ),
                 ),
@@ -657,60 +715,60 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                   builder: (context, transform, child) => TextButton(
                     onPressed: () => _zoom.value = Matrix4.identity(),
                     style: TextButton.styleFrom(
-                      foregroundColor: const Color(0xff8b909e),
-                      minimumSize: const Size(44, 28),
+                      foregroundColor: style.color('muted'),
+                      minimumSize: Size(44, 28),
                       padding: const EdgeInsets.symmetric(horizontal: 6),
                     ),
                     child: Text(
                       '${(transform.getMaxScaleOnAxis() * 100).round()}%',
-                      style: const TextStyle(fontSize: 10),
+                      style: TextStyle(fontSize: 10),
                     ),
                   ),
                 ),
-                const SizedBox(width: 8),
+                SizedBox(width: 8),
                 Text(
                   '$filled / $total',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
-                    color: Color(0xff535b6b),
+                    color: style.color('text'),
                   ),
                 ),
               ],
             ),
             if (limits != null) ...[
-              const SizedBox(height: 8),
+              SizedBox(height: 8),
               Text(
                 'Moves ${value('movesUsed') ?? 0}/${limits['moves']}  |  Rotations ${value('rotationsUsed') ?? 0}/${limits['rotations']}',
-                key: const ValueKey('tile-action-budget'),
+                key: ValueKey('tile-action-budget'),
                 textAlign: TextAlign.center,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w700,
-                  color: Color(0xff655b99),
+                  color: style.color('primary'),
                 ),
               ),
             ],
             if (c['allowUnused'] == true) ...[
-              const SizedBox(height: 5),
-              const Text(
-                'Some pieces may stay in the tray. Choose your pieces.',
-                style: TextStyle(fontSize: 10, color: Color(0xff818594)),
+              SizedBox(height: 5),
+              Text(
+                label('Some pieces may stay in the tray. Choose your pieces.'),
+                style: TextStyle(fontSize: 10, color: style.color('muted')),
                 textAlign: TextAlign.center,
               ),
             ],
             if (mixed) ...[
-              const SizedBox(height: 8),
+              SizedBox(height: 8),
               Text(
                 permanent
                     ? 'Permanent bonds | Shape choices: ${pieces.where((p) => p['variants'] != null).length}'
                     : 'Group moved: ${value('linkMoved') == 1 ? 'yes' : 'no'} | Released: ${value('linkReleased') == 1 ? 'yes' : 'no'} | Shape choices: ${pieces.where((p) => p['variants'] != null).length}',
                 textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 10, color: Color(0xff655b99)),
+                style: TextStyle(fontSize: 10, color: style.color('primary')),
               ),
             ],
             if (c['echoLinks'] != null) ...[
-              const SizedBox(height: 10),
+              SizedBox(height: 10),
               _statusText(
                 echoPartner == null
                     ? selected != null &&
@@ -718,92 +776,87 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                           ? 'Echo ${configuredEchoPartner(selected!)!.toUpperCase()} activates once both partners are placed.'
                           : 'Echo pairs: same movement, opposite quarter-turns.'
                     : '${selected!.toUpperCase()} + ${echoPartner.toUpperCase()}: move together, turn oppositely.',
-                key: const ValueKey('tile-echo-status'),
+                key: ValueKey('tile-echo-status'),
               ),
             ],
             if (c['linkedMovement'] != null && !mixed) ...[
-              const SizedBox(height: 12),
-              _statusText(
-                magneticStatus(),
-                key: const ValueKey('tile-link-status'),
-              ),
+              SizedBox(height: 12),
+              _statusText(magneticStatus(), key: ValueKey('tile-link-status')),
               if (!permanent)
                 Text(
                   'Chain moved: ${value('linkMoved') == 1 ? 'yes' : 'no'} | Released: ${value('linkReleased') == 1 ? 'yes' : 'no'}',
-                  style: const TextStyle(
-                    fontSize: 10,
-                    color: Color(0xff818594),
-                  ),
+                  style: TextStyle(fontSize: 10, color: style.color('muted')),
                 ),
             ],
             if (c['variantCells'] != null && !mixed) ...[
-              const SizedBox(height: 12),
+              SizedBox(height: 12),
               _statusText(
                 pieces.any((p) => p.containsKey('requiredVariant'))
                     ? 'Workshop changes: ${value('formErrors') ?? 0} pieces still need their required form'
                     : 'Either form is allowed. Choose the shapes that fit.',
-                key: const ValueKey('tile-form-status'),
+                key: ValueKey('tile-form-status'),
               ),
             ],
             if (c['neighborCounts'] != null) ...[
-              const SizedBox(height: 8),
+              SizedBox(height: 8),
               _statusText(
-                'CONTACT WEB: exact neighbours on each card. Rivals must not share a side.',
-                key: const ValueKey('tile-contact-status'),
+                label(
+                  'CONTACT WEB: exact neighbours on each card. Rivals must not share a side.',
+                ),
+                key: ValueKey('tile-contact-status'),
               ),
               if (selected != null)
                 Text(
                   '${selected!.toUpperCase()}: ${(c['neighborCounts'] as Map).containsKey(selected) ? 'touch ${(c['neighborCounts'] as Map)[selected]} different pieces' : 'no neighbour quota'}. Keep apart: ${(c['forbiddenContacts'] as List? ?? []).where((pair) => (pair as List).contains(selected)).map((pair) => (pair as List).firstWhere((id) => id != selected).toString().toUpperCase()).join(', ')}',
                   textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: Color(0xff555e70),
-                  ),
+                  style: TextStyle(fontSize: 11, color: style.color('text')),
                 ),
             ],
             if (c['rotationLinks'] != null) ...[
-              const SizedBox(height: 12),
+              SizedBox(height: 12),
               _statusText(
                 selected == null
                     ? 'Paired pieces turn together, wherever they are.'
                     : 'Rotate ${TilePlacementSystem.rotationGroup(c, selected!).map((s) => s.toUpperCase()).join(' + ')} together',
-                key: const ValueKey('tile-pair-status'),
+                key: ValueKey('tile-pair-status'),
               ),
               Text(
                 'Pair turned on board: ${value('pairedTurned') == 1 ? 'yes' : 'no'}',
-                style: const TextStyle(fontSize: 10, color: Color(0xff818594)),
+                style: TextStyle(fontSize: 10, color: style.color('muted')),
               ),
             ],
             if (c['freeSpace'] == true) ...[
-              const SizedBox(height: 12),
+              SizedBox(height: 12),
               _statusText(
-                'Keep one connected region of empty play cells.',
+                label('Keep one connected region of empty play cells.'),
                 key: ValueKey('tile-space-status'),
               ),
             ],
             if (insertion != null) ...[
-              const SizedBox(height: 12),
+              SizedBox(height: 12),
               _statusText(
                 selected == null
                     ? 'Entry arrows mark a board side. Plan the placement order.'
                     : '${selected!.toUpperCase()}: enter from the ${['top', 'right', 'bottom', 'left'][pieces.firstWhere((p) => p['id'] == selected)['entrySide'] as int]} edge',
-                key: const ValueKey('tile-insertion-status'),
+                key: ValueKey('tile-insertion-status'),
               ),
             ],
             if (crossSums) ...[
-              const SizedBox(height: 12),
-              _statusText('Match every row and column: current / target'),
+              SizedBox(height: 12),
+              _statusText(
+                label('Match every row and column: current / target'),
+              ),
             ],
             if (transfer != null) ...[
-              const SizedBox(height: 10),
+              SizedBox(height: 10),
               Text(
                 phase == 0
                     ? 'Target 2: ${transfer['maxSteps']} steps | ${transfer['maxRemovals']} tray return'
                     : 'Steps ${value('transferSteps') ?? 0}/${transfer['maxSteps']} | Returns ${value('removalsUsed') ?? 0}/${transfer['maxRemovals']} | Tray ${(value('transferRoster') as List? ?? pieces.map((p) => p['id']).toList()).where((id) => !placed.containsKey(id)).length}/${transfer['trayCapacity']}',
-                key: const ValueKey('tile-transfer-status'),
-                style: const TextStyle(
+                key: ValueKey('tile-transfer-status'),
+                style: TextStyle(
                   fontSize: 11,
-                  color: Color(0xff655b99),
+                  color: style.color('primary'),
                   fontWeight: FontWeight.w600,
                 ),
                 textAlign: TextAlign.center,
@@ -828,13 +881,13 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                           ),
                           decoration: BoxDecoration(
                             color: i == phase
-                                ? const Color(0xfff1effa)
-                                : const Color(0xfff8f9fc),
+                                ? style.color('primarySoft')
+                                : style.color('primarySoft'),
                             borderRadius: BorderRadius.circular(14),
                             border: Border.all(
                               color: i == phase
-                                  ? const Color(0xffbcb5df)
-                                  : const Color(0xffebedf2),
+                                  ? style.color('primarySoft')
+                                  : style.color('primarySoft'),
                             ),
                           ),
                           child: Column(
@@ -846,6 +899,7 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                                     : 80,
                                 child: CustomPaint(
                                   painter: _TilePainter(
+                                    style,
                                     c,
                                     {},
                                     i,
@@ -856,7 +910,7 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                                   ),
                                 ),
                               ),
-                              const SizedBox(height: 6),
+                              SizedBox(height: 6),
                               Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
@@ -866,17 +920,17 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                                       fontSize: 11,
                                       fontWeight: FontWeight.w600,
                                       color: i == phase
-                                          ? const Color(0xff655b99)
-                                          : const Color(0xff8b909e),
+                                          ? style.color('primary')
+                                          : style.color('muted'),
                                     ),
                                   ),
-                                  const SizedBox(width: 4),
+                                  SizedBox(width: 4),
                                   Icon(
                                     Icons.open_in_full_rounded,
                                     size: 11,
                                     color: i == phase
-                                        ? const Color(0xff655b99)
-                                        : const Color(0xff8b909e),
+                                        ? style.color('primary')
+                                        : style.color('muted'),
                                   ),
                                 ],
                               ),
@@ -891,17 +945,17 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
             if ((transfer != null && phase > 0) ||
                 insertion != null ||
                 c['playArea'] != null) ...[
-              const SizedBox(height: 10),
-              const Text(
-                'Outlined: destination | Pale: transit | Grey: blocked',
-                style: TextStyle(fontSize: 10, color: Color(0xff818594)),
+              SizedBox(height: 10),
+              Text(
+                label('Outlined: destination | Pale: transit | Grey: blocked'),
+                style: TextStyle(fontSize: 10, color: style.color('muted')),
                 textAlign: TextAlign.center,
               ),
             ],
             SizedBox(height: wide ? 20 : 14),
             Center(
               child: SizedBox(
-                key: const ValueKey('tile-board-viewport'),
+                key: ValueKey('tile-board-viewport'),
                 width: w * cell + (crossSums ? 44 : 0),
                 height: h * cell + (crossSums ? 30 : 0),
                 child: InteractiveViewer(
@@ -929,10 +983,10 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                                   child: Text(
                                     '${(value('columnSums') as List? ?? List.filled(w, 0))[col]}/${c['columnTotals'][col]}',
                                     key: ValueKey('tile-column-$col'),
-                                    style: const TextStyle(
+                                    style: TextStyle(
                                       fontSize: 10,
                                       fontWeight: FontWeight.w600,
-                                      color: Color(0xff655b99),
+                                      color: style.color('primary'),
                                     ),
                                   ),
                                 ),
@@ -947,10 +1001,10 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                                   child: Text(
                                     '${(value('rowSums') as List? ?? List.filled(h, 0))[row]}/${c['rowTotals'][row]}',
                                     key: ValueKey('tile-row-$row'),
-                                    style: const TextStyle(
+                                    style: TextStyle(
                                       fontSize: 10,
                                       fontWeight: FontWeight.w600,
-                                      color: Color(0xff655b99),
+                                      color: style.color('primary'),
                                     ),
                                   ),
                                 ),
@@ -967,15 +1021,15 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
               child: LinearProgressIndicator(
                 value: total == 0 ? 0 : filled / total,
                 minHeight: 3,
-                color: const Color(0xffa09ab8),
-                backgroundColor: const Color(0xffeff0f5),
+                color: style.color('primary'),
+                backgroundColor: style.color('primarySoft'),
               ),
             ),
             if (pieces.any((p) => p['edges'] != null)) ...[
-              const SizedBox(height: 12),
+              SizedBox(height: 12),
               Text(
                 '${value('edgeErrors') ?? 0} open connections',
-                style: const TextStyle(fontSize: 11, color: Color(0xff8b909e)),
+                style: TextStyle(fontSize: 11, color: style.color('muted')),
               ),
             ],
           ],
@@ -993,28 +1047,27 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Row(
+            Wrap(
+              alignment: WrapAlignment.spaceBetween,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 8,
               children: [
-                const Text(
-                  'Your pieces',
+                Text(
+                  label('Your pieces'),
                   style: TextStyle(
                     fontSize: 19,
                     letterSpacing: -.4,
                     fontWeight: FontWeight.w700,
-                    color: Color(0xff303747),
+                    color: style.color('primary'),
                   ),
                 ),
-                const Spacer(),
                 Text(
                   '${pieces.length} shapes',
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: Color(0xff9095a2),
-                  ),
+                  style: TextStyle(fontSize: 11, color: style.color('muted')),
                 ),
               ],
             ),
-            const SizedBox(height: 20),
+            SizedBox(height: 20),
             if (wide)
               if (pieces.length > 12)
                 Column(
@@ -1026,16 +1079,16 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                         max(240.0, constraints.maxHeight - 240),
                       ),
                       child: SingleChildScrollView(
-                        key: const ValueKey('tile-piece-list'),
+                        key: ValueKey('tile-piece-list'),
                         child: cardGrid,
                       ),
                     ),
-                    const SizedBox(height: 8),
+                    SizedBox(height: 8),
                     Text(
                       'Scroll to see all ${pieces.length} pieces',
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 10,
-                        color: Color(0xff8b909e),
+                        color: style.color('muted'),
                       ),
                     ),
                   ],
@@ -1061,7 +1114,7 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                 ),
               ),
             if (selectedPiece?['variants'] != null) ...[
-              const SizedBox(height: 12),
+              SizedBox(height: 12),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
@@ -1082,14 +1135,14 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                 ],
               ),
             ],
-            const SizedBox(height: 18),
+            SizedBox(height: 18),
             selectionRegion(
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
                 decoration: BoxDecoration(
-                  color: const Color(0xfff8fafc),
+                  color: style.color('surface'),
                   borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: const Color(0xffe2e8f0)),
+                  border: Border.all(color: style.color('surfaceAlt')),
                 ),
                 child: Wrap(
                   alignment: WrapAlignment.center,
@@ -1109,12 +1162,12 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                               widget.onAction == null
                           ? null
                           : rotateSelected,
-                      foreground: const Color(0xff655b99),
-                      background: const Color(0xffefedfa),
+                      foreground: style.color('primary'),
+                      background: style.color('primarySoft'),
                     ),
                     _pieceControl(
                       id: 'remove',
-                      label: 'Return',
+                      label: label('Return'),
                       icon: Icons.undo_rounded,
                       styled:
                           selected != null &&
@@ -1128,12 +1181,12 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                               widget.onAction == null
                           ? null
                           : returnSelected,
-                      foreground: const Color(0xff535b6b),
-                      background: const Color(0xffeff0f5),
+                      foreground: style.color('text'),
+                      background: style.color('primarySoft'),
                     ),
                     if (c['echoSwap'] == true)
                       TextButton.icon(
-                        key: const ValueKey('tile-echo-swap'),
+                        key: ValueKey('tile-echo-swap'),
                         onPressed:
                             echoPartner == null ||
                                 widget.onAction == null ||
@@ -1142,18 +1195,18 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                                         (limits['moves'] as int))
                             ? null
                             : swapSelected,
-                        icon: const Icon(Icons.swap_horiz_rounded, size: 18),
-                        label: const Text('Swap positions'),
+                        icon: Icon(Icons.swap_horiz_rounded, size: 18),
+                        label: Text(label('Swap positions')),
                       ),
                     if (c['variantCells'] != null)
                       TextButton.icon(
-                        key: const ValueKey('tile-change'),
+                        key: ValueKey('tile-change'),
                         onPressed: canChange && widget.onAction != null
                             ? changeSelected
                             : null,
-                        icon: const Icon(Icons.swap_horiz_rounded, size: 18),
-                        label: const Text(
-                          'Change form',
+                        icon: Icon(Icons.swap_horiz_rounded, size: 18),
+                        label: Text(
+                          label('Change form'),
                           style: TextStyle(fontSize: 12),
                         ),
                       ),
@@ -1169,8 +1222,8 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                         ),
                       ),
                       onPressed: widget.onReset,
-                      child: const Text(
-                        'Reset',
+                      child: Text(
+                        label('Reset'),
                         style: TextStyle(fontSize: 13),
                       ),
                     ),
@@ -1178,7 +1231,7 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                 ),
               ),
             ),
-            const SizedBox(height: 12),
+            SizedBox(height: 12),
             Text(
               selected == null
                   ? 'Select a piece, then tap the board.'
@@ -1190,30 +1243,30 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                   ? 'Slide ${selected!.toUpperCase()}, or Return it to rotate.'
                   : 'Rotate or place piece ${selected!.toUpperCase()}.',
               textAlign: TextAlign.center,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 11,
                 height: 1.5,
-                color: Color(0xff8e94a3),
+                color: style.color('muted'),
               ),
             ),
             if (phase + 1 < targets.length) ...[
-              const SizedBox(height: 16),
+              SizedBox(height: 16),
               FilledButton.icon(
-                key: const ValueKey('tile-next-target'),
+                key: ValueKey('tile-next-target'),
                 onPressed: value('fit') == 1 && widget.onAction != null
                     ? () => widget.onAction!(
                         GameAction(c['nextAction'] as String? ?? 'next_target'),
                       )
                     : null,
                 style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xff655b99),
+                  backgroundColor: style.color('primary'),
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(vertical: 16),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(14),
                   ),
                 ),
-                icon: const Icon(Icons.arrow_forward_rounded, size: 17),
+                icon: Icon(Icons.arrow_forward_rounded, size: 17),
                 label: Text(
                   c['targetLabels'] == null
                       ? 'Continue to shape 2'
@@ -1236,16 +1289,16 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Expanded(child: boardPanel),
-                      const SizedBox(width: 24),
+                      SizedBox(width: 24),
                       SizedBox(width: 340, child: trayPanel),
                     ],
                   )
                 else ...[
                   boardPanel,
-                  const SizedBox(height: 16),
+                  SizedBox(height: 16),
                   trayPanel,
                 ],
-                const SizedBox(height: 20),
+                SizedBox(height: 20),
               ],
             ),
           ),
@@ -1274,7 +1327,7 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
     icon: Icon(icon, size: 18),
     label: Text(
       label,
-      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+      style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
     ),
   );
 
@@ -1284,19 +1337,21 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
       avatar: Icon(
         matches ? Icons.check_circle : Icons.radio_button_unchecked,
         size: 16,
-        color: matches ? const Color(0xff526174) : Colors.black45,
+        color: matches ? style.color('text') : Colors.black45,
       ),
       label: Text(
         'Row ${row + 1}: $current / $target',
-        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+        style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
       ),
       backgroundColor: matches
-          ? const Color(0xffd1fae5)
-          : const Color(0xfff1f5f9),
+          ? style.color('primarySoft')
+          : style.color('surfaceAlt'),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
         side: BorderSide(
-          color: matches ? const Color(0xffa7f3d0) : const Color(0xffe2e8f0),
+          color: matches
+              ? style.color('primarySoft')
+              : style.color('surfaceAlt'),
         ),
       ),
     );
@@ -1306,7 +1361,7 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
     text,
     key: key,
     textAlign: TextAlign.center,
-    style: const TextStyle(fontSize: 11, color: Color(0xff655b99)),
+    style: TextStyle(fontSize: 11, color: style.color('primary')),
   );
 
   Widget _surface({required Widget child, double padding = 20}) => Container(
@@ -1314,12 +1369,12 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
     decoration: BoxDecoration(
       color: Colors.white,
       borderRadius: BorderRadius.circular(24),
-      border: Border.all(color: const Color(0xffe8eaf0)),
+      border: Border.all(color: style.color('primarySoft')),
       boxShadow: [
         BoxShadow(
-          color: const Color(0xff23314e).withValues(alpha: .035),
+          color: style.color('primary').withValues(alpha: .035),
           blurRadius: 30,
-          offset: const Offset(0, 10),
+          offset: Offset(0, 10),
         ),
       ],
     ),
@@ -1338,6 +1393,7 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
       height: h * unit,
       child: CustomPaint(
         painter: _TilePainter(
+          style,
           {
             'pieces': [piece],
             'targets': const [[]],
@@ -1361,9 +1417,9 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
         children: [
           Text(
             'Form ${String.fromCharCode(65 + variant)}',
-            style: const TextStyle(fontSize: 10, color: Color(0xff818594)),
+            style: TextStyle(fontSize: 10, color: style.color('muted')),
           ),
-          const SizedBox(height: 5),
+          SizedBox(height: 5),
           _pieceArtwork(p, [0, 0, rotation, variant], 45),
         ],
       );
@@ -1386,7 +1442,7 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
           ).where((s) => s != id).toList();
     final onBoard = placed.containsKey(id);
     return AnimatedContainer(
-      duration: const Duration(milliseconds: 140),
+      duration: Duration(milliseconds: 140),
       width: 92,
       height: 124,
       padding: const EdgeInsets.all(10),
@@ -1394,11 +1450,13 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
         color: active
             ? color.withValues(alpha: .07)
             : onBoard
-            ? const Color(0xffedf0f5)
-            : const Color(0xfff9fafc),
+            ? style.color('primarySoft')
+            : style.color('primarySoft'),
         borderRadius: BorderRadius.circular(15),
         border: Border.all(
-          color: active ? color.withValues(alpha: .9) : const Color(0xffeceef3),
+          color: active
+              ? color.withValues(alpha: .9)
+              : style.color('primarySoft'),
           width: active ? 1.6 : 1,
         ),
         boxShadow: active
@@ -1406,7 +1464,7 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                 BoxShadow(
                   color: color.withValues(alpha: .12),
                   blurRadius: 12,
-                  offset: const Offset(0, 3),
+                  offset: Offset(0, 3),
                 ),
               ]
             : [],
@@ -1417,16 +1475,16 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
             children: [
               Text(
                 id.toUpperCase(),
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w700,
-                  color: Color(0xff555e70),
+                  color: style.color('text'),
                 ),
               ),
-              const Spacer(),
+              Spacer(),
               Text(
                 '${r * 90}\u00b0',
-                style: const TextStyle(fontSize: 9, color: Color(0xffa0a5b0)),
+                style: TextStyle(fontSize: 9, color: style.color('muted')),
               ),
             ],
           ),
@@ -1449,36 +1507,36 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                   )
                   .join(' '),
               maxLines: 2,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.w700,
-                color: Color(0xff344156),
+                color: style.color('primary'),
               ),
               textAlign: TextAlign.center,
             ),
           if ((c['neighborCounts'] as Map? ?? {}).containsKey(id))
             Text(
               'Touch ${(c['neighborCounts'] as Map)[id]} pieces',
-              style: const TextStyle(fontSize: 10, color: Color(0xff655b99)),
+              style: TextStyle(fontSize: 10, color: style.color('primary')),
             ),
           if (configuredEchoPartner(id) != null)
             Text(
               'Echo ${configuredEchoPartner(id)!.toUpperCase()}',
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 10,
                 fontWeight: FontWeight.w600,
-                color: Color(0xff655b99),
+                color: style.color('primary'),
               ),
             ),
           if (rotationPartners.isNotEmpty)
             Text(
               'Turns ${rotationPartners.map((s) => s.toUpperCase()).join('+')}',
-              style: const TextStyle(fontSize: 10, color: Color(0xff655b99)),
+              style: TextStyle(fontSize: 10, color: style.color('primary')),
             ),
           if (p['variants'] != null)
             Text(
               'Form ${String.fromCharCode(65 + form(id))}',
-              style: const TextStyle(fontSize: 10, color: Color(0xff655b99)),
+              style: TextStyle(fontSize: 10, color: style.color('primary')),
             ),
           if (p['entrySide'] != null)
             Row(
@@ -1492,22 +1550,19 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                     Icons.east_rounded,
                   ][p['entrySide'] as int],
                   size: 14,
-                  color: const Color(0xff655b99),
+                  color: style.color('primary'),
                 ),
-                const SizedBox(width: 3),
+                SizedBox(width: 3),
                 Text(
                   ['Top', 'Right', 'Bottom', 'Left'][p['entrySide'] as int],
-                  style: const TextStyle(
-                    fontSize: 10,
-                    color: Color(0xff6c7484),
-                  ),
+                  style: TextStyle(fontSize: 10, color: style.color('muted')),
                 ),
               ],
             ),
           if (p['value'] != null)
             Text(
               '${p['value']} per cell',
-              style: const TextStyle(fontSize: 10, color: Color(0xff6c7484)),
+              style: TextStyle(fontSize: 10, color: style.color('muted')),
             ),
         ],
       ),
@@ -1517,6 +1572,7 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
 
 class _TilePainter extends CustomPainter {
   final Map<String, dynamic> c;
+  final _PlacementStyle style;
   final Map placed;
   final int phase, rotation, transferSteps, removalsUsed, activeVariant;
   final List lights, moved;
@@ -1525,6 +1581,7 @@ class _TilePainter extends CustomPainter {
   final bool interactive, lightOnly, isThumbnail;
 
   _TilePainter(
+    this.style,
     this.c,
     this.placed,
     this.phase,
@@ -1603,7 +1660,7 @@ class _TilePainter extends CustomPainter {
       center,
       tip,
       Paint()
-        ..color = const Color(0xff25344d)
+        ..color = style.color('primary')
         ..strokeWidth = 2.5,
     );
     canvas.drawPath(
@@ -1618,10 +1675,10 @@ class _TilePainter extends CustomPainter {
           (tip - delta * 5 - side * 3).dy,
         )
         ..close(),
-      Paint()..color = const Color(0xff25344d),
+      Paint()..color = style.color('primary'),
     );
     canvas.drawCircle(center, radius + 1.5, Paint()..color = Colors.white);
-    canvas.drawCircle(center, radius, Paint()..color = const Color(0xff25344d));
+    canvas.drawCircle(center, radius, Paint()..color = style.color('primary'));
     label(
       canvas,
       symbol,
@@ -1747,7 +1804,7 @@ class _TilePainter extends CustomPainter {
         Rect.fromCenter(center: center, width: w, height: h),
         Radius.circular(min(w, h) * .5),
       );
-      canvas.drawRRect(capsule, Paint()..color = const Color(0xff526174));
+      canvas.drawRRect(capsule, Paint()..color = style.color('text'));
       canvas.drawRRect(
         capsule,
         Paint()
@@ -1805,7 +1862,7 @@ class _TilePainter extends CustomPainter {
                           : Colors.white
                     : c['boardAccent'] != null
                     ? _tileColor(c['boardAccent'])
-                    : const Color(0xff746aa3),
+                    : style.color('primary'),
             );
             canvas.drawRRect(
               r,
@@ -1813,27 +1870,27 @@ class _TilePainter extends CustomPainter {
                 ..color = c['boardAccent'] != null
                     ? _tileColor(c['boardAccent']).withValues(alpha: .65)
                     : movement == null
-                    ? const Color(0xff94a3b8)
-                    : const Color(0xff64748b)
+                    ? style.color('muted')
+                    : style.color('muted')
                 ..style = PaintingStyle.stroke
                 ..strokeWidth = 1.2,
             );
           } else if (transit.contains(p)) {
-            canvas.drawRRect(r, Paint()..color = const Color(0xffe7ebf3));
+            canvas.drawRRect(r, Paint()..color = style.color('primarySoft'));
             canvas.drawRRect(
               r,
               Paint()
-                ..color = const Color(0xffcbd5e1)
+                ..color = style.color('border')
                 ..style = PaintingStyle.stroke
                 ..strokeWidth = .8,
             );
           } else {
             // Solid dark slate-gray unusable block (distinct from white goal & pale transit).
-            canvas.drawRRect(r, Paint()..color = const Color(0xff525e70));
+            canvas.drawRRect(r, Paint()..color = style.color('text'));
             canvas.drawRRect(
               r,
               Paint()
-                ..color = const Color(0xff3b4554)
+                ..color = style.color('primary')
                 ..style = PaintingStyle.stroke
                 ..strokeWidth = 1.2,
             );
@@ -1865,8 +1922,8 @@ class _TilePainter extends CustomPainter {
               cell * .18,
               Paint()
                 ..color = on.contains(p)
-                    ? const Color(0xffffda60)
-                    : const Color(0xff263447),
+                    ? style.color('warning')
+                    : style.color('text'),
             );
             canvas.drawCircle(
               center,
@@ -1892,7 +1949,7 @@ class _TilePainter extends CustomPainter {
       if (!isThumbnail) {
         canvas.drawShadow(
           shape,
-          const Color(0xff24324a).withValues(alpha: .12),
+          style.color('primary').withValues(alpha: .12),
           3,
           true,
         );
@@ -1944,13 +2001,13 @@ class _TilePainter extends CustomPainter {
       final floorY = height * cell;
       canvas.drawRect(
         Rect.fromLTWH(0, floorY - 4, width * cell, 6),
-        Paint()..color = const Color(0xff78350f),
+        Paint()..color = style.color('warning'),
       );
       canvas.drawLine(
         Offset(0, floorY - 4),
         Offset(width * cell, floorY - 4),
         Paint()
-          ..color = const Color(0xffb45309)
+          ..color = style.color('warning')
           ..strokeWidth = 1.5,
       );
     }
@@ -1971,7 +2028,7 @@ class _TilePainter extends CustomPainter {
           center,
           cell * .25,
           Paint()
-            ..color = const Color(0xff8c7aaf)
+            ..color = style.color('primary')
             ..style = PaintingStyle.stroke
             ..strokeWidth = 1.6,
         );
@@ -1994,7 +2051,7 @@ class _TilePainter extends CustomPainter {
         canvas.drawPath(
           icon,
           Paint()
-            ..color = const Color(0xff655b99)
+            ..color = style.color('primary')
             ..style = PaintingStyle.stroke
             ..strokeWidth = 1.6
             ..strokeJoin = StrokeJoin.round
@@ -2030,7 +2087,7 @@ class _TilePainter extends CustomPainter {
           '✦',
           Offset((a.x + .25) * cell, (a.y + .25) * cell),
           min(22, cell * .38),
-          color: const Color(0xfffbbf24),
+          color: style.color('warning'),
         );
       }
       for (final e in TilePlacementSystem.edges(p, placement)) {
@@ -2064,7 +2121,7 @@ class _TilePainter extends CustomPainter {
           canvas.drawCircle(
             seamCenter,
             cell * 0.16,
-            Paint()..color = const Color(0xffef4444),
+            Paint()..color = style.color('error'),
           );
           canvas.drawCircle(
             seamCenter,
@@ -2117,7 +2174,7 @@ class _TilePainter extends CustomPainter {
         canvas.drawPath(
           path,
           Paint()
-            ..color = valid ? _darken(color, .12) : const Color(0xffcf7979)
+            ..color = valid ? _darken(color, .12) : style.color('error')
             ..style = PaintingStyle.stroke
             ..strokeWidth = 1.5,
         );
@@ -2144,7 +2201,7 @@ class _TilePainter extends CustomPainter {
             '\u2726',
             Offset((p.x + .25) * cell, (p.y + .25) * cell),
             min(22.0, cell * .38),
-            color: const Color(0xfffbbf24),
+            color: style.color('warning'),
           );
         }
       }

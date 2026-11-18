@@ -37,7 +37,9 @@ Run these commands. They are the only way to interact with the puzzle.
 
 {narration}A move that is not a legal action right now is rejected: the board does not
 change and the move does not count against your action budget. Trying a move to
-find out whether it is legal is a reasonable way to read the board.
+find out whether it is legal is a reasonable way to read the board. Legal is not
+the same as safe: a move the game accepts can still cost an action or lose the
+attempt, so do not treat an action as a harmless test just because it is listed.
 
 A move whose JSON does not match the shapes below is rejected the same way, but
 it is not the same thing. Five of those in a row end the run, so if a move is
@@ -146,6 +148,7 @@ def build_rules(
     actions: list[dict] | None = None,
     anonymized: bool = False,
     narrate: bool = False,
+    guide: str = "",
 ) -> str:
     """Return the full RULES.md body for one level.
 
@@ -179,6 +182,8 @@ def build_rules(
     else:
         description = getattr(game_def, "description", "") or ""
         mechanics = f"\n## Mechanics\n\n{description}\n" if description else ""
+    if guide:
+        mechanics += f"\n## Level guide\n\n{guide}\n"
 
     example_json = _example_json(actions[0]) if actions else '{"action": "..."}'
 
