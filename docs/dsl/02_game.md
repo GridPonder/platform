@@ -400,7 +400,7 @@ An `image_label` display overlays a text label and optional status badge onto an
 - `badgeLabel`: optional accessibility label for vector icons (defaults to `"Completed"`).
 - `image`: optional pack-relative image path drawn alongside the sprite.
 - `heldImage`: `true` presents an image authored with the standard transparent carrying offset in a square viewport.
-- `spriteInsets`: Flutter-only `[left, top, right, bottom]` reserves illustration margins as fractions of a cell, preventing artwork from overlapping text. The Python benchmark renderer does not apply these margins.
+- `spriteInsets`: `[left, top, right, bottom]` reserves illustration margins as fractions of a cell, preventing artwork from overlapping text.
 - `imageSize`, `imageRight`, `imageTop`: position and size the optional secondary image as fractions of a cell.
 
 #### Substitution tokens

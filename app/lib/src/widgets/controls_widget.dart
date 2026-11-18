@@ -151,11 +151,7 @@ class _ControlsWidgetState extends State<ControlsWidget> {
           onAction: widget.onAction,
         ),
     ];
-    final controls = Wrap(
-      alignment: WrapAlignment.center,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      runSpacing: 4,
-      children: [
+    final controlButtons = <Widget>[
         if (widget.hintStatuses.isNotEmpty)
           _HintBtn(statuses: widget.hintStatuses, onTap: widget.onHint),
         if (widget.onTeach != null)
@@ -184,8 +180,15 @@ class _ControlsWidgetState extends State<ControlsWidget> {
           label: 'Exit',
           onTap: widget.onExit,
         ),
-      ],
-    );
+      ];
+    final controls = widget.game.ui.goalPreviewSize == null
+        ? Row(mainAxisAlignment: MainAxisAlignment.center, children: controlButtons)
+        : Wrap(
+            alignment: WrapAlignment.center,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            runSpacing: 4,
+            children: controlButtons,
+          );
 
     final diagBtns = _hasDiagonalSwap
         ? _DiagonalSwapBtns(

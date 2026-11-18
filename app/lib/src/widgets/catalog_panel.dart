@@ -6,11 +6,9 @@ Color? _parseHex(String? hex) {
   if (hex == null || hex.isEmpty) return null;
   final clean = hex.replaceAll('#', '').trim();
   if (clean.length == 6) {
-    final value = int.tryParse('FF$clean', radix: 16);
-    return value == null ? null : Color(value);
+    return Color(int.parse('FF$clean', radix: 16));
   } else if (clean.length == 8) {
-    final value = int.tryParse(clean, radix: 16);
-    return value == null ? null : Color(value);
+    return Color(int.parse(clean, radix: 16));
   }
   return null;
 }
@@ -74,44 +72,20 @@ class CatalogBoardLayout extends StatefulWidget {
   /// Validates catalog configuration defensively to avoid rendering crashes.
   static bool isValidCatalog(Map<String, dynamic>? config) {
     if (config == null) return false;
-    if (config.containsKey('catalog')) {
-      final nested = config['catalog'];
-      return nested is Map<String, dynamic> &&
-          !nested.containsKey('catalog') && isValidCatalog(nested);
-    }
-    final products = config['products'];
-    final inputs = config['inputs'];
+    final products = config['catalog'] is Map<String, dynamic>
+        ? (config['catalog'] as Map<String, dynamic>)['products'] ??
+            (config['catalog'] as Map<String, dynamic>)['recipes']
+        : config['products'] ?? config['recipes'];
+    final inputs = config['catalog'] is Map<String, dynamic>
+        ? (config['catalog'] as Map<String, dynamic>)['inputs'] ??
+            (config['catalog'] as Map<String, dynamic>)['ingredients']
+        : config['inputs'] ?? config['ingredients'];
+
     if (products is! List || inputs is! Map) return false;
-    bool strings(Map item, List<String> keys) => keys.every(
-        (key) => item[key] == null || item[key] is String);
-    for (final entry in inputs.entries) {
-      if (entry.key is! String || entry.value is! Map ||
-          !strings(entry.value as Map, ['name', 'sourceKind', 'image', 'stock'])) {
-        return false;
-      }
-    }
     for (final item in products) {
       if (item is! Map) return false;
-      final itemInputs = item['inputs'];
-      if (itemInputs is! List ||
-          itemInputs.any((id) => id is! String || !inputs.containsKey(id)) ||
-          !strings(item, ['name', 'productKind', 'demandKind', 'image'])) {
-        return false;
-      }
-    }
-    final concealed = config['concealedDemandKinds'];
-    if (concealed != null &&
-        (concealed is! List || concealed.any((kind) => kind is! String))) {
-      return false;
-    }
-    final labels = config['labels'];
-    if (labels != null && (labels is! Map<String, dynamic> ||
-        labels.values.any((value) => value is! String))) {
-      return false;
-    }
-    if (!strings(config, ['remainingVariable', 'instructions', 'panelColor',
-        'cardColor', 'textColor', 'mutedColor', 'borderColor'])) {
-      return false;
+      final itemInputs = item['inputs'] ?? item['ingredients'];
+      if (itemInputs is! List) return false;
     }
     return true;
   }
@@ -193,37 +167,36 @@ class _CatalogBoardLayoutState extends State<CatalogBoardLayout> {
       );
     }
 
-    final rawInputs = config['inputs'] as Map;
+    final rawInputs = (config['inputs'] ?? config['ingredients']) as Map;
     final inputs = rawInputs.cast<String, dynamic>();
 
     final concealedKinds = List<String>.from(
-      config['concealedDemandKinds'] ?? [],
+      config['concealedDemandKinds'] ?? config['hiddenOrderKinds'] ?? [],
     );
     final objects = _boardObjectKinds;
     final concealedCount = objects.where(concealedKinds.contains).length;
 
-    final rawProducts = config['products'] as List;
+    final rawProducts = (config['products'] ?? config['recipes']) as List;
     final products = rawProducts
         .whereType<Map>()
         .map((p) => p.cast<String, dynamic>())
         .where((p) {
-          final reqInputs = List<String>.from(p['inputs']);
+          final reqInputs = List<String>.from(p['inputs'] ?? p['ingredients'] ?? []);
           return reqInputs.every((i) {
             final inDef = inputs[i];
             if (inDef is! Map) return false;
-            final srcKind = inDef['sourceKind'];
+            final srcKind = inDef['sourceKind'] ?? inDef['stationKind'];
             return srcKind == null || objects.contains(srcKind);
           });
         })
         .where((p) {
-          final targetKind = p['demandKind'];
+          final targetKind = p['demandKind'] ?? p['orderKind'];
           return concealedCount > 0 || state.isWon || (targetKind != null && objects.contains(targetKind));
         })
         .toList();
 
     final remainingVar = config['remainingVariable'] ?? 'remaining';
-    final remainingValue = state.variables[remainingVar];
-    final remainingCount = remainingValue is int ? remainingValue : 0;
+    final remainingCount = state.variables[remainingVar] ?? 0;
 
     final demandNoun = label(
       concealedCount == 1 ? 'demandSingular' : 'demandPlural',
@@ -236,7 +209,7 @@ class _CatalogBoardLayoutState extends State<CatalogBoardLayout> {
 
     final concealedHint = counted(
       'concealedHint',
-      'Concealed: {count} {noun}',
+      label('hiddenHint', 'Concealed: {count} {noun}'),
       concealedCount,
       demandNoun,
     );
@@ -256,9 +229,9 @@ class _CatalogBoardLayoutState extends State<CatalogBoardLayout> {
 
     final heldItem = state.avatar.inventory.slot;
     final heldName = heldItem == null
-        ? label('emptySlot', 'None')
+        ? label('emptySlot', label('emptyHands', 'None'))
         : (pack.game.entityKinds[heldItem]?.uiName ?? heldItem);
-    final activeText = label('activeItem', 'Active: {item}')
+    final activeText = label('activeItem', label('carrying', 'Active: {item}'))
         .replaceAll('{item}', heldName);
 
     Widget header({bool compact = false}) {
@@ -380,7 +353,7 @@ class _CatalogBoardLayoutState extends State<CatalogBoardLayout> {
     }
 
     Widget productCard(Map<String, dynamic> prod, {bool compact = false}) {
-      final reqInputKeys = List<String>.from(prod['inputs']);
+      final reqInputKeys = List<String>.from(prod['inputs'] ?? prod['ingredients'] ?? []);
       return Container(
         padding: EdgeInsets.symmetric(
           horizontal: compact ? 8 : 12,
@@ -532,7 +505,7 @@ class _CatalogBoardLayoutState extends State<CatalogBoardLayout> {
           children: [
             ConstrainedBox(
               constraints: BoxConstraints(
-                maxHeight: (constraints.maxHeight * 0.32).clamp(0.0, 160.0),
+                maxHeight: (constraints.maxHeight * 0.32).clamp(80.0, 160.0),
               ),
               child: SingleChildScrollView(child: panelContent),
             ),

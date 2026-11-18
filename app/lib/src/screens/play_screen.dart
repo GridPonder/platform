@@ -4742,7 +4742,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
         dense: true,
         leading: const Icon(Icons.menu_book_outlined),
         title: const Text('Guide'),
-        subtitle: const Text('Level rules and requirements'),
+        subtitle: const Text('Rules, wiring and order requirements'),
         trailing: const Icon(Icons.open_in_new, size: 18),
         onTap: () => showDialog<void>(
           context: context,
