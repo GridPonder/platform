@@ -71,6 +71,13 @@ stock variables, and counts of concealed demand entities.
 
 *Note:* Non-Flutter renderers may omit this panel.
 
+### Expandable goal preview (Flutter)
+
+With `ui.goalPreviewSize` in the game definition, `presentation.labels` may
+override `enlargeGoalTarget`, `goalTarget`, and `tapToEnlarge`. The dialog's
+close button uses the application's Material localization. The inline preview
+is bounded by viewport height to leave space for the board.
+
 ### Surface and grid styling (Flutter)
 
 `presentation.grid` optionally configures cell dividers and perimeter bevels:

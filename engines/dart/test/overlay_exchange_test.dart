@@ -173,6 +173,109 @@ String _snapshot(TurnEngine engine) {
 }
 
 void main() {
+  group('region transform opt-in motion', () {
+    test('overlapping local cycles work without an overlay', () {
+      final level = _level({for (var y = 0; y < 4; y++) for (var x = 0; x < 5; x++)
+        (x, y): (x+y).isEven ? 'ink_red' : 'ink_blue'}, {});
+      (level['board'] as Map)['size'] = [5, 4];
+      (level['state'] as Map).remove('overlay');
+      level['systemOverrides'] = {'cursor': {'enabled': false}, 'stamp': {
+        'affectedLayers': ['ink'], 'emitMotion': true,
+        'operations': {'cycle': {'type': 'cycle_neighbors', 'action': 'press'}},
+      }};
+      final engine = _engineFor(_makeGame(), level);
+      expect(engine.state.overlay, isNull);
+      for (var y = 0; y < 4; y++) for (var x = 0; x < 5; x++) {
+        engine.state.board.getEntity('ink', Position(x, y))!.params['serial'] = y*5+x;
+      }
+      for (final center in [const Position(1, 1), const Position(3, 1)]) {
+        final ring = [Position(center.x-1, center.y), Position(center.x, center.y-1),
+          Position(center.x+1, center.y), Position(center.x, center.y+1)];
+        final before = [for (final p in ring) engine.state.board.getEntity('ink', p)!.params['serial']];
+        final fixed = engine.state.board.getEntity('ink', center)!.params['serial'];
+        final result = engine.executeTurn(GameAction('press', {'position': center.toJson()}));
+        expect([for (final p in ring) engine.state.board.getEntity('ink', p)!.params['serial']],
+          [before[3], before[0], before[1], before[2]]);
+        expect(engine.state.board.getEntity('ink', center)!.params['serial'], fixed);
+        expect(result.events.where((e) => e.type == 'tile_moved').length, 4);
+      }
+      final edge = engine.executeTurn(const GameAction('press', {'position': [0, 0]}));
+      expect(edge.events.where((e) => e.type == 'tile_moved'), isEmpty);
+    });
+
+    test('position trigger runs only for the matching cell', () {
+      final level = _level({(0, 0): 'ink_red', (1, 0): 'ink_blue'}, {});
+      level['systemOverrides'] = {'stamp': {
+        'affectedLayers': ['ink'],
+        'trigger': {'layer': 'ink', 'kind': 'ink_red'},
+        'operations': {'turn': {'type': 'rotate', 'action': 'press'}},
+      }};
+      final engine = _engineFor(_makeGame(), level);
+      for (final position in [null, [1, 0], [9, 9], ['bad', 0]]) {
+        final result = engine.executeTurn(GameAction('press', {'position': position}));
+        expect(result.events.where((e) => e.type == 'region_transformed'), isEmpty);
+        expect(_kind(engine, 'ink', 0, 0), 'ink_red');
+      }
+      final result = engine.executeTurn(const GameAction('press', {'position': [0, 0]}));
+      expect(result.events.where((e) => e.type == 'region_transformed').length, 1);
+      expect(_kind(engine, 'ink', 1, 0), 'ink_red');
+    });
+
+    TurnEngine spatial(Object? motion, {String operation = 'rotate', bool sparse = false}) {
+      final level = _level(
+          {(0, 0): 'ink_red', if (!sparse) (1, 0): 'ink_blue', (1, 1): 'ink_red'}, {});
+      level['systemOverrides'] = {
+        'stamp': {
+          'affectedLayers': ['ink'],
+          if (motion != null) 'emitMotion': motion,
+          'operations': {'transform': {'type': operation, 'action': 'press'}},
+        },
+      };
+      final engine = _engineFor(_makeGame(), level);
+      engine.state.board.getEntity('ink', const Position(0, 0))!.params['serial'] = 17;
+      return engine;
+    }
+
+    test('defaults and malformed flags preserve legacy events and state', () {
+      final animated = spatial(true);
+      final result = _press(animated);
+      expect(result.events.where((e) => e.type == 'tile_moved').length, 3);
+      expect(result.animations.where((a) => a.type == 'entity_move').length, 3);
+      for (final flag in [null, false, 'true', 1]) {
+        final legacy = spatial(flag);
+        final oldResult = _press(legacy);
+        expect(oldResult.events.map((e) => e.type), ['region_transformed', 'turn_ended']);
+        for (var y = 0; y < 2; y++) {
+          for (var x = 0; x < 2; x++) {
+            expect(_kind(legacy, 'ink', x, y), _kind(animated, 'ink', x, y));
+          }
+        }
+      }
+    });
+
+    test('motion describes actual sources, destinations and copied parameters', () {
+      for (final operation in ['rotate', 'flip', 'diagonal_swap']) {
+        final engine = spatial(true, operation: operation, sparse: true);
+        final before = engine.state.copy();
+        final result = engine.executeTurn(GameAction('press', {'direction': 'up_left'}));
+        final moves = result.events.where((e) => e.type == 'tile_moved').toList();
+        expect(moves.length, 2);
+        for (final event in moves) {
+          final source = event.payload['fromPosition'] as Position;
+          final destination = event.position!;
+          expect(source, isNot(destination));
+          expect(event.payload['layer'], 'ink');
+          final original = before.board.getEntity('ink', source)!;
+          expect(event.payload['kind'], original.kind);
+          expect(event.payload['params'], original.params);
+          expect(engine.state.board.getEntity('ink', destination)!.kind, original.kind);
+        }
+        expect(engine.undo(), isTrue);
+        expect(_kind(engine, 'ink', 0, 0), 'ink_red');
+      }
+    });
+  });
+
   group('overlay_cursor carryLayers', () {
     test('the held layer rides with the overlay', () {
       final engine = _engineFor(

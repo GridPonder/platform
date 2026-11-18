@@ -1,0 +1,25 @@
+{
+  "id": "burst",
+  "board": {
+    "size": [3, 3],
+    "layers": {
+      "lights": [[null, null, null], [null, "dark", "dark"], [null, "dark", null]],
+      "objects": [["wait", "charged", null], ["charged", null, null], [null, null, null]],
+      "controls": [["ready", null, null], [null, null, null], [null, null, null]],
+      "signals": [[null, null, null], [null, "idle", "idle"], [null, "idle", null]]
+    }
+  },
+  "state": {"avatar": {"enabled": false}, "variables": {"queued": 0}},
+  "goals": [
+    {
+      "id": "target",
+      "type": "board_match",
+      "config": {
+        "matchMode": "exact",
+        "targetLayers": {"lights": [[null, null, null], [null, "lit", "lit"], [null, "lit", null]]}
+      }
+    }
+  ],
+  "loseConditions": [{"type": "max_actions", "config": {"limit": 1}}],
+  "solution": {"goldPath": [{"action": "tap", "position": [0, 0]}]}
+}

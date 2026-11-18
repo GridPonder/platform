@@ -1,0 +1,22 @@
+{
+  "id": "cancel",
+  "board": {
+    "size": [3, 2],
+    "layers": {
+      "lights": [[null, "dark", null], [null, null, null]],
+      "objects": [["charged", null, "charged"], [null, "wait", null]],
+      "controls": [[null, null, null], [null, "ready", null]],
+      "signals": [[null, "idle", null], [null, null, null]]
+    }
+  },
+  "state": {"avatar": {"enabled": false}, "variables": {"queued": 0}},
+  "goals": [
+    {
+      "id": "target",
+      "type": "board_match",
+      "config": {"matchMode": "exact", "targetLayers": {"signals": [[null, "cancelled", null], [null, null, null]]}}
+    }
+  ],
+  "loseConditions": [{"type": "max_actions", "config": {"limit": 1}}],
+  "solution": {"goldPath": [{"action": "tap", "position": [1, 1]}]}
+}
