@@ -87,6 +87,13 @@ def missing_systems(game_def) -> list[str]:
     })
 
 
+def _level_guide(session) -> str:
+    """The level guide, for packs whose guide is the player's only rulebook."""
+    if session.anon or not getattr(session.game_def, "ui_restricted_information", False):
+        return ""
+    return str(session.level_def.get("guide") or "")
+
+
 def resolve_timeout(value: float | int | None) -> float | None:
     """A run's wall-clock limit in seconds, or None for no limit.
 
@@ -273,6 +280,8 @@ class Session:
             "",
             s["board_text"],
         ]
+        if s.get("readouts"):
+            lines += ["", *s["readouts"]]
         if s.get("inventory"):
             lines += ["", f"Carrying: {s['inventory']}"]
         return "\n".join(lines)
@@ -566,6 +575,7 @@ def build_sandbox(session: Session, sandbox: Path) -> Path:
             actions=session.anon_shapes,
             anonymized=session.anon,
             narrate=session.narrate,
+            guide=_level_guide(session),
         ),
         encoding="utf-8",
     )

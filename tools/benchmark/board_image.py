@@ -656,6 +656,22 @@ def _draw_from_display(draw, display, kind, params, x0, y0, cx, cy, ctx=None) ->
                      fill=color or "#94a3b8", outline=(50, 50, 50))
         draw.text((cx, cy), label, fill="white", font=font, anchor="mm")
         return True
+    if type_ == "image_label":
+        text = _resolve_display_string(display.get("label"), kind, params, ctx) or ""
+        badge = _resolve_display_string(display.get("badge"), kind, params, ctx) or ""
+        label_pos = display.get("labelPosition", "bottom")
+        if text:
+            ty = y0 + int(CELL_PX * 0.15) if label_pos == "top" else y0 + int(CELL_PX * 0.85)
+            font = _font(int(CELL_PX * 0.22))
+            draw.text((cx, ty), text, fill="white", font=font, anchor="mm",
+                      stroke_width=2, stroke_fill=(20, 20, 20))
+        if badge:
+            bx = x0 + int(CELL_PX * 0.82)
+            by = y0 + int(CELL_PX * 0.18) if label_pos != "top" else y0 + int(CELL_PX * 0.82)
+            r = int(CELL_PX * 0.14)
+            draw.ellipse((bx - r, by - r, bx + r, by + r), fill="#15803d", outline="white", width=1)
+            draw.text((bx, by), badge, fill="white", font=_font(int(CELL_PX * 0.18)), anchor="mm")
+        return True
     return False
 
 

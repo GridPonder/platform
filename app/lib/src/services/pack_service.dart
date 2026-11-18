@@ -54,6 +54,8 @@ class PackService {
   // has to cover.
   final Map<String, dynamic> _gameJson;
   final Map<String, Map<String, dynamic>> _levelJsons;
+  /// Optional, non-normative visual help authored in theme.json.
+  final Map<String, dynamic>? presentation;
 
   PackService._(
     this.pack,
@@ -62,6 +64,7 @@ class PackService {
     this._assetCache,
     this._gameJson,
     this._levelJsons,
+    this.presentation,
   );
 
   ThemeDef? get theme => pack.theme;
@@ -185,6 +188,9 @@ class PackService {
       assetCache,
       game,
       levelJsons,
+      theme?['presentation'] is Map
+          ? (theme!['presentation'] as Map).cast<String, dynamic>()
+          : null,
     );
   }
 

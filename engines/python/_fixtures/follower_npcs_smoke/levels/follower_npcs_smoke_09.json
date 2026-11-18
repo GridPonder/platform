@@ -1,0 +1,37 @@
+{
+  "id": "follower_npcs_smoke_09",
+  "title": "Priority Claims a Shared Destination",
+  "board": {
+    "size": [5, 2],
+    "layers": {
+      "actors": {
+        "format": "sparse",
+        "entries": [
+          {"position": [1, 0], "kind": "patroller", "behavior": "normal", "facing": "right"},
+          {"position": [3, 0], "kind": "orbiter", "behavior": "first", "facing": "left"}
+        ]
+      }
+    }
+  },
+  "state": {"avatar": {"enabled": true, "position": [0, 1]}},
+  "systemOverrides": {
+    "npcs": {
+      "behaviors": {
+        "normal": {"type": "patrol"},
+        "first": {"type": "patrol", "resolutionPriority": -1}
+      }
+    }
+  },
+  "goals": [
+    {
+      "id": "ordered_positions",
+      "type": "board_match",
+      "config": {
+        "matchMode": "exact_non_null",
+        "targetLayers": {"actors": [["patroller", null, "orbiter", null, null], [null, null, null, null, null]]}
+      }
+    }
+  ],
+  "loseConditions": [],
+  "solution": {"goldPath": [{"action": "move", "direction": "right"}]}
+}

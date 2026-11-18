@@ -311,6 +311,7 @@ A `motion` block on an entity kind sets per-cell motion durations the renderer u
 | `pathStepDurationMs` | Engine emits `entity_path` (multi-cell traversal, e.g. queued-emitter routes). Per cell. | 80 |
 | `spawnDurationMs` | Engine emits `entity_spawn` (e.g. queued-emitter spawn). | 120 |
 | `frameDurationMs` | Optional time per frame for `motion.sprites.walk`. When present, walk frames advance by elapsed motion time; otherwise they retain the legacy one-frame-per-cell cadence. | absent |
+| `fallOnDown` | A straight downward move is normally drawn as a gravity drop (accelerating, with a landing squash). Set `false` for kinds that walk south rather than fall, so the move uses linear per-cell travel. | `true` |
 
 #### How motion events are sequenced
 
@@ -381,12 +382,26 @@ A `display` block on an entity kind tells the renderer how to draw the entity pr
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `type`  | string | One of `tile` (rounded shadowed coloured tile), `fill` (flat colour rectangle), `circle` (filled circle with glow), `label` (coloured tile with a centred text label), `emoji` (centred glyph), `icon` (Material-style icon by name). |
+| `type`  | string | One of `tile` (rounded shadowed coloured tile), `fill` (flat colour rectangle), `circle` (filled circle with glow), `label` (coloured tile with a centred text label), `emoji` (centred glyph), `icon` (Material-style icon by name), `circle_label` (circle with text label or corner badge), `image_label` (text label and status badge overlaid onto a sprite). |
 | `color` | string | Optional. A palette name (`"red"`), `@param:<key>` (read colour name from instance param), or `@hue:<source>` (derive an HSL colour from a numeric string — useful for value-coloured tiles). See *substitution tokens* below. |
 | `value` | string | Optional. The glyph (for `emoji`) or icon name (for `icon`). |
 | `label` | string | Optional. Text shown by the `label` type. May use the substitution tokens below. |
+| `followAvatar` | boolean | Optional Flutter render hint. An entity on the avatar's logical cell is drawn above the avatar and shares its interpolated movement position. Entities on other cells render at their own positions. Its logical cell and rules remain unchanged. The previous turn's attachments remain visible until turn motion finishes. Defaults to `false`. |
+| `moveWithAvatar` | boolean | Optional Flutter render hint. Independent moves of this kind in the first motion stage can play alongside a single-cell avatar move. Moves sharing a start or end cell with another move on the same layer keep their normal order. Turns with avatar slides, pushes, or elastic motion use normal staged playback. Defaults to `false` and does not affect turn resolution. |
 
-A `circle_label` display with `"overlay": true` keeps the kind's sprite and draws its label as a small badge in the corner; when the label resolves to nothing (an `@param:` the instance does not carry) no badge is drawn, so a kind can badge only the cells that hold the value.
+A `circle_label` display with `"overlay": true` keeps the kind's sprite and draws its label as a small badge in the corner; when the label resolves to nothing (an `@param:` the instance does not carry) no badge is drawn, so a kind can badge only the cells that hold the value. Optional `badgeScale` scales the badge (default `1`); smaller multi-character badges use a wider pill to preserve legibility.
+
+An `image_label` display overlays a text label and optional status badge onto an entity sprite. Note: on an entity kind declaring a sprite, `image_label` only renders when `"overlay": true` is set.
+- `label`: text shown on the label panel (supports substitution tokens).
+- `labelPosition`: `"top"` or `"bottom"` (default `"bottom"`).
+- `labelBackground`: `false` removes the label panel background (defaults to themed background).
+- `badge`: optional string (supports substitution tokens) shown inside a status pill/circle.
+- `badgeIcon`: optional vector icon name (e.g. `"check"`).
+- `badgeLabel`: optional accessibility label for vector icons (defaults to `"Completed"`).
+- `image`: optional pack-relative image path drawn alongside the sprite.
+- `heldImage`: `true` presents an image authored with the standard transparent carrying offset in a square viewport.
+- `spriteInsets`: `[left, top, right, bottom]` reserves illustration margins as fractions of a cell, preventing artwork from overlapping text.
+- `imageSize`, `imageRight`, `imageTop`: position and size the optional secondary image as fractions of a cell.
 
 #### Substitution tokens
 
@@ -729,7 +744,6 @@ Default values applied to levels when those fields are not specified. This reduc
 }
 ```
 
-
 ### Additional generic display and readout fields
 
 `ui.readouts[].maxVariable` optionally names a live capacity variable. A
@@ -747,3 +761,28 @@ For `circle_label`, `connections` selects vectors from `connectionMap`,
 small badge when no connection arms are drawn. `linkTarget` and `linkUsed`
 reference entity parameters for optional control-to-target links. All fields
 are presentation data; no game identity is interpreted by the renderer.
+
+### Restricted observation interfaces (additive)
+
+`ui.restrictedInformation` defaults to `false`. When true, the app suppresses
+undo, hint replay and predictive action previews; the Undo control is replaced
+by a visible Restart. Solve stays available: it replays the level's authored
+solution (for a `state_network`, an explained step-by-step policy) and the
+assisted attempt earns no progress. Policy actions are action ids or gold-path
+objects such as `{"action": "move", "direction": "up"}`, so actions with
+parameters replay intact; without a policy, Solve plays the gold path as
+authored. It does not hide
+arbitrary board entities or variables: systems/pack authors must explicitly
+project public observations and expose only public variables via `ui.readouts`.
+Readouts accept strings as well as numbers; text journals wrap in the app.
+Action definitions may set an optional `label` for human-facing control text;
+action ids remain the stable engine/agent API. Neither feature changes versions.
+
+### Undo policy
+
+Optional `ui.allowUndo` explicitly permits or disables UI undo independently
+of `restrictedInformation`. When omitted, undo remains allowed for ordinary
+games and disabled for restricted-information games, preserving the previous
+behavior. Enabling undo does not enable predictive previews, saved solutions
+or omniscient hints. It rewinds actual state; information the player has already
+observed is naturally retained in the player's memory.

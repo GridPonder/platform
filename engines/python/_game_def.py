@@ -141,6 +141,10 @@ class GameDef:
         self.ui_readouts: list[dict] = self._parse_readouts(data.get("ui"))
         raw_ui = data.get("ui")
         self.ui_show_guide = isinstance(raw_ui, dict) and raw_ui.get("showGuide") is True
+        # `ui.restrictedInformation`: the level guide is the player's only
+        # statement of the rules, so an agent harness must show it.
+        self.ui_restricted_information: bool = bool(
+            isinstance(raw_ui, dict) and raw_ui.get("restrictedInformation"))
 
     @staticmethod
     def _parse_readouts(raw_ui) -> list[dict]:

@@ -108,6 +108,7 @@ class AvatarSpriteEntry {
 
 class AvatarThemeDef {
   final bool visible;
+  final bool sightPulse;
   final String? sprite; // fallback
   /// Optional one-step gait applied while the avatar travels between cells.
   final double walkBob;
@@ -122,6 +123,7 @@ class AvatarThemeDef {
 
   const AvatarThemeDef({
     this.visible = true,
+    this.sightPulse = false,
     this.sprite,
     this.walkBob = 0,
     this.walkTiltDegrees = 0,
@@ -139,6 +141,7 @@ class AvatarThemeDef {
     }
     return AvatarThemeDef(
       visible: (j['visible'] as bool?) ?? true,
+      sightPulse: j['sightPulse'] == true,
       sprite: j['sprite'] as String?,
       walkBob: (j['walkBob'] as num?)?.toDouble() ?? 0,
       walkTiltDegrees: (j['walkTiltDegrees'] as num?)?.toDouble() ?? 0,

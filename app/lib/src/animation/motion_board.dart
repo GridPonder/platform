@@ -1,5 +1,19 @@
 import 'package:gridponder_engine/engine.dart';
 
+/// Grounded locomotion must not inherit the generic downward-drop animation.
+/// Physical objects keep their existing gravity unless the kind opts out.
+bool isFallingMove(EntityKindDef? kind, Position from, Position to) =>
+    from.x == to.x && to.y > from.y && kind?.motion['fallOnDown'] != false;
+
+/// One group shares a travel clock. Honour its slowest requested per-cell
+/// duration, so a fast first mover cannot truncate another mover's gait.
+int groupMoveDuration(Iterable<AnimationStep> moves) => moves
+    .map((move) => move.durationMs > 0 ? move.durationMs.clamp(40, 400) : 130)
+    .fold<int>(
+      0,
+      (longest, duration) => duration > longest ? duration : longest,
+    );
+
 /// One entity travelling between two cells during a turn.
 class TravellingEntity {
   final Position from;
@@ -22,6 +36,33 @@ class TravellingEntity {
     required this.entity,
     this.removedAtEnd = false,
   });
+}
+
+/// Independent moves in the first motion stage may join the avatar step.
+/// A shared endpoint can link two legs of one move or hand a cell to a
+/// different entity. Keep such moves in the normal staged playback.
+List<AnimationStep> avatarConcurrentMoves(
+  List<AnimationStep> staged,
+  Map<AnimationStep, TravellingEntity> travellers,
+  GameDefinition game,
+) {
+  if (staged.isEmpty) return const [];
+  final firstStage = staged.first.stage;
+  bool sharesCell(TravellingEntity mover, TravellingEntity other) =>
+      !identical(mover, other) &&
+      mover.layer == other.layer &&
+      (mover.from == other.from ||
+          mover.from == other.to ||
+          mover.to == other.from ||
+          mover.to == other.to);
+
+  return [
+    for (final step in staged.takeWhile((step) => step.stage == firstStage))
+      if (step.type == 'entity_move' &&
+          game.entityKinds[step.entityKind]?.display?['moveWithAvatar'] == true)
+        if (travellers[step] case final mover?)
+          if (!travellers.values.any((other) => sharesCell(mover, other))) step,
+  ];
 }
 
 LevelState boardDuringMotion(

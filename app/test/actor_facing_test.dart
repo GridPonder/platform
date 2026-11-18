@@ -34,6 +34,24 @@ LevelState _state(List<(int, String?)> machines) {
 }
 
 void main() {
+  test('auxiliary movers keep actual facing without changing undo snapshots', () {
+    const a = Position(0, 0);
+    const b = Position(1, 0);
+    final before = <String, Map<Position, String>>{
+      'patrols': {a: 'right', b: 'right'},
+      'objects': {a: 'up'},
+    };
+    final after = layeredFacingAfterMoves(before, [
+      // A mirrored patrol travels left even when the player's order was right.
+      (layer: 'patrols', from: b, to: a, direction: 'left'),
+      (layer: 'patrols', from: a, to: b, direction: 'right'),
+    ]);
+    expect(after['patrols'], {a: 'left', b: 'right'});
+    expect(after['objects'], {a: 'up'});
+    expect(before['patrols'], {a: 'right', b: 'right'});
+    expect(identical(layeredFacingAfterMoves(before, []), before), isTrue);
+  });
+
   test('two machines of one kind keep their own facings', () {
     final state = _state([(0, 'left'), (3, 'right')]);
     final actors = state.board.layers['actors']!;

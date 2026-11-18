@@ -40,6 +40,47 @@ A game pack includes one `theme.json` alongside `game.json`. If omitted, the eng
 | `textStyle` | object | no | Text rendering settings. |
 | `avatar` | object | no | Avatar appearance settings. |
 | `palette` | object | no | Named-colour palette (`{"red": "#E53935", …}`) used by the renderer when an entity or action references a colour by name. Names not declared here fall back to the renderer's built-in defaults; packs only declare what they want to override or add. |
+| `presentation` | object | no | Optional Flutter visual presentation settings (catalogue guide and custom grid surface lines). Never alters game rules, goals, or engine states. |
+
+### Visual catalogue guide (Flutter)
+
+`presentation.catalog` optionally configures an interactive visual catalogue
+panel showing available item conversions, crafting paths, input requirements,
+stock variables, and counts of concealed demand entities.
+
+- `catalog.inputs`: maps input IDs to `{name, sourceKind, image, stock}`.
+  `sourceKind` specifies the required board entity kind providing this input;
+  `image` is a pack-relative illustration; `stock` is an optional variable name
+  tracking available units.
+- `catalog.products`: array of product definition objects:
+  `{name, productKind, demandKind, inputs, image}`. `inputs` lists one or more
+  input IDs required for the product. `productKind` is the resulting entity kind,
+  `demandKind` is the target demand entity kind.
+- `catalog.concealedDemandKinds`: array of entity kinds representing concealed
+  demands on the board. The panel tallies their count without revealing their
+  identities until fulfilled or revealed.
+- `catalog.remainingVariable`: variable name for the overall remaining demand
+  counter (defaults to `"remaining"`).
+- `catalog.labels`: optional user-facing strings and templates. Supported keys:
+  `title`, `showGuide`, `hideGuide`, `completed`, `emptySlot`, `activeItem`,
+  `remaining`, `compactRemaining`, `concealedHint`, `stock`,
+  `demandSingular`/`demandPlural`, and `productSingular`/`productPlural`.
+  Templates accept `{item}`, `{count}`, and `{noun}`.
+- Layout: on wide screens, the panel displays beside the board; on narrow screens,
+  it docks above the board with a bounded height so the board remains prominent.
+
+*Note:* Non-Flutter renderers may omit this panel.
+
+### Surface and grid styling (Flutter)
+
+`presentation.grid` optionally configures cell dividers and perimeter bevels:
+- `lineColor` and `lineWidth`: grout lines between walkable floor cells.
+- `solidKind`: entity kind identifying contiguous ground-layer solid obstacles.
+- `edgeLight`, `edgeDark`, and `edgeWidth`: draw perimeter outer bevels while
+  keeping internal joins seamless.
+- `solidLineColor` and `solidLineWidth`: optional internal dividers between
+  adjacent solid cells.
+
 
 ---
 
@@ -69,7 +110,7 @@ Each gesture mapping:
 | `gesture` | string | **yes** | Input type: `swipe_cardinal`, `swipe_diagonal`, `tap_cell`, `button`, `key_press`. |
 | `action` | string | **yes** | Action `id` to emit. Must match an entry in `game.json` `actions`. |
 | `buttonId` | string | conditional | Required when `gesture` is `button`. UI control identifier. |
-| `key` | string | conditional | Required when `gesture` is `key_press`: a letter `a`–`z`, one of `up`/`down`/`left`/`right` for the arrow keys, or `space` / `enter`. Checked before the built-in arrow keys and WASD movement, so a binding for one of those keys replaces that movement. |
+| `key` | string | conditional | Required when `gesture` is `key_press`: a letter `a`–`z`, a digit `1`–`9` (`0` is reserved for zoom-to-fit), one of `up`/`down`/`left`/`right` for the arrow keys, or `space` / `enter`. Checked before the built-in arrow keys and WASD movement, so a binding for one of those keys replaces that movement. |
 | `paramMapping` | object | no | Maps input parameters to action parameters dynamically. |
 | `params` | object | no | Static parameters to include with the action. |
 | `showSelection` | boolean | no | When `true`, an accepted cell-tap action leaves a visible outline on its mapped cell until another cell is selected or the level state is reset. Solve and Hint replay update the same outline. Defaults to `false`. |
@@ -347,6 +388,11 @@ and `cell_claimed`.
 
 `avatar.walkBob` and `avatar.walkTiltDegrees` apply a one-step gait while
 the avatar moves. Both default to zero.
+
+Set `avatar.sightPulse` to `true` to show a red line on sight acquisition,
+after the avatar step and before the remaining staged motion. The line plays
+again when that source loses and reacquires sight. It replaces the default
+line and target highlight for avatar detections. The option defaults to `false`.
 
 The renderer can replay synchronous threshold events as charge, explosion,
 transfer, and switch phases. These are presentation only; each engine turn

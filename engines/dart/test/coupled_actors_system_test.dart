@@ -917,8 +917,199 @@ void _excavateTests() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// rejectNoOpMoves fixtures (a two-phase turn_cycle clock on cell (0,0))
+// ---------------------------------------------------------------------------
+
+GameDefinition _makeNoOpGame(Object? reject) {
+  final config = <String, dynamic>{};
+  if (reject != null) config['rejectNoOpMoves'] = reject;
+  final data = {
+    'id': 'com.gridponder.test_coupled_actors_noop',
+    'layers': [
+      {'id': 'ground', 'occupancy': 'exactly_one', 'default': 'empty'},
+      {'id': 'actors', 'occupancy': 'zero_or_one'},
+    ],
+    'entityKinds': {
+      'empty': {'layer': 'ground', 'tags': ['walkable'], 'symbol': '.'},
+      'wall': {'layer': 'ground', 'tags': ['solid'], 'symbol': '#'},
+      'tick': {'layer': 'ground', 'tags': ['walkable'], 'symbol': 't'},
+      'tock': {'layer': 'ground', 'tags': ['walkable'], 'symbol': 'o'},
+      'unit_a': {'layer': 'actors', 'tags': ['actor'], 'symbol': 'W'},
+      'unit_b': {'layer': 'actors', 'tags': ['actor'], 'symbol': 'S'},
+    },
+    'actions': [
+      {
+        'id': 'move',
+        'params': {
+          'direction': {
+            'type': 'direction',
+            'values': ['up', 'down', 'left', 'right'],
+          },
+        },
+      },
+    ],
+    'systems': [
+      {'id': 'movement', 'type': 'coupled_actors', 'config': config},
+      {
+        'id': 'clock',
+        'type': 'turn_cycle',
+        'config': {
+          'layer': 'ground',
+          'cycles': {'tick': 'tock', 'tock': 'tick'},
+        },
+      },
+    ],
+  };
+  return GameDefinition.fromJson(data, id: 'test_coupled_actors_noop');
+}
+
+Map<String, dynamic> _noOpLevel(List<List<dynamic>> actors) {
+  final level = _makeLevel(actors: actors, width: 5);
+  ((level['board']['layers']['ground'] as Map)['entries'] as List).add({
+    'position': [0, 0],
+    'kind': 'tick',
+  });
+  return level;
+}
+
+String? _clock(TurnEngine engine) =>
+    engine.state.board.getEntity('ground', const Position(0, 0))?.kind;
+
+void _rejectNoOpTests() {
+  group('coupled_actors — rejectNoOpMoves', () {
+    test('all-blocked move is vetoed, uncharged, and holds the clock', () {
+      final engine = _engineFor(_makeNoOpGame(true), _noOpLevel([
+        [3, 0, 'unit_a'],
+        [4, 0, 'unit_b'],
+      ]));
+      final result = engine.executeTurn(_moveRight());
+      expect(result.accepted, isFalse);
+      expect(engine.state.actionCount, equals(0));
+      expect(_clock(engine), equals('tick'));
+    });
+
+    test('a peel (partial block) is accepted', () {
+      final engine = _engineFor(_makeNoOpGame(true), _noOpLevel([
+        [1, 0, 'unit_a'],
+        [4, 0, 'unit_b'],
+      ]));
+      final result = engine.executeTurn(_moveRight());
+      expect(result.accepted, isTrue);
+      expect(_actorPos(engine, 'unit_a'), equals(const Position(2, 0)));
+      expect(_actorPos(engine, 'unit_b'), equals(const Position(4, 0)));
+      expect(engine.state.actionCount, equals(1));
+      expect(_clock(engine), equals('tock'));
+    });
+
+    test('default off: all-blocked move is accepted', () {
+      final engine = _engineFor(_makeNoOpGame(null), _noOpLevel([
+        [3, 0, 'unit_a'],
+        [4, 0, 'unit_b'],
+      ]));
+      expect(engine.executeTurn(_moveRight()).accepted, isTrue);
+      expect(engine.state.actionCount, equals(1));
+      expect(_clock(engine), equals('tock'));
+    });
+
+    test('non-boolean value is off', () {
+      final engine = _engineFor(_makeNoOpGame('yes'), _noOpLevel([
+        [3, 0, 'unit_a'],
+        [4, 0, 'unit_b'],
+      ]));
+      expect(engine.executeTurn(_moveRight()).accepted, isTrue);
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// blockingLayers fixtures
+// ---------------------------------------------------------------------------
+
+GameDefinition _makeBlockingGame(Object? blocking) {
+  final data = {
+    'id': 'com.gridponder.test_coupled_actors_blocking',
+    'layers': [
+      {'id': 'ground', 'occupancy': 'exactly_one', 'default': 'empty'},
+      {'id': 'actors', 'occupancy': 'zero_or_one'},
+      {'id': 'patrols', 'occupancy': 'zero_or_one'},
+    ],
+    'entityKinds': {
+      'empty': {'layer': 'ground', 'tags': ['walkable'], 'symbol': '.'},
+      'unit_a': {'layer': 'actors', 'tags': ['actor'], 'symbol': 'W'},
+      'unit_b': {'layer': 'actors', 'tags': ['actor'], 'symbol': 'S'},
+      'patrol': {'layer': 'patrols', 'tags': [], 'symbol': 'P'},
+    },
+    'actions': [
+      {
+        'id': 'move',
+        'params': {
+          'direction': {
+            'type': 'direction',
+            'values': ['up', 'down', 'left', 'right'],
+          },
+        },
+      },
+    ],
+    'systems': [
+      {
+        'id': 'movement',
+        'type': 'coupled_actors',
+        'config': blocking == null ? {} : {'blockingLayers': blocking},
+      },
+    ],
+  };
+  return GameDefinition.fromJson(data, id: 'test_coupled_actors_blocking');
+}
+
+Map<String, dynamic> _blockingLevel() {
+  final level = _makeLevel(actors: [
+    [1, 0, 'unit_a'],
+    [4, 0, 'unit_b'],
+  ], width: 7);
+  (level['board']['layers'] as Map)['patrols'] = {
+    'format': 'sparse',
+    'entries': [
+      {
+        'position': [2, 0],
+        'kind': 'patrol'
+      }
+    ],
+  };
+  return level;
+}
+
+void _blockingTests() {
+  group('coupled_actors — blockingLayers', () {
+    test('an entity on a blocking layer stops a mover', () {
+      final engine =
+          _engineFor(_makeBlockingGame(['patrols']), _blockingLevel());
+      final result = engine.executeTurn(_moveRight());
+      expect(result.accepted, isTrue);
+      expect(_actorPos(engine, 'unit_a'), equals(const Position(1, 0)));
+      expect(_actorPos(engine, 'unit_b'), equals(const Position(5, 0)));
+    });
+
+    test('other layers are ignored without a valid blockingLayers list', () {
+      for (final cfg in <Object?>[
+        null,
+        'patrols',
+        [3, null],
+        ['no_such_layer'],
+      ]) {
+        final engine = _engineFor(_makeBlockingGame(cfg), _blockingLevel());
+        engine.executeTurn(_moveRight());
+        expect(_actorPos(engine, 'unit_a'), equals(const Position(2, 0)),
+            reason: 'cfg=$cfg');
+      }
+    });
+  });
+}
+
 void main() {
   _tapeTests();
+  _blockingTests();
+  _rejectNoOpTests();
   _excavateTests();
 
   group('coupled_actors — directionTransforms', () {
