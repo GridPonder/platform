@@ -38,6 +38,7 @@ export 'src/agent/text_renderer.dart';
 export 'src/agent/ascii_renderer.dart'; // re-exports TextRenderer as AsciiRenderer for backwards compat
 export 'src/agent/random_agent.dart';
 export 'src/agent/llm_agent.dart';
+export 'src/systems/tile_placement_system.dart';
 
 
 // Node update rule, shared with clients that simulate public hypotheses.

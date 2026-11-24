@@ -2346,12 +2346,231 @@ the pack names its own ground, water, gate and marker kinds.
 
 ---
 
+### `tile_placement` (DSL 0.12)
+
+Opt-in rigid, connected square tiles placed from a tray. It owns a dedicated
+`piecesLayer` (default `pieces`); do not combine other writers on this layer.
+Existing movement and transformation systems are unchanged.
+
+Configuration:
+
+- `size: [width, height]`: display canvas, matching the level board size.
+- `pieces`: objects with unique `id`, registered entity `kind`, hex `color`, and
+  connected, distinct local `cells: [[x,y], ...]`.
+- `targets`: one or more lists of distinct board cells. Each must have the same
+  area as all pieces together, and fit inside the canvas.
+- Optional `markers: [{position:[x,y], color:"#RRGGBB"}]`: exact colour matches.
+- Optional per-piece `pulse:[x,y]`: a marked local cell. Its orthogonal neighbours
+  inside the active target toggle. Current lights are initial lights XOR the
+  contributions of all currently placed pieces; removing or relocating a piece
+  therefore reverses its old contribution, including overlapping effects.
+- Optional `lights: {initial:[[x,y],...], target:[[x,y],...]}`: all omitted target
+  squares are OFF. A complete tiling must also match the entire light pattern.
+- Optional per-piece `edges: [{cell:[x,y], direction:0, symbol:"o"}]`:
+  directions are 0 up, 1 right, 2 down, 3 left. Only exterior edges are authored.
+  Every marked edge must face an equal symbol on a different piece; unmarked
+  edges are unrestricted. Both the edge cell and direction rotate with the tile.
+- Optional `maxMoved`: maximum distinct piece IDs relocated or removed after each
+  stage transition. Further actions on an already moved piece are allowed;
+  returning it to its old position does not refund the allowance. Undo restores it.
+
+Actions (names configurable as `placeAction`, `removeAction`, `nextAction`):
+
+- `place_piece`, parameters `piece`, `position:[x,y]`, `rotation:0..3`.
+  Rotation is clockwise quarter turns, normalized to the top-left bounding-box
+  anchor. No reflection. A placed piece can be relocated atomically; out-of-target,
+  overlap, wrong-colour and over-budget placements are rejected without mutation.
+- `remove_piece`, parameter `piece`, returns that tile to the tray.
+- `next_target`, no parameters, requires the current stage to be complete.
+  It retains all placements and resets the distinct-piece move allowance.
+  Tiles outside the next target remain visible until moved.
+
+Published variables use the system ID prefix: `placements` (piece ID to
+`[x,y,rotation]`), `phase` (zero-based), `moved`, `filled`, `edgeErrors`,
+`lightErrors`, `lights`, `fit`, `complete`. Missing placements/phase/moved mean
+empty/zero/empty. Use `variable_threshold` on `<id>.complete == 1` to win.
+
+`fit` means exact coverage using every piece plus all optional constraints;
+`complete` additionally requires the last stage. Unpaired edges are allowed during
+experimentation but prevent completion. Load settle and accepted actions rebuild
+the dedicated piece layer and derived status. Undo, reset, preview and gold-path
+playback use the normal engine pipeline.
+
+The app uses a dedicated tray/placement widget only when this system is enabled.
+Authoring tools must validate connected pieces, edge geometry, equal target area
+and solvability. This extension is available on its prototype branch until merged;
+stock engines from earlier versions do not implement it.
+
+#### Optional linked movement, shape variants and free-space checks
+
+These are separate opt-in extensions; packs omitting them keep their existing
+placement behavior. `playArea: [[x,y], ...]` permits temporary assembly cells
+outside the target. Completion still requires exact target coverage.
+
+- `linkedMovement: {releaseCells: [...], requireMove: false,
+  requireRelease: false}` joins pieces through matching numbered edges. Relocating
+  or rotating any member transforms the whole connected component atomically,
+  normalized around the selected piece's bounding-box anchor. Collisions or
+  out-of-area members veto the whole action. Pieces over release cells disconnect
+  from their neighbours. Removal cannot split a linked group elsewhere.
+  Optional explicit completion requirements use the persistent variables
+  `<id>.linkMoved` and `<id>.linkReleased`; Undo/Reset restore those values.
+- Per-piece `variants: [{cells: [...]}, ...]`, with equal cell counts, enables
+  geometry changes. `variantCells` lists workshop cells. The configured
+  `changeAction` (default `change_piece`, parameter `piece`) cycles the form of a
+  placed piece that covers a workshop, after collision checking. Placement records
+  then include a fourth integer for the variant. `<id>.forms` stores active forms;
+  removal resets that piece to form zero. Optional per-piece `requiredVariant`
+  contributes to `<id>.formErrors` and completion. The client shows both forms and
+  a Change form action. Ordinary pieces retain three-integer placement records.
+- `freeSpace: true` requires every unoccupied cell of `playArea` to form one
+  orthogonally connected component after placement, relocation or removal. An
+  empty remainder is valid. `<id>.freeRegions` reports the component count.
+  Blocked cells omitted from the play area are not counted as empty pockets.
+- `limits: {moves: N, rotations: R}` enables whole-level action budgets.
+  Successful place/remove/form-change actions spend one move. The configured
+  `rotateAction` (default `rotate_piece`, parameter `piece`) spends a rotation
+  and updates `previewRotations` without committing physical placement. Coupled
+  previews include magnetic or echo partners. Place actions must use these
+  orientations, preventing direct-rotation bypasses. `movesUsed` and
+  `rotationsUsed` persist across targets; vetoes are free, Undo/Reset restore
+  counters. Cancelling the held selection does not refund a Rotate press.
+- `allowUnused: true` completes exact target coverage using any valid subset
+  of the supplied pieces, rather than requiring every inventory entry. Existing
+  connector/contact/form constraints still apply. All inventory ports and all
+  configured echo partners must participate even when other inventory is unused.
+  Spare inventory entries need no identifying tag. At each target transition,
+  `transferRoster` records the placed members. Tray capacity counts absent roster
+  members, excluding inventory that was already unused at transition.
+- `neighborCounts: {pieceId: N, ...}` requires exactly N distinct other pieces
+  touching each listed piece along cell sides in the completed arrangement.
+  Several shared sides count once; corner contact does not count.
+- `forbiddenContacts: [[pieceId, otherId], ...]` forbids side adjacency for
+  listed pairs at completion. Intermediate incorrect contacts remain legal.
+  These opt-in rules publish `neighborCounts` and `contactErrors` state and
+  gate `fit`/`complete`; they do not prescribe positions or reject partial play.
+- `echoLinks: [[pieceId, partnerId], ...]` defines disjoint pairs. Both may be seeded
+  in the initial placement state, or the link activates when both are placed. A placement of either member translates
+  both anchors by the same vector and applies opposite rotation deltas at their
+  individual anchors. Both resulting footprints are checked, including overlap
+  between partners. A failed move leaves placements and history unchanged.
+  Active echo members cannot be returned to the tray; Undo/Reset remain available.
+  Echo pair members must not also be magnetic or rotation-linked members;
+  disjoint groups may coexist in one configuration.
+- `echoSwap: true` enables `swapAction` (default `swap_echo`, parameter
+  `piece`) for an active echo pair. It exchanges their bounding-box anchors,
+  commits pending orientation previews, preserves each piece's current form,
+  and spends one move when action limits are configured. Both resulting shapes
+  are validated together; vetoes preserve state and history. Undo/Reset restore
+  `echoSwaps`. Swaps are prohibited during slide-only transfers. This is an
+  available move, not a hidden completion requirement.
+- `rotationLinks: [[pieceId, partnerId], ...]` couples clockwise quarter turns
+  across each connected component of the configured link graph. The configured
+  `turnAction` (default `turn_piece`, parameter `piece`) turns every member, even
+  members in the tray. Placed members retain their individual bounding-box anchors.
+  Validate all resulting footprints before applying any change. A veto leaves
+  orientations, placements and history unchanged. `<id>.orientations` persists
+  rotations through removal; initial values come from per-piece `startRotation`
+  (default zero). Place actions must use these current orientations so direct
+  placement cannot bypass linked rotation. Optional `requirePairedTurn` requires
+  a turn while two members are on the board, tracked by `<id>.pairedTurned`.
+
+Presentation may optionally supply `targetLabels` (one display name per target),
+`silhouetteMode` (hide non-playable background cells), `boardAccent` and
+`targetFill` (hex colors), and `targetDecorations` (per-target lists of
+`{position: [x,y], radius: number, color: hex}`). Decoration coordinates use
+canvas cell units and have no effect on occupancy, clues or completion.
+
+The dedicated placement surface is Flutter-only. Python benchmark images
+show the logical board, without the tray or interactive target-preview dialog.
+UI colors default to the application's Material color scheme. Theme palette
+keys `placementSurface`, `placementSurfaceAlt`, `placementBorder`,
+`placementText`, `placementMuted`, `placementPrimary`, `placementPrimarySoft`,
+`placementWarning`, and `placementError` override these roles. Invalid color
+strings use defaults.
+`presentation.tilePlacement.labels` may override static control text using
+the neutral English default as its key (for example `{"Target":"Reference"}`).
+Malformed label values are ignored. Missing target names fall back to numbered
+shapes. These settings affect presentation only.
+
+#### Optional side-entry assembly
+
+`insertion: {area: [[x,y], ...]}` permits temporary travel cells as well as target
+cells. Every supplied cell must be inside the canvas. Completion still requires
+exact target coverage and no tiles left in the travel area. Each piece supplies
+`entrySide: 0..3`, meaning top, right, bottom or left of the board.
+
+A tray placement must have a clear straight route to its assigned side in its
+chosen orientation. The engine checks every intermediate footprint, clipping
+only the cells beyond the canvas while testing entry or exit. Existing pieces
+cannot rotate on the board; they may only translate along a clear horizontal or
+vertical line. Removal checks the reverse route to the same side, so a blocked
+exit vetoes Return until its lane is cleared. A removed piece can rotate freely
+before reinsertion. Rejected actions preserve state and history.
+
+This is opt-in, uses the existing place/remove actions, and is independent of
+support and numeric goals. Authors must verify an assembly order; geometric
+coverage alone does not prove insertability.
+
+#### Optional bounded stage transfer
+
+`transfer` applies only after advancing beyond the first target. Packs that omit
+it retain free placement and removal. Supply:
+
+- `area: [[x,y], ...]`: all permitted transit cells, within the canvas. Exact
+  completion still requires the active target, not the larger transit area.
+- `maxSteps`: total transfer budget. A board translation costs Manhattan distance;
+  removal and replacement each cost one. Rejected actions do not consume budget.
+- `maxRemovals` (default 1): cumulative tray removals per stage, not a limit on
+  replacing a previously removed piece.
+- `trayCapacity` (default 1): maximum pieces simultaneously absent from the board.
+- `slideOnly: true`: board relocations preserve rotation and follow one horizontal
+  or vertical line. Every crossed footprint must avoid walls and other pieces.
+  A piece in the tray may rotate before replacement.
+- `keepEdges: true`: every marked edge must remain matched after each accepted
+  transfer action, including removal.
+
+`<id>.transferSteps` and `<id>.removalsUsed` are published only when configured.
+Advancing stages resets them; Undo restores their previous values. Authors must
+verify a legal route, and must not assume a valid initial fit necessarily admits
+a bounded transition. These flags do not compare against a hidden solution.
+
+#### Optional placement constraints (DSL 0.12)
+
+Additional opt-in rules are implemented by separate placement-constraint helper
+modules in both runtimes. Neither flag changes packs that omit it.
+
+- `rowTotals: [sumForRow0, sumForRow1, ...]` adds a numeric goal. Supply exactly one
+  integer per canvas row and an integer `value` on every piece. Each occupied cell
+  contributes its piece's value to its row. Rotation changes that distribution.
+  Full coverage only wins when every row sum matches. Partial mismatches and
+  overshoots are allowed while experimenting. `<id>.rowSums` and `<id>.rowErrors`
+  are derived status variables, published only when this rule is configured.
+- `columnTotals: [sumForColumn0, ...]` adds the corresponding column constraint.
+  Supply one integer per canvas column and per-piece integer `value`. Each occupied
+  cell contributes that value to its column. `<id>.columnSums` and
+  `<id>.columnErrors` are derived only when configured. When both row and column
+  totals are present, every total on both axes must match for completion. The
+  placement view shows current/target counters along the two board margins.
+- `support: true` requires a downward-contact path from every placed rigid piece
+  to the canvas's bottom edge (`y = height - 1`). One contact supports the whole
+  piece; overhangs are allowed. A piece above a supported piece is supported,
+  including through multiple pieces. Sideways/diagonal contacts, internal holes
+  and cycles without any floor path provide no support. Placement, relocation or
+  removal that leaves any piece unsupported is rejected atomically. This is a
+  support constraint, not automatic gravity: pieces stay at chosen coordinates.
+
+The tray shows per-cell values, live current/goal row counters, and a brown floor
+when configured. Valid-placement previews include support restrictions. Geometry,
+lights, edge connections, undo and stage allowances retain their existing rules.
+
 ## 3. System Summary Table
 
 | System | Type | Phase | Primary Action |
 |--------|------|-------|---------------|
 | Avatar Navigation | `avatar_navigation` | `action_resolution` | `move` |
 | Push Objects | `push_objects` | `movement_resolution` | (automatic on move into pushable) |
+| Rigid Tile Placement | `tile_placement` | `action_resolution` + load settling | configured place/remove/next actions |
 | Sliding Blocks | `sliding_blocks` | `action_resolution` | `move(position, direction)` |
 | Elastic Block | `elastic_block` | `action_resolution` | `move(direction)` |
 | Line of Sight | `line_of_sight` | `cascade_resolution` | event-triggered detection |

@@ -41,6 +41,7 @@ import '../widgets/balance_panel.dart';
 import '../widgets/catalog_panel.dart';
 import '../widgets/controls_widget.dart';
 import '../widgets/expandable_goal_preview.dart';
+import '../widgets/tile_placement_board.dart';
 import '../widgets/network_bench.dart';
 import '../widgets/network_input_controller.dart';
 import '../widgets/network_presentation.dart';
@@ -3467,6 +3468,18 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
 
     final state = _preAnimState ?? _engine.state;
     final levelId = _currentEntry.ref!;
+    final effectiveGame = widget.packService.game.withSystemOverrides(
+      _levelDef.systemOverrides,
+    );
+    final placementSystem = effectiveGame.systems
+        .where((s) => s.enabled && s.type == 'tile_placement')
+        .firstOrNull;
+    final placementConfig = placementSystem == null
+        ? null
+        : effectiveGame.systemConfig(placementSystem.id, {});
+    final placementPresentation = widget.packService.presentation?['tilePlacement'];
+    final placementLabels = placementPresentation is Map
+        ? placementPresentation['labels'] : null;
 
     // Refresh the previews whenever the board or the avatar has actually
     // moved. Dry runs are cheap, but there is no reason to repeat them for
@@ -3506,6 +3519,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
 
     return Scaffold(
       backgroundColor:
+          (placementSystem != null ? Theme.of(context).colorScheme.surface : null) ??
           networkWorkbenchBackground(_mechanismScene) ??
           const Color(0xFFF5F0E8),
       appBar: AppBar(
@@ -3638,7 +3652,22 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
                 Expanded(
                   child: Padding(
                     padding: const EdgeInsets.all(12),
-                    child: _hasVisualWorkbench
+                    child: placementSystem != null
+                        ? TilePlacementBoard(
+                            key: ValueKey('placement-$levelId'),
+                            systemId: placementSystem.id,
+                            config: placementConfig!,
+                            state: state,
+                            palette: widget.packService.theme?.palette ?? const {},
+                            labels: placementLabels is Map<String, dynamic>
+                                ? placementLabels
+                                : const {},
+                            onAction: (_animating || _replaying || _aiRunning || state.isWon || state.isLost)
+                                ? null
+                                : _onAction,
+                            onReset: _onReset,
+                          )
+                        : _hasVisualWorkbench
                         ? buildNetworkWorkbench(
                             NetworkWorkbenchRequest(
                               levelId: _levelDef.id,
@@ -3879,7 +3908,17 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
                       hintStatuses: hintStatuses,
                       availableActionIds: _availableFloodActions(state),
                       presentEntityKinds: _presentEntityKinds(state),
-                      hiddenActionIds: _hiddenActionIds(state),
+                      hiddenActionIds: {
+                        ..._hiddenActionIds(state),
+                        if (placementConfig != null)
+                          for (final action in [
+                            ['placeAction', 'place_piece'], ['removeAction', 'remove_piece'],
+                            ['nextAction', 'next_target'], ['changeAction', 'change_piece'],
+                            ['turnAction', 'turn_piece'], ['rotateAction', 'rotate_piece'],
+                            ['swapAction', 'swap_echo'],
+                          ]) placementConfig[action[0]] is String
+                              ? placementConfig[action[0]] as String : action[1],
+                      },
                       actionSprites: _actionSprites(),
                       palette: widget.packService.theme?.palette,
                       gestureMap:
@@ -4876,6 +4915,16 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
 
   /// Returns "Moves: 13/25" if there is a max_actions limit, else "Moves: 13".
   String _movesLabel(LevelState state) {
+    final effective = widget.packService.game.withSystemOverrides(_levelDef.systemOverrides);
+    final system = effective.systems
+        .where((s) => s.enabled && s.type == 'tile_placement').firstOrNull;
+    if (system != null) {
+      final config = effective.systemConfig(system.id, {});
+      final limits = config['limits'];
+      if (limits is Map && limits['moves'] is int) {
+        return 'Moves: ${state.variables['${system.id}.movesUsed'] ?? 0}/${limits['moves']}';
+      }
+    }
     final limitCond = _levelDef.loseConditions
         .where((c) => c.type == 'max_actions')
         .firstOrNull;

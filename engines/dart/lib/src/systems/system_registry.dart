@@ -32,6 +32,7 @@ import 'terrain_edit_system.dart';
 import 'terrain_skip_system.dart';
 import 'tile_teleport_system.dart';
 import 'turn_cycle_system.dart';
+import 'tile_placement_system.dart';
 import 'state_network_system.dart';
 
 /// Creates a GameSystem instance from a SystemDef.
@@ -40,6 +41,7 @@ typedef SystemFactory = GameSystem Function(
 
 class SystemRegistry {
   static final Map<String, SystemFactory> _factories = {
+    'tile_placement': (id, _) => TilePlacementSystem(id: id),
     'anchor_point': (id, _) => AnchorPointSystem(id: id),
     'avatar_navigation': (id, _) => AvatarNavigationSystem(id: id),
     'balance_regions': (id, _) => BalanceRegionsSystem(id: id),

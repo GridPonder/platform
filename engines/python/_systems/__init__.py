@@ -44,12 +44,14 @@ from .terrain_edit import TerrainEditSystem
 from .terrain_skip import TerrainSkipSystem
 from .tile_teleport import TileTeleportSystem
 from .turn_cycle import TurnCycleSystem
+from .tile_placement import TilePlacementSystem
 from .state_network import StateNetworkSystem
 
 
 SystemFactory = Callable[[str, dict], GameSystem]
 
 _REGISTRY: dict[str, SystemFactory] = {
+    "tile_placement": lambda sys_id, _: TilePlacementSystem(sys_id),
     "anchor_point": lambda sys_id, _: AnchorPointSystem(sys_id),
     "avatar_navigation": lambda sys_id, _: AvatarNavigationSystem(sys_id),
     "balance_regions": lambda sys_id, _: BalanceRegionsSystem(sys_id),
