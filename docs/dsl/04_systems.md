@@ -2346,7 +2346,7 @@ the pack names its own ground, water, gate and marker kinds.
 
 ---
 
-### `tile_placement` (DSL 0.13)
+### `tile_placement` (DSL 0.12)
 
 Opt-in rigid, connected square tiles placed from a tray. It owns a dedicated
 `piecesLayer` (default `pieces`); do not combine other writers on this layer.
@@ -2535,7 +2535,7 @@ Advancing stages resets them; Undo restores their previous values. Authors must
 verify a legal route, and must not assume a valid initial fit necessarily admits
 a bounded transition. These flags do not compare against a hidden solution.
 
-#### Optional placement constraints (DSL 0.13)
+#### Optional placement constraints (DSL 0.12)
 
 Additional opt-in rules are implemented by separate placement-constraint helper
 modules in both runtimes. Neither flag changes packs that omit it.

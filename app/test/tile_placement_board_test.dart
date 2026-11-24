@@ -173,10 +173,10 @@ void main() {
               'manifest.json': {
                 'gameId': 'placement_test',
                 'title': 'Placement test',
-                'dslVersion': '0.13',
+                'dslVersion': '0.12',
                 'packVersion': 1,
                 'version': '1.0.0',
-                'minEngineVersion': '0.13.0',
+                'minEngineVersion': '0.12.0',
               },
               'game.json': game(enabled: enabled),
               'levels/sample.json': level(),
