@@ -1026,7 +1026,7 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                   ),
                 ),
                 Text(
-                  '${pieces.length} shapes',
+                  '${pieces.length - placed.length} left · ${pieces.length} shapes',
                   style: TextStyle(fontSize: 11, color: style.color('muted')),
                 ),
               ],
@@ -1196,22 +1196,35 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
               ),
             ),
             SizedBox(height: 12),
-            Text(
-              selected == null
-                  ? 'Select a piece, then tap the board.'
-                  : bonded && !rotationBlocked
-                  ? echoPartner != null
-                        ? 'Echo ${echoPartner.toUpperCase()} follows this move and turns the other way.'
-                        : 'Permanent bond: move or rotate the whole cluster. Undo to revise.'
-                  : rotationBlocked
-                  ? 'Slide ${selected!.toUpperCase()}, or Return it to rotate.'
-                  : 'Rotate or place piece ${selected!.toUpperCase()}.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 11,
-                height: 1.5,
-                color: style.color('muted'),
-              ),
+            Builder(
+              builder: (context) {
+                final hoverError = selected != null && hover != null
+                    ? error(selected!, hover!)
+                    : null;
+                return Text(
+                  hoverError ??
+                      (selected == null
+                          ? 'Select a piece, then tap the board.'
+                          : bonded && !rotationBlocked
+                          ? echoPartner != null
+                                ? 'Echo ${echoPartner.toUpperCase()} follows this move and turns the other way.'
+                                : 'Permanent bond: move or rotate the whole cluster. Undo to revise.'
+                          : rotationBlocked
+                          ? 'Slide ${selected!.toUpperCase()}, or Return it to rotate.'
+                          : 'Rotate or place piece ${selected!.toUpperCase()}.'),
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 11,
+                    height: 1.5,
+                    fontWeight: hoverError != null
+                        ? FontWeight.w600
+                        : FontWeight.w400,
+                    color: hoverError != null
+                        ? style.color('error')
+                        : style.color('muted'),
+                  ),
+                );
+              },
             ),
             if (phase + 1 < targets.length) ...[
               SizedBox(height: 16),
@@ -1414,12 +1427,14 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
         color: active
             ? color.withValues(alpha: .07)
             : onBoard
-            ? style.color('primarySoft')
+            ? style.color('surface')
             : style.color('primarySoft'),
         borderRadius: BorderRadius.circular(15),
         border: Border.all(
           color: active
               ? color.withValues(alpha: .9)
+              : onBoard
+              ? style.color('surfaceAlt')
               : style.color('primarySoft'),
           width: active ? 1.6 : 1,
         ),
@@ -1442,9 +1457,17 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
                 style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w700,
-                  color: style.color('text'),
+                  color: onBoard ? style.color('muted') : style.color('text'),
                 ),
               ),
+              if (onBoard) ...[
+                SizedBox(width: 4),
+                Icon(
+                  Icons.check_circle_rounded,
+                  size: 12,
+                  color: style.color('primary'),
+                ),
+              ],
               Spacer(),
               Text(
                 '${r * 90}\u00b0',
@@ -1454,12 +1477,15 @@ class _TilePlacementBoardState extends State<TilePlacementBoard> {
           ),
           Expanded(
             child: Center(
-              child: _pieceArtwork(p, [
-                0,
-                0,
-                r,
-                if (p['variants'] != null) form(id),
-              ], 70),
+              child: Opacity(
+                opacity: onBoard ? 0.42 : 1,
+                child: _pieceArtwork(p, [
+                  0,
+                  0,
+                  r,
+                  if (p['variants'] != null) form(id),
+                ], 70),
+              ),
             ),
           ),
           if (p['edges'] != null)
