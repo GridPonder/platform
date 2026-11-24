@@ -393,11 +393,14 @@ class TilePlacementSystem extends GameSystem {
       return 'This piece needs an entry side (0-3).';
     final area = points(rule['area']).toSet();
     final width = c['size'][0] as int, height = c['size'][1] as int;
+    final old = placed[key] as List?;
+    final updates = placement != null && old != null
+        ? linkedPlacements(c, placed, key, placement)
+        : <String, List<dynamic>>{key: placement ?? old!};
     final occupied = {
       for (final e in placed.entries)
-        if (e.key != key) ...cells(byId[e.key]!, e.value as List)
+        if (!updates.containsKey(e.key)) ...cells(byId[e.key]!, e.value as List)
     };
-    final old = placed[key] as List?;
     if (placement != null && old != null) {
       if (placement[2] != old[2])
         return 'Return the piece through its entry side before rotating it.';
@@ -406,16 +409,19 @@ class TilePlacementSystem extends GameSystem {
       if (dx != 0 && dy != 0)
         return 'Slide horizontally or vertically. Turn in a separate move.';
       for (var step = 1; step <= dx.abs() + dy.abs(); step++) {
-        final swept = cells(piece, [
-          (old[0] as int) + dx.sign * step,
-          (old[1] as int) + dy.sign * step,
-          old[2],
-          if (old.length > 3) old[3]
-        ]);
-        if (swept.any((p) => !area.contains(p)))
-          return 'A wall blocks this slide.';
-        if (swept.any(occupied.contains))
-          return 'Another piece blocks this slide.';
+        for (final id in updates.keys) {
+          final memberOld = placed[id] as List;
+          final swept = cells(byId[id]!, [
+            (memberOld[0] as int) + dx.sign * step,
+            (memberOld[1] as int) + dy.sign * step,
+            memberOld[2],
+            if (memberOld.length > 3) memberOld[3]
+          ]);
+          if (swept.any((p) => !area.contains(p)))
+            return 'A wall blocks this slide.';
+          if (swept.any(occupied.contains))
+            return 'Another piece blocks this slide.';
+        }
       }
       return null;
     }

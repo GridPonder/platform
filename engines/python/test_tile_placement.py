@@ -401,6 +401,18 @@ class PlacementTests(unittest.TestCase):
         self.assertFalse(place(e,'x',2,0))
         self.assertFalse(e.execute_turn('remove_piece',dict(piece='x')).accepted)
 
+    def test_insertion_slide_checks_linked_partner_path(self):
+        area=[[0,0],[1,0],[2,0],[0,1],[2,1]]
+        tiles=[
+            dict(id='x',kind='tile',entrySide=0,cells=[[0,0]],edges=[dict(cell=[0,0],direction=2,symbol='1')]),
+            dict(id='y',kind='tile',entrySide=2,cells=[[0,0]],edges=[dict(cell=[0,0],direction=0,symbol='1')]),
+        ]
+        e=engine(dict(size=[3,2],pieces=tiles,playArea=area,insertion=dict(area=area),linkedMovement={}))
+        self.assertTrue(place(e,'x',0,0));self.assertTrue(place(e,'y',0,1))
+        before=e.state_key()
+        self.assertFalse(place(e,'x',2,0))
+        self.assertEqual(e.state_key(),before)
+
 
 if __name__ == '__main__':
     unittest.main()

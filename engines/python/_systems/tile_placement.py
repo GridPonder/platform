@@ -206,17 +206,21 @@ def insertion_problem(config, placements, piece_id, placement):
     piece=by_id[piece_id];side=piece.get('entrySide')
     if type(side) is not int or not 0<=side<4:return 'This piece needs an entry side (0-3).'
     area=set(points(rule['area']));width,height=config['size']
-    occupied={p for key,value in placements.items() if key!=piece_id for p in cells(by_id[key],value)}
     old=placements.get(piece_id)
+    updates=linked_placements(config,placements,piece_id,placement) if placement is not None and old is not None else {piece_id:placement if placement is not None else old}
+    occupied={p for key,value in placements.items() if key not in updates for p in cells(by_id[key],value)}
     if placement is not None and old is not None:
         if placement[2]!=old[2]:return 'Return the piece through its entry side before rotating it.'
         dx,dy=placement[0]-old[0],placement[1]-old[1]
         if dx and dy:return 'Slide horizontally or vertically. Turn in a separate move.'
+        sx=1 if dx>0 else -1 if dx<0 else 0;sy=1 if dy>0 else -1 if dy<0 else 0
         for step in range(1,abs(dx)+abs(dy)+1):
-            p=[old[0]+(1 if dx>0 else -1 if dx<0 else 0)*step,old[1]+(1 if dy>0 else -1 if dy<0 else 0)*step,*old[2:]]
-            swept=cells(piece,p)
-            if any(a not in area for a in swept):return 'A wall blocks this slide.'
-            if any(a in occupied for a in swept):return 'Another piece blocks this slide.'
+            for member_id in updates:
+                member_old=placements[member_id]
+                p=[member_old[0]+sx*step,member_old[1]+sy*step,*member_old[2:]]
+                swept=cells(by_id[member_id],p)
+                if any(a not in area for a in swept):return 'A wall blocks this slide.'
+                if any(a in occupied for a in swept):return 'Another piece blocks this slide.'
         return None
     anchor=placement if placement is not None else old
     dx,dy=[(0,-1),(1,0),(0,1),(-1,0)][side]

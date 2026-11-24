@@ -1490,4 +1490,37 @@ void main() {
         e.executeTurn(const GameAction('remove_piece', {'piece': 'x'})).accepted,
         false);
   });
+
+  test('insertion slide checks every linked partner footprint at each step', () {
+    // 3x2 grid: (1,1) is blocked (wall). Linked pair x=(0,0) + y=(0,1) tries to slide East to (2,0) + (2,1).
+    // x's path along row 0 is clear and y's destination (2,1) is clear, but y passes through blocked (1,1).
+    final area = [[0, 0], [1, 0], [2, 0], [0, 1], [2, 1]];
+    final e = engine({
+      'size': [3, 2],
+      'pieces': [
+        {
+          'id': 'x',
+          'kind': 'tile',
+          'entrySide': 0,
+          'cells': [[0, 0]],
+          'edges': [{'cell': [0, 0], 'direction': 2, 'symbol': '1'}],
+        },
+        {
+          'id': 'y',
+          'kind': 'tile',
+          'entrySide': 2,
+          'cells': [[0, 0]],
+          'edges': [{'cell': [0, 0], 'direction': 0, 'symbol': '1'}],
+        },
+      ],
+      'playArea': area,
+      'insertion': {'area': area},
+      'linkedMovement': <String, dynamic>{},
+    });
+    expect(place(e, 'x', 0, 0), true);
+    expect(place(e, 'y', 0, 1), true);
+    final before = e.state.copy();
+    expect(place(e, 'x', 2, 0), false);
+    expect(e.state.variables, before.variables);
+  });
 }
