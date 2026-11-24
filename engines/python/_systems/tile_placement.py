@@ -116,7 +116,10 @@ def linked_placements(config, placements, piece_id, placement):
     for key in group:
         world=[rotate((x-old[0],y-old[1])) for x,y in cells(by[key],placements[key])]
         pose=[min(x for x,y in world)-mx+placement[0],min(y for x,y in world)-my+placement[1],(placements[key][2]+delta)%4]
-        if len(placements[key])>3:pose.append(placements[key][3])
+        if key == piece_id and len(placement) > 3:
+            pose.append(placement[3])
+        elif key != piece_id and len(placements[key]) > 3:
+            pose.append(placements[key][3])
         result[key]=pose
     return result
 
@@ -210,15 +213,15 @@ def insertion_problem(config, placements, piece_id, placement):
         dx,dy=placement[0]-old[0],placement[1]-old[1]
         if dx and dy:return 'Slide horizontally or vertically. Turn in a separate move.'
         for step in range(1,abs(dx)+abs(dy)+1):
-            p=[old[0]+(1 if dx>0 else -1 if dx<0 else 0)*step,old[1]+(1 if dy>0 else -1 if dy<0 else 0)*step,old[2]]
+            p=[old[0]+(1 if dx>0 else -1 if dx<0 else 0)*step,old[1]+(1 if dy>0 else -1 if dy<0 else 0)*step,*old[2:]]
             swept=cells(piece,p)
             if any(a not in area for a in swept):return 'A wall blocks this slide.'
             if any(a in occupied for a in swept):return 'Another piece blocks this slide.'
         return None
     anchor=placement if placement is not None else old
     dx,dy=[(0,-1),(1,0),(0,1),(-1,0)][side]
-    for step in range(1,width+height+max(max(p) for p in piece['cells'])+3):
-        swept=cells(piece,[anchor[0]+dx*step,anchor[1]+dy*step,anchor[2]])
+    for step in range(1,width+height+max(max(p) for p in variant_piece(piece,anchor)['cells'])+3):
+        swept=cells(piece,[anchor[0]+dx*step,anchor[1]+dy*step,*anchor[2:]])
         inside=[p for p in swept if 0<=p[0]<width and 0<=p[1]<height]
         if not inside:return None
         if any(p not in area or p in occupied for p in inside):

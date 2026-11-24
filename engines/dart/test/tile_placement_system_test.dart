@@ -1413,4 +1413,81 @@ void main() {
     expect(e.state.variables, before.variables);
     expect(e.undoDepth, depth);
   });
+
+  test('changing form of a linked piece rejects overlapping new footprint', () {
+    final e = engine({
+      'size': [3, 2],
+      'pieces': [
+        {
+          'id': 'x',
+          'kind': 'tile',
+          'variants': [
+            {
+              'cells': [[0, 0]],
+              'edges': [{'cell': [0, 0], 'direction': 2, 'symbol': '1'}],
+            },
+            {
+              'cells': [[0, 0], [1, 0]],
+              'edges': [{'cell': [0, 0], 'direction': 2, 'symbol': '1'}],
+            },
+          ],
+        },
+        {
+          'id': 'y',
+          'kind': 'tile',
+          'cells': [[0, 0]],
+          'edges': [{'cell': [0, 0], 'direction': 0, 'symbol': '1'}],
+        },
+        {
+          'id': 'z',
+          'kind': 'tile',
+          'cells': [[0, 0]],
+        },
+      ],
+      'playArea': [
+        for (var y = 0; y < 2; y++)
+          for (var x = 0; x < 3; x++) [x, y]
+      ],
+      'linkedMovement': <String, dynamic>{},
+      'variantCells': [[0, 0]],
+    });
+    expect(place(e, 'x', 0, 0), true);
+    expect(place(e, 'y', 0, 1), true);
+    expect(place(e, 'z', 1, 0), true);
+    final before = e.state.copy();
+    expect(
+        e.executeTurn(const GameAction('change_piece', {'piece': 'x'})).accepted,
+        false);
+    expect(e.state.variables, before.variables);
+  });
+
+  test('side-entry path check preserves active variant footprint', () {
+    final e = engine({
+      'size': [3, 2],
+      'pieces': [
+        {
+          'id': 'x',
+          'kind': 'tile',
+          'entrySide': 1,
+          'variants': [
+            {'cells': [[0, 0]]},
+            {'cells': [[0, 0], [0, 1]]},
+          ],
+        },
+      ],
+      'playArea': [[0, 0], [1, 0], [2, 0], [0, 1], [2, 1]],
+      'insertion': {
+        'area': [[0, 0], [1, 0], [2, 0], [0, 1], [2, 1]],
+      },
+      'variantCells': [[0, 0]],
+    });
+    expect(place(e, 'x', 0, 0), true);
+    expect(
+        e.executeTurn(const GameAction('change_piece', {'piece': 'x'})).accepted,
+        true);
+    expect(place(e, 'x', 2, 0), false);
+    expect(
+        e.executeTurn(const GameAction('remove_piece', {'piece': 'x'})).accepted,
+        false);
+  });
 }

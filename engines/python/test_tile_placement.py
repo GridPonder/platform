@@ -377,6 +377,30 @@ class PlacementTests(unittest.TestCase):
         self.assertTrue(place(e,'x'));self.assertTrue(place(e,'y',5,1))
         before=e.state_key();self.assertFalse(e.execute_turn('swap_echo',dict(piece='x')).accepted);self.assertEqual(e.state_key(),before)
 
+    def test_linked_piece_form_change_rejects_overlap(self):
+        tiles=[
+            dict(id='x',kind='tile',variants=[
+                dict(cells=[[0,0]],edges=[dict(cell=[0,0],direction=2,symbol='1')]),
+                dict(cells=[[0,0],[1,0]],edges=[dict(cell=[0,0],direction=2,symbol='1')]),
+            ]),
+            dict(id='y',kind='tile',cells=[[0,0]],edges=[dict(cell=[0,0],direction=0,symbol='1')]),
+            dict(id='z',kind='tile',cells=[[0,0]]),
+        ]
+        e=engine(dict(size=[3,2],pieces=tiles,playArea=[[x,y] for y in range(2) for x in range(3)],linkedMovement={},variantCells=[[0,0]]))
+        self.assertTrue(place(e,'x',0,0));self.assertTrue(place(e,'y',0,1));self.assertTrue(place(e,'z',1,0))
+        before=e.state_key()
+        self.assertFalse(e.execute_turn('change_piece',dict(piece='x')).accepted)
+        self.assertEqual(e.state_key(),before)
+
+    def test_side_entry_preserves_active_variant_footprint(self):
+        tiles=[dict(id='x',kind='tile',entrySide=1,variants=[dict(cells=[[0,0]]),dict(cells=[[0,0],[0,1]])])]
+        area=[[0,0],[1,0],[2,0],[0,1],[2,1]]
+        e=engine(dict(size=[3,2],pieces=tiles,playArea=area,insertion=dict(area=area),variantCells=[[0,0]]))
+        self.assertTrue(place(e,'x',0,0))
+        self.assertTrue(e.execute_turn('change_piece',dict(piece='x')).accepted)
+        self.assertFalse(place(e,'x',2,0))
+        self.assertFalse(e.execute_turn('remove_piece',dict(piece='x')).accepted)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -233,7 +233,8 @@ class TilePlacementSystem extends GameSystem {
         world.map((p) => p.x).reduce(min) - mx + (placement[0] as int),
         world.map((p) => p.y).reduce(min) - my + (placement[1] as int),
         ((pose[2] as int) + delta) % 4,
-        if (pose.length > 3) pose[3]
+        if (id == key ? placement.length > 3 : pose.length > 3)
+          id == key ? placement[3] : pose[3]
       ];
     }
     return result;
@@ -408,7 +409,8 @@ class TilePlacementSystem extends GameSystem {
         final swept = cells(piece, [
           (old[0] as int) + dx.sign * step,
           (old[1] as int) + dy.sign * step,
-          old[2]
+          old[2],
+          if (old.length > 3) old[3]
         ]);
         if (swept.any((p) => !area.contains(p)))
           return 'A wall blocks this slide.';
@@ -426,7 +428,7 @@ class TilePlacementSystem extends GameSystem {
     ];
     final delta = offsets[side];
     var extent = 0;
-    for (final p in points(piece['cells'])) {
+    for (final p in points(variantPiece(piece, anchor)['cells'])) {
       if (p.x > extent) extent = p.x;
       if (p.y > extent) extent = p.y;
     }
@@ -434,7 +436,8 @@ class TilePlacementSystem extends GameSystem {
       final swept = cells(piece, [
         (anchor[0] as int) + delta.x * step,
         (anchor[1] as int) + delta.y * step,
-        anchor[2]
+        anchor[2],
+        if (anchor.length > 3) anchor[3]
       ]);
       final inside = swept
           .where((p) => p.x >= 0 && p.y >= 0 && p.x < width && p.y < height)
