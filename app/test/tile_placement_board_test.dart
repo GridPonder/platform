@@ -154,6 +154,8 @@ void main() {
         (engine.state.variables['tiles.placements'] as Map).containsKey('a'),
         isTrue,
       );
+      expect(find.text('1 left · 2 shapes'), findsOneWidget);
+      expect(find.byIcon(Icons.check_circle_rounded), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
   }
