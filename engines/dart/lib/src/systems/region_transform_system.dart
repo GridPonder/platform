@@ -42,18 +42,50 @@ class RegionTransformSystem extends GameSystem {
 
     if (matchedOpType == null) return const [];
 
+    // Optional cell guard for position-driven actions; absent keeps old behavior.
+    final trigger = config['trigger'];
+    if (trigger != null) {
+      final raw = action.params['position'];
+      if (trigger is! Map || trigger['layer'] is! String ||
+          raw is! List || raw.length != 2 || raw[0] is! int || raw[1] is! int) {
+        return const [];
+      }
+      final pos = Position(raw[0] as int, raw[1] as int);
+      final layer = trigger['layer'] as String;
+      if (!state.board.isInBounds(pos)) return const [];
+      final entity = state.board.getEntity(layer, pos);
+      if (entity == null) return const [];
+      final expectedKind = trigger['kind'];
+      final expectedKinds = trigger['kinds'];
+      final expectedTag = trigger['tag'];
+      final matchesKind = expectedKind is String && entity.kind == expectedKind;
+      final matchesKinds = expectedKinds is List && expectedKinds.contains(entity.kind);
+      final matchesTag = expectedTag is String && game.hasTag(entity.kind, expectedTag);
+      if (!matchesKind && !matchesKinds && !matchesTag) {
+        return const [];
+      }
+    }
+
+    final localCycle = matchedOpType == 'cycle_neighbors';
+    final rawCenter = action.params['position'];
+    if (localCycle && (rawCenter is! List || rawCenter.length != 2 ||
+        rawCenter[0] is! int || rawCenter[1] is! int)) return const [];
+    final center = localCycle ? Position.fromJson(rawCenter) : null;
     final overlay = state.overlay;
-    if (overlay == null) return const [];
+    if (!localCycle && overlay == null) return const [];
 
     final affectedLayersRaw =
         config['affectedLayers'] as List<dynamic>? ?? ['objects'];
     final affectedLayers = affectedLayersRaw.map((l) => l.toString()).toList();
 
     final board = state.board;
-    final ox = overlay.x;
-    final oy = overlay.y;
-    final overlayWidth = overlay.width;
-    final overlayHeight = overlay.height;
+    final ox = localCycle ? center!.x - 1 : overlay!.x;
+    final oy = localCycle ? center!.y - 1 : overlay!.y;
+    final overlayWidth = localCycle ? 3 : overlay!.width;
+    final overlayHeight = localCycle ? 3 : overlay!.height;
+    if (localCycle && [Position(ox, oy + 1), Position(ox + 1, oy),
+        Position(ox + 2, oy + 1), Position(ox + 1, oy + 2)]
+        .any((p) => !board.isInBounds(p) || board.isVoid(p))) return const [];
 
     // If blockOnVoid is enabled, abort if any overlay cell sits on void ground.
     final blockOnVoid = (config['blockOnVoid'] as bool?) ?? false;
@@ -117,6 +149,12 @@ class RegionTransformSystem extends GameSystem {
         final dstPos = entry.value;
         if (snapshot.containsKey(srcPos) && newValues.containsKey(dstPos)) {
           newValues[dstPos] = snapshot[srcPos];
+          // Opt-in motion uses the same snapshot as the atomic permutation.
+          final entity = snapshot[srcPos];
+          if (config['emitMotion'] == true && entity != null && srcPos != dstPos) {
+            events.add(GameEvent.tileMoved(srcPos, dstPos, entity.kind,
+                params: Map<String, dynamic>.of(entity.params), layer: layerId));
+          }
         }
       }
 
@@ -255,6 +293,10 @@ class RegionTransformSystem extends GameSystem {
     Direction? direction,
   ) {
     switch (opType) {
+      case 'cycle_neighbors':
+        final ring = [Position(ox, oy + 1), Position(ox + 1, oy),
+          Position(ox + 2, oy + 1), Position(ox + 1, oy + 2)];
+        return {for (var i = 0; i < 4; i++) ring[i]: ring[(i + 1) % 4]};
       case 'rotate':
         return _rotateMapping(ox, oy, w, h);
       case 'flip':

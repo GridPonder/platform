@@ -40,6 +40,7 @@ import '../widgets/board_renderer.dart'
 import '../widgets/balance_panel.dart';
 import '../widgets/catalog_panel.dart';
 import '../widgets/controls_widget.dart';
+import '../widgets/expandable_goal_preview.dart';
 import '../widgets/tile_placement_board.dart';
 import '../widgets/network_bench.dart';
 import '../widgets/network_input_controller.dart';
@@ -3990,7 +3991,9 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
   }
 
   Widget _buildBareZoomableBoard(LevelState state, Widget board) {
-    return Listener(
+    final controlsAbove = widget.packService.game.ui.goalPreviewSize != null &&
+        MediaQuery.sizeOf(context).width < 600;
+    final boardView = Listener(
       onPointerSignal: _onBoardPointerSignal,
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -4020,12 +4023,19 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
                   ),
                 ),
               ),
-              Positioned(top: 0, right: 0, child: _buildZoomButtons()),
+              if (!controlsAbove)
+                Positioned(top: 0, right: 0, child: _buildZoomButtons()),
             ],
           );
         },
       ),
     );
+    return controlsAbove
+        ? Column(children: [
+            Align(alignment: Alignment.centerRight, child: _buildZoomButtons(horizontal: true)),
+            Expanded(child: boardView),
+          ])
+        : boardView;
   }
 
   /// Top-left corner of the visible window, in zoomed board-area coordinates.
@@ -4076,7 +4086,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildZoomButtons() {
+  Widget _buildZoomButtons({bool horizontal = false}) {
     Widget button(IconData icon, String tooltip, VoidCallback? onPressed) {
       return IconButton(
         icon: Icon(icon, size: 20),
@@ -4090,7 +4100,8 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     return Material(
       color: Colors.white.withValues(alpha: 0.75),
       borderRadius: BorderRadius.circular(8),
-      child: Column(
+      child: Flex(
+        direction: horizontal ? Axis.horizontal : Axis.vertical,
         mainAxisSize: MainAxisSize.min,
         children: [
           button(
@@ -4377,19 +4388,29 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
       lines.add(descriptions[goal.id] ?? goal.type.replaceAll('_', ' '));
     }
 
+    Widget? targetPreview;
+    if (preview != null) {
+      targetPreview = TargetBoardRenderer(
+        targetLayers: preview,
+        matchParams: previewMatchParams,
+        currentState: state,
+        palette: widget.packService.theme?.palette,
+      );
+      final size = widget.packService.game.ui.goalPreviewSize;
+      if (size != null) {
+        final labels = widget.packService.presentation?['labels'];
+        targetPreview = ExpandableGoalPreview(
+          maxSize: size,
+          preview: targetPreview,
+          labels: labels is Map<String, dynamic> ? labels : const {},
+        );
+      }
+    }
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (preview != null)
-          Center(
-            child: TargetBoardRenderer(
-              targetLayers: preview,
-              matchParams: previewMatchParams,
-              currentState: state,
-              palette: widget.packService.theme?.palette,
-            ),
-          ),
+        if (targetPreview != null) Center(child: targetPreview),
         if (preview != null && lines.isNotEmpty) const SizedBox(height: 6),
         for (final line in lines)
           Padding(

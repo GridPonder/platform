@@ -1,0 +1,9 @@
+{
+  "id": "pulse_network_smoke",
+  "gameId": "pulse_network_smoke",
+  "title": "Pulse network smoke tests",
+  "dslVersion": "0.12",
+  "minEngineVersion": "0.12.0",
+  "packVersion": 1,
+  "version": "1.0.0"
+}

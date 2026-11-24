@@ -1,5 +1,46 @@
 # Gridponder DSL — System Catalog
 
+## `pulse_network` (DSL 0.12)
+
+A reusable cascade system for synchronous orthogonal pulse puzzles. It replaces
+per-cell rule expansion with one bounded wave algorithm. It consumes a
+`cell_transformed` event on `controlsLayer` whose `toKind` is `pressedKind`,
+only while that cell still holds `pressedKind`, and restores `readyKind`.
+Use a normal `terrain_edit` action to press controls. Levels can enable the
+network through `systemOverrides`; disabled networks do nothing.
+
+Configuration is pack vocabulary, not fixed engine entity names:
+
+| Fields | Meaning |
+|---|---|
+| `controlsLayer`, `pressedKind`, `readyKind` | Accepted trigger and its reset state. |
+| `lightsLayer`, `offKind`, `onKind` | The two stable light states. Only cells holding these kinds receive pulses. |
+| `risingKind`, `fallingKind` | Transient notification kinds emitted before settling a flipped light. |
+| `objectsLayer`, `relayKind` | A relay forwards only when a non-cancelled pulse changes it from OFF to ON. |
+| `signalsLayer`, `idleKind`, `hitKind`, `cancelledKind`, `burstKind` | Per-tap visual processing states, reset at the next accepted press. |
+| `flipKinds` | Controls that flip themselves and their four orthogonal neighbours. |
+| `fuseKinds` | Optional map from a one-use flip control to its spent kind. Its control-layer cell is removed after use. |
+| `writeKinds` | Optional control-kind map to `onKind` or `offKind`. Writes affect neighbours and protect them from further processing this tap. |
+| `delayKinds` | Optional map from an empty store to its loaded kind. Loaded stores release after the next press's direct changes. Pressing a loaded store releases without reloading. |
+| `queuedVariable` | Optional 0/1 variable indicating whether this press loaded a new store. |
+| `collisions` | Default `true`: same-wave opposites cancel; a perpendicular pair bursts. Cancellation takes precedence. `false` disables both effects. |
+| `bursts` | Default `true`. Set `false` to merge perpendicular arrivals into one flip without forwarding from ordinary cells. Opposite cancellation still follows `collisions`. |
+| `activateMovedRelays` | Default `false`. With movement events enabled, a light permutation that changes a relay from OFF to ON seeds the same first wave as a direct activation. Changed destinations are protected from further pulses that press. ON-to-OFF and unchanged states do not seed. |
+
+A ready control outside `flipKinds`, `writeKinds`, and `delayKinds` simply
+advances time, allowing stores to release. Every pulse travels exactly one
+orthogonal edge. A relay turning ON or a perpendicular burst sends the next
+wave; ordinary single-hit lights do not forward. Each light processes at most
+once per press, including cancellation. Later arrivals are ignored.
+
+Directions are bit sets combined with OR, never arithmetic counts. Current
+and next waves use separate buffers, so arrivals from different waves cannot
+collide. Only the board, control availability, stores and optional queue flag
+persist; wave buffers are local to one execution.
+
+Events include the usual `cell_transformed`, fuse-removal and optional queue
+`variable_changed` notifications.
+
 The built-in engine systems, their execution order, and the per-system configuration reference.
 
 ## 1. System Architecture
@@ -341,13 +382,15 @@ unsafe carry move
 |-------|------|---------|-------------|
 | `overlaySystemId` | string | — | Id of the `overlay_cursor` system providing the region. |
 | `affectedLayers` | array of strings | `["objects"]` | Which layers are transformed. |
+| `emitMotion` | boolean | `false` | For rotate, flip, diagonal swap and cycle_neighbors, emit `tile_moved` events for nonempty sources whose positions change. Preserves kinds and parameters; enables simultaneous renderer movement. Fixed points, empty sources and excluded void pairs emit nothing. Only literal `true` enables it. Exchange is unaffected. |
+| `trigger` | object | absent | Optional `{ "layer": "...", "kind": "...", "kinds": [...], "tag": "..." }` guard: the action's `position` must contain the specified kind, one of `kinds`, or the specified `tag` on that layer. Missing, malformed, or nonmatching positions leave the board unchanged. |
 | `operations` | object | `{}` | Map of operation name → operation config. |
 
 Each operation:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `type` | string | `"rotate"`, `"flip"`, `"diagonal_swap"`, or `"exchange"`. |
+| `type` | string | `"rotate"`, `"flip"`, `"diagonal_swap"`, `"exchange"`, or `"cycle_neighbors"`. |
 | `action` | string | Action id that triggers this operation. |
 | `layers` | `[first, second]` | `exchange` only: the two layers swapped. Ignores `affectedLayers`. |
 | `pairs` | object | — | Aggressor kind mapped to one victim kind or a list of victim kinds. |
@@ -365,6 +408,14 @@ Example config:
   }
 }
 ```
+
+**Operation: `cycle_neighbors`**
+
+Permutes the four orthogonal neighbors of the action's `position` clockwise
+(left -> top -> right -> bottom -> left). The center and diagonal cells stay
+fixed. It needs no overlay; overlapping neighborhoods compose in action order.
+A missing/malformed position, out-of-bounds neighbor or void neighbor leaves
+the board unchanged. `affectedLayers`, `trigger` and `emitMotion` still apply.
 
 **Operation: `rotate`**
 

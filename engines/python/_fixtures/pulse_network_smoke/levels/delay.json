@@ -1,0 +1,22 @@
+{
+  "id": "delay",
+  "board": {
+    "size": [3, 2],
+    "layers": {
+      "lights": [["dark", null, "dark"], [null, null, null]],
+      "objects": [[null, "charge", null], [null, "wait", null]],
+      "controls": [[null, "ready", null], [null, "ready", null]],
+      "signals": [["idle", null, "idle"], [null, null, null]]
+    }
+  },
+  "state": {"avatar": {"enabled": false}, "variables": {"queued": 0}},
+  "goals": [
+    {
+      "id": "target",
+      "type": "board_match",
+      "config": {"matchMode": "exact", "targetLayers": {"lights": [["lit", null, "lit"], [null, null, null]]}}
+    }
+  ],
+  "loseConditions": [{"type": "max_actions", "config": {"limit": 2}}],
+  "solution": {"goldPath": [{"action": "tap", "position": [1, 0]}, {"action": "tap", "position": [1, 1]}]}
+}

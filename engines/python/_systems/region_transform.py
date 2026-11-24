@@ -37,14 +37,44 @@ class RegionTransformSystem(GameSystem):
         if matched_op_type is None:
             return []
 
+        # Optional cell guard for position-driven actions; absent keeps old behavior.
+        trigger = config.get("trigger")
+        if trigger is not None:
+            raw = action.get("params", {}).get("position")
+            if (not isinstance(trigger, dict) or not isinstance(trigger.get("layer"), str)
+                    or not isinstance(raw, list) or len(raw) != 2 or any(type(v) is not int for v in raw)):
+                return []
+            pos = Pos(*raw)
+            if not state.board.is_in_bounds(pos):
+                return []
+            entity = state.board.get_entity(trigger["layer"], pos)
+            if entity is None:
+                return []
+            expected_kind = trigger.get("kind")
+            expected_kinds = trigger.get("kinds")
+            expected_tag = trigger.get("tag")
+            matches_kind = isinstance(expected_kind, str) and entity.kind == expected_kind
+            matches_kinds = isinstance(expected_kinds, list) and entity.kind in expected_kinds
+            matches_tag = isinstance(expected_tag, str) and game.has_tag(entity.kind, expected_tag)
+            if not matches_kind and not matches_kinds and not matches_tag:
+                return []
+
+        local_cycle = matched_op_type == "cycle_neighbors"
+        raw_center = action.get("params", {}).get("position")
+        if local_cycle and (not isinstance(raw_center, list) or len(raw_center) != 2
+                            or any(type(v) is not int for v in raw_center)):
+            return []
         overlay = state.overlay
-        if overlay is None:
+        if not local_cycle and overlay is None:
             return []
 
         affected_layers = [str(l) for l in config_list(config, "affectedLayers", ["objects"])]
         board = state.board
-        ox, oy = overlay.x, overlay.y
-        ow, oh = overlay.width, overlay.height
+        ox, oy = (raw_center[0] - 1, raw_center[1] - 1) if local_cycle else (overlay.x, overlay.y)
+        ow, oh = (3, 3) if local_cycle else (overlay.width, overlay.height)
+        if local_cycle and any(not board.is_in_bounds(p) or board.is_void(p) for p in
+                               (Pos(ox, oy+1), Pos(ox+1, oy), Pos(ox+2, oy+1), Pos(ox+1, oy+2))):
+            return []
 
         if config.get("blockOnVoid", False):
             for dy2 in range(oh):
@@ -56,6 +86,7 @@ class RegionTransformSystem(GameSystem):
             return self._exchange(matched_op, state, game, ox, oy, ow, oh)
 
         dir_str = action.get("params", {}).get("direction")
+        events = []
 
         for layer_id in affected_layers:
             layer = board.layers.get(layer_id)
@@ -76,11 +107,16 @@ class RegionTransformSystem(GameSystem):
             for src, dst in mapping.items():
                 if src in snapshot and dst in new_values:
                     new_values[dst] = snapshot[src]
+                    # Opt-in motion uses the atomic permutation's snapshot.
+                    entity = snapshot[src]
+                    if config.get("emitMotion") is True and entity is not None and src != dst:
+                        events.append(ev.tile_moved(src, dst, entity.kind,
+                                                    params=dict(entity.params), layer=layer_id))
             for p, e in new_values.items():
                 if board.is_in_bounds(p):
                     layer.set(p, e)
 
-        return [ev.region_transformed(matched_op_type)]
+        return events + [ev.region_transformed(matched_op_type)]
 
     def _exchange(self, op: dict, state: GameState, game: GameDef,
                   ox: int, oy: int, w: int, h: int) -> list[dict]:
@@ -182,6 +218,9 @@ class RegionTransformSystem(GameSystem):
         return events
 
     def _compute_mapping(self, op_type, ox, oy, w, h, direction) -> dict[Pos, Pos]:
+        if op_type == "cycle_neighbors":
+            ring = [Pos(ox, oy+1), Pos(ox+1, oy), Pos(ox+2, oy+1), Pos(ox+1, oy+2)]
+            return {p: ring[(i+1) % 4] for i, p in enumerate(ring)}
         if op_type == "rotate":
             return {Pos(ox+lx, oy+ly): Pos(ox+(h-1-ly), oy+lx) for ly in range(h) for lx in range(w)}
         if op_type == "flip":

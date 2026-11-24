@@ -408,5 +408,92 @@ class RestrictTests(unittest.TestCase):
         self.assertTrue(_press(engine).accepted)
 
 
+class RegionMotionTests(unittest.TestCase):
+    def test_overlapping_local_cycles_without_overlay(self):
+        level = _level({(x, y): 'ink_red' if (x+y) % 2 == 0 else 'ink_blue'
+                        for y in range(4) for x in range(5)}, {}, size=(5, 4))
+        level['state'].pop('overlay')
+        level['systemOverrides'] = {'cursor': {'enabled': False}, 'stamp': {
+            'affectedLayers': ['ink'], 'emitMotion': True,
+            'operations': {'cycle': {'type': 'cycle_neighbors', 'action': 'press'}},
+        }}
+        engine = TurnEngine(_make_game(), level)
+        self.assertIsNone(engine.state.overlay)
+        for y in range(4):
+            for x in range(5):
+                engine.state.board.get_entity('ink', Pos(x, y)).params['serial'] = y*5+x
+        for x, y in ((1, 1), (3, 1)):
+            ring = [Pos(x-1, y), Pos(x, y-1), Pos(x+1, y), Pos(x, y+1)]
+            before = [engine.state.board.get_entity('ink', p).params['serial'] for p in ring]
+            fixed = engine.state.board.get_entity('ink', Pos(x, y)).params['serial']
+            result = engine.execute_turn('press', {'position': [x, y]})
+            self.assertEqual([engine.state.board.get_entity('ink', p).params['serial'] for p in ring],
+                             [before[3], before[0], before[1], before[2]])
+            self.assertEqual(engine.state.board.get_entity('ink', Pos(x, y)).params['serial'], fixed)
+            self.assertEqual(sum(e['type'] == 'tile_moved' for e in result.events), 4)
+        result = engine.execute_turn('press', {'position': [0, 0]})
+        self.assertFalse(any(e['type'] == 'tile_moved' for e in result.events))
+
+    def test_position_trigger_runs_only_for_matching_cell(self):
+        level = _level({(0, 0): "ink_red", (1, 0): "ink_blue"}, {})
+        level["systemOverrides"] = {"stamp": {
+            "affectedLayers": ["ink"], "trigger": {"layer": "ink", "kind": "ink_red"},
+            "operations": {"turn": {"type": "rotate", "action": "press"}},
+        }}
+        engine = TurnEngine(_make_game(), level)
+        for position in (None, [1, 0], [9, 9], ["bad", 0]):
+            result = engine.execute_turn("press", {"position": position})
+            self.assertFalse(any(e["type"] == "region_transformed" for e in result.events))
+            self.assertEqual(_kind(engine, "ink", 0, 0), "ink_red")
+        result = engine.execute_turn("press", {"position": [0, 0]})
+        self.assertEqual(sum(e["type"] == "region_transformed" for e in result.events), 1)
+        self.assertEqual(_kind(engine, "ink", 1, 0), "ink_red")
+
+    def spatial(self, motion=None, operation="rotate", sparse=False):
+        ink = {(0, 0): "ink_red", (1, 1): "ink_red"}
+        if not sparse:
+            ink[(1, 0)] = "ink_blue"
+        level = _level(ink, {})
+        level["systemOverrides"] = {"stamp": {
+            "affectedLayers": ["ink"],
+            **({"emitMotion": motion} if motion is not None else {}),
+            "operations": {"transform": {"type": operation, "action": "press"}},
+        }}
+        engine = TurnEngine(_make_game(), level)
+        engine.state.board.get_entity("ink", Pos(0, 0)).params["serial"] = 17
+        return engine
+
+    def test_defaults_and_malformed_flags_preserve_legacy(self):
+        animated = self.spatial(True)
+        result = _press(animated)
+        self.assertEqual(sum(e["type"] == "tile_moved" for e in result.events), 3)
+        for flag in (None, False, "true", 1):
+            legacy = self.spatial(flag)
+            result = _press(legacy)
+            self.assertEqual([e["type"] for e in result.events], ["region_transformed", "turn_ended"])
+            for y in range(2):
+                for x in range(2):
+                    self.assertEqual(_kind(legacy, "ink", x, y), _kind(animated, "ink", x, y))
+
+    def test_motion_preserves_sources_destinations_and_parameters(self):
+        for operation in ("rotate", "flip", "diagonal_swap"):
+            engine = self.spatial(True, operation, sparse=True)
+            sources = {(x, y): engine.state.board.get_entity("ink", Pos(x, y))
+                       for y in range(2) for x in range(2)}
+            result = engine.execute_turn("press", {"direction": "up_left"})
+            moves = [e for e in result.events if e["type"] == "tile_moved"]
+            self.assertEqual(len(moves), 2)
+            for event in moves:
+                source, destination = event["fromPosition"], event["position"]
+                self.assertNotEqual(source, destination)
+                self.assertEqual(event["layer"], "ink")
+                original = sources[(source.x, source.y)]
+                self.assertEqual(event["kind"], original.kind)
+                self.assertEqual(event["params"], original.params)
+                self.assertEqual(engine.state.board.get_entity("ink", destination).kind, original.kind)
+            self.assertTrue(engine.undo())
+            self.assertEqual(_kind(engine, "ink", 0, 0), "ink_red")
+
+
 if __name__ == "__main__":
     unittest.main()
