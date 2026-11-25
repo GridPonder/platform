@@ -1,3 +1,7 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:gridponder_engine/src/systems/sliding_blocks_system.dart';
 import 'package:gridponder_engine/engine.dart';
 import 'package:test/test.dart';
 
@@ -139,6 +143,90 @@ Map<String, dynamic> _singleBlockBoard({
 }
 
 void main() {
+  final groupCases =
+      jsonDecode(File('../testdata/sliding_groups.json').readAsStringSync())
+          as List;
+  for (final c in groupCases) {
+    test('movement group: ${c['name']}', () {
+      final blocks = c['blocks'] as List;
+      final board = _singleBlockBoard(
+          size: [7, 3],
+          groundEntries:
+              (c['ground'] as List? ?? []).cast<Map<String, dynamic>>(),
+          objectEntries:
+              (c['objects'] as List? ?? []).cast<Map<String, dynamic>>());
+      board['multiCellObjects'] = [
+        for (var i = 0; i < blocks.length; i++)
+          {
+            'id': '$i',
+            'kind': 'slider',
+            'params': blocks[i]['params'],
+            'cells': [
+              for (final p in blocks[i]['cells'])
+                {'position': p, 'sprite': 'cell.png'}
+            ],
+          },
+      ];
+      final game = _game(config: (c['config'] as Map<String, dynamic>?) ?? {});
+      final engine = TurnEngine(game, _level(game, 'groups', board));
+      final before = [
+        for (final b in engine.state.board.multiCellObjects) b.cells.toList()
+      ];
+      final result = engine.executeTurn(GameAction('move', {
+        'position': c['position'],
+        'direction': c['direction'],
+      }));
+      expect(result.accepted, c['accepted']);
+      expect([
+        for (final b in engine.state.board.multiCellObjects) b.cells.toList()
+      ], [
+        for (final cells in c['expected'] as List)
+          [for (final p in cells) Position(p[0] as int, p[1] as int)]
+      ]);
+      expect(engine.state.actionCount, c['accepted'] == true ? 1 : 0);
+      expect(engine.state.variables['escapedCount'], c['escaped'] ?? 0);
+      for (final b in engine.state.board.multiCellObjects) {
+        expect(b.cellSprites.keys.toSet(), b.cells.toSet());
+      }
+      if (c.containsKey('directions')) {
+        expect(
+            result.events
+                .where((e) => e.type == 'multi_cell_object_moved')
+                .map((e) => e.payload['direction']),
+            c['directions']);
+      }
+      if (c['accepted'] == true) {
+        expect(engine.undoDepth, 1);
+        expect(engine.undo(), isTrue);
+      } else {
+        expect(result.events.map((e) => e.type), ['action_vetoed']);
+        expect(engine.undoDepth, 0);
+      }
+      expect([
+        for (final b in engine.state.board.multiCellObjects) b.cells.toList()
+      ], before);
+    });
+  }
+
+  test('movement group observation uses neutral labels', () {
+    final board = _singleBlockBoard();
+    ((board['multiCellObjects'] as List).first['params'] as Map)
+        .addAll(<String, String>{
+      'movementGroup': 'authoring_id',
+      'movementTransform': 'invert',
+    });
+    final game = _game();
+    final engine = TurnEngine(game, _level(game, 'observation', board));
+    expect(
+        const SlidingBlocksSystem(id: 'sliding').observationObjectLines(
+            engine.state.board.multiCellObjects.first, engine.state, game),
+        [
+          'axis: horizontal',
+          'movement group: 1',
+          'movement transform: invert'
+        ]);
+  });
+
   test('vetoed moves leave state, counters, and history unchanged', () {
     final game = _game();
     final engine = TurnEngine(

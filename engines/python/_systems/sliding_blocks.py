@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from .. import _events as ev
 from .._game_def import GameDef
-from .._models import GameState, Pos, dir_delta
+from .._models import GameState, Pos, dir_delta, transform_delta
 from ._base import GameSystem, config_list
 
 
@@ -13,11 +13,18 @@ class SlidingBlocksSystem(GameSystem):
         self._config = config
 
     def observation_object_lines(self, mco, state: GameState, game: GameDef) -> list[str]:
-        """Expose a block's movement axis, which gates its moves."""
+        """Expose movement constraints using neutral group labels."""
         axis = mco.params.get("axis")
-        if isinstance(axis, str) and axis:
-            return [f"axis: {axis}"]
-        return []
+        lines = [f"axis: {axis}"] if isinstance(axis, str) and axis else []
+        group = _movement_group(mco)
+        if group is not None:
+            groups = list(dict.fromkeys(
+                _movement_group(item) for item in state.board.multi_cell_objects
+                if _movement_group(item) is not None
+            ))
+            lines.append(f"movement group: {groups.index(group) + 1}")
+            lines.append(f"movement transform: {_movement_transform(mco)}")
+        return lines
 
     def execute_action_resolution(
         self,
@@ -38,58 +45,80 @@ class SlidingBlocksSystem(GameSystem):
         block = _block_at(state, start)
         if block is None:
             return [ev.action_vetoed()]
-        if not _axis_allows(block.params.get("axis", "both"), direction):
+        if direction not in {"up", "down", "left", "right"}:
             return [ev.action_vetoed()]
 
-        dx, dy = dir_delta(direction)
-        old_cells = list(block.cells)
-        new_cells = [Pos(pos.x + dx, pos.y + dy) for pos in old_cells]
-        old_cell_set = set(old_cells)
-
-        if any(not state.board.is_in_bounds(pos) for pos in new_cells):
-            if not _can_escape(block, old_cells, direction, state, game, config):
+        group = _movement_group(block)
+        members = [item for item in state.board.multi_cell_objects
+                   if item.id == block.id or
+                   (group is not None and _movement_group(item) == group)]
+        # All supported transforms are self-inverse. Convert from the selected
+        # member's direction to the shared frame, then to each member's frame.
+        shared_delta = transform_delta(dir_delta(direction), _movement_transform(block))
+        plans = []
+        member_ids = {item.id for item in members}
+        destinations = set()
+        edges = set()
+        for member in members:
+            delta = transform_delta(shared_delta, _movement_transform(member))
+            member_direction = next(d for d in ("up", "down", "left", "right")
+                                    if dir_delta(d) == delta)
+            if not _axis_allows(member.params.get("axis", "both"), member_direction):
                 return [ev.action_vetoed()]
-            state.board.multi_cell_objects = [
-                item for item in state.board.multi_cell_objects if item.id != block.id
-            ]
-            variable = str(config.get("escapedVariable", "escapedCount"))
-            old_value = state.variables.get(variable, 0)
-            new_value = old_value + 1
-            state.variables[variable] = new_value
-            return [
-                {
-                    "type": "multi_cell_object_exited",
-                    "id": block.id,
-                    "kind": block.kind,
-                    "direction": direction,
-                },
-                ev.variable_changed(variable, old_value, new_value),
-            ]
+            old_cells = list(member.cells)
+            old_cell_set = set(old_cells)
+            new_cells = [Pos(p.x + delta[0], p.y + delta[1]) for p in old_cells]
+            exiting = any(not state.board.is_in_bounds(p) for p in new_cells)
+            if exiting:
+                if not _can_escape(member, old_cells, member_direction, state, game, config):
+                    return [ev.action_vetoed()]
+            else:
+                for pos in new_cells:
+                    if pos in destinations or not _is_valid_destination(
+                        pos, member, old_cell_set, state, game, config, member_ids
+                    ):
+                        return [ev.action_vetoed()]
+                    destinations.add(pos)
+            # Vacated cells may be reused, but pieces cannot pass through each
+            # other by exchanging cells in opposite directions.
+            for old, new in zip(old_cells, new_cells):
+                if (new, old) in edges:
+                    return [ev.action_vetoed()]
+                edges.add((old, new))
+            plans.append((member, old_cells, new_cells, member_direction, exiting))
 
-        if any(
-            not _is_valid_destination(
-                pos,
-                block,
-                old_cell_set,
-                state,
-                game,
-                config,
-            )
-            for pos in new_cells
-        ):
-            return [ev.action_vetoed()]
+        # Commit only after every member has passed validation. Rules and
+        # observers see the complete simultaneous result through normal events.
+        events = []
+        for member, old_cells, new_cells, member_direction, exiting in plans:
+            if exiting:
+                state.board.multi_cell_objects.remove(member)
+                variable = str(config.get("escapedVariable", "escapedCount"))
+                old_value = state.variables.get(variable, 0)
+                state.variables[variable] = old_value + 1
+                events.extend([
+                    {"type": "multi_cell_object_exited", "id": member.id,
+                     "kind": member.kind, "direction": member_direction},
+                    ev.variable_changed(variable, old_value, old_value + 1),
+                ])
+            else:
+                member.cells = new_cells
+                events.append({
+                    "type": "multi_cell_object_moved", "id": member.id,
+                    "kind": member.kind, "fromCells": old_cells,
+                    "toCells": new_cells, "direction": member_direction,
+                })
+        return events
 
-        block.cells = new_cells
-        return [
-            {
-                "type": "multi_cell_object_moved",
-                "id": block.id,
-                "kind": block.kind,
-                "fromCells": old_cells,
-                "toCells": new_cells,
-                "direction": direction,
-            }
-        ]
+
+def _movement_group(block) -> str | None:
+    group = block.params.get("movementGroup")
+    return group if isinstance(group, str) and group else None
+
+
+def _movement_transform(block) -> str:
+    transform = block.params.get("movementTransform")
+    return transform if transform in ("identity", "invert", "mirror_x", "mirror_y") else "identity"
 
 
 def _parse_pos(raw) -> Pos | None:
@@ -122,6 +151,7 @@ def _is_valid_destination(
     state: GameState,
     game: GameDef,
     config: dict,
+    moving_ids: set[str],
 ) -> bool:
     if not state.board.is_in_bounds(pos) or state.board.is_void(pos):
         return False
@@ -137,7 +167,7 @@ def _is_valid_destination(
         return False
 
     for other in state.board.multi_cell_objects:
-        if other.id == moving_block.id:
+        if other.id in moving_ids:
             continue
         if pos in other.cells:
             return False
