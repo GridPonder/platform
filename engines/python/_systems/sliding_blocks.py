@@ -69,16 +69,18 @@ class SlidingBlocksSystem(GameSystem):
             old_cell_set = set(old_cells)
             new_cells = [Pos(p.x + delta[0], p.y + delta[1]) for p in old_cells]
             exiting = any(not state.board.is_in_bounds(p) for p in new_cells)
-            if exiting:
-                if not _can_escape(member, old_cells, member_direction, state, game, config):
+            if exiting and not _can_escape(
+                member, old_cells, member_direction, state, game, config
+            ):
+                return [ev.action_vetoed()]
+            for pos in new_cells:
+                if not state.board.is_in_bounds(pos):
+                    continue
+                if pos in destinations or not _is_valid_destination(
+                    pos, member, old_cell_set, state, game, config, member_ids
+                ):
                     return [ev.action_vetoed()]
-            else:
-                for pos in new_cells:
-                    if pos in destinations or not _is_valid_destination(
-                        pos, member, old_cell_set, state, game, config, member_ids
-                    ):
-                        return [ev.action_vetoed()]
-                    destinations.add(pos)
+                destinations.add(pos)
             # Vacated cells may be reused, but pieces cannot pass through each
             # other by exchanging cells in opposite directions.
             for old, new in zip(old_cells, new_cells):

@@ -88,18 +88,17 @@ class SlidingBlocksSystem extends GameSystem {
       final oldCellSet = oldCells.toSet();
       final newCells = oldCells.map((p) => p + delta).toList();
       final exiting = newCells.any((p) => !state.board.isInBounds(p));
-      if (exiting) {
-        if (!_canEscape(
-            member, oldCells, memberDirection, state, game, effectiveConfig)) {
+      if (exiting &&
+          !_canEscape(
+              member, oldCells, memberDirection, state, game, effectiveConfig)) {
+        return [GameEvent.actionVetoed()];
+      }
+      for (final cell in newCells) {
+        if (!state.board.isInBounds(cell)) continue;
+        if (!destinations.add(cell) ||
+            !_isValidDestination(cell, member, oldCellSet, state, game,
+                effectiveConfig, movingIds)) {
           return [GameEvent.actionVetoed()];
-        }
-      } else {
-        for (final cell in newCells) {
-          if (!destinations.add(cell) ||
-              !_isValidDestination(cell, member, oldCellSet, state, game,
-                  effectiveConfig, movingIds)) {
-            return [GameEvent.actionVetoed()];
-          }
         }
       }
       // Allow following into vacated cells, but forbid head-on cell exchanges.
