@@ -1,6 +1,7 @@
 import '../engine/game_system.dart';
 import '../models/board.dart';
 import '../models/event.dart';
+import '../models/direction_transform.dart';
 import '../models/game_action.dart';
 import '../models/game_definition.dart';
 import '../models/game_state.dart';
@@ -14,12 +15,25 @@ class SlidingBlocksSystem extends GameSystem {
   const SlidingBlocksSystem({required super.id, this.config})
       : super(type: 'sliding_blocks');
 
-  /// Expose a block's movement axis, which gates its moves.
+  /// Expose movement constraints using neutral group labels.
   @override
-  List<String> observationObjectLines(MultiCellObjectInstance mco,
-      LevelState state, GameDefinition game) {
+  List<String> observationObjectLines(
+      MultiCellObjectInstance mco, LevelState state, GameDefinition game) {
     final axis = mco.params['axis'];
-    return axis is String && axis.isNotEmpty ? ['axis: $axis'] : const [];
+    final lines = <String>[
+      if (axis is String && axis.isNotEmpty) 'axis: $axis',
+    ];
+    final group = _movementGroup(mco);
+    if (group != null) {
+      final groups = state.board.multiCellObjects
+          .map(_movementGroup)
+          .whereType<String>()
+          .toSet()
+          .toList();
+      lines.add('movement group: ${groups.indexOf(group) + 1}');
+      lines.add('movement transform: ${_movementTransform(mco)}');
+    }
+    return lines;
   }
 
   @override
@@ -44,71 +58,113 @@ class SlidingBlocksSystem extends GameSystem {
     final block = _blockAt(state, start);
     if (block == null) return [GameEvent.actionVetoed()];
 
-    final axis = (block.params['axis'] as String?) ?? 'both';
-    if (!_axisAllows(axis, directionName)) {
-      return [GameEvent.actionVetoed()];
+    final group = _movementGroup(block);
+    final members = state.board.multiCellObjects
+        .where((item) =>
+            item.id == block.id ||
+            (group != null && _movementGroup(item) == group))
+        .toList();
+    // Every supported transform is self-inverse.
+    final sharedDelta =
+        transformDelta(direction.offset, _movementTransform(block));
+    final plans = <({
+      MultiCellObjectInstance block,
+      List<Position> oldCells,
+      List<Position> newCells,
+      String direction,
+      bool exiting
+    })>[];
+    final movingIds = members.map((m) => m.id).toSet();
+    final destinations = <Position>{};
+    final edges = <(Position, Position)>{};
+    for (final member in members) {
+      final delta = transformDelta(sharedDelta, _movementTransform(member));
+      final memberDirection = _directionName(delta);
+      if (!_axisAllows(
+          member.params['axis'] as String? ?? 'both', memberDirection)) {
+        return [GameEvent.actionVetoed()];
+      }
+      final oldCells = member.cells.toList();
+      final oldCellSet = oldCells.toSet();
+      final newCells = oldCells.map((p) => p + delta).toList();
+      final exiting = newCells.any((p) => !state.board.isInBounds(p));
+      if (exiting &&
+          !_canEscape(
+              member, oldCells, memberDirection, state, game, effectiveConfig)) {
+        return [GameEvent.actionVetoed()];
+      }
+      for (final cell in newCells) {
+        if (!state.board.isInBounds(cell)) continue;
+        if (!destinations.add(cell) ||
+            !_isValidDestination(cell, member, oldCellSet, state, game,
+                effectiveConfig, movingIds)) {
+          return [GameEvent.actionVetoed()];
+        }
+      }
+      // Allow following into vacated cells, but forbid head-on cell exchanges.
+      for (var i = 0; i < oldCells.length; i++) {
+        if (edges.contains((newCells[i], oldCells[i]))) {
+          return [GameEvent.actionVetoed()];
+        }
+        edges.add((oldCells[i], newCells[i]));
+      }
+      plans.add((
+        block: member,
+        oldCells: oldCells,
+        newCells: newCells,
+        direction: memberDirection,
+        exiting: exiting
+      ));
     }
 
-    final offset = direction.offset;
-    final oldCells = block.cells.toList();
-    final newCells = oldCells.map((p) => p + offset).toList();
-    final oldCellSet = oldCells.toSet();
     final events = <GameEvent>[];
-
-    final outOfBounds =
-        newCells.where((p) => !state.board.isInBounds(p)).toList();
-    if (outOfBounds.isNotEmpty) {
-      if (!_canEscape(
-        block,
-        oldCells,
-        directionName,
-        state,
-        game,
-        effectiveConfig,
-      )) {
-        return [GameEvent.actionVetoed()];
-      }
-      state.board.multiCellObjects.removeWhere((m) => m.id == block.id);
-      final variable =
-          effectiveConfig['escapedVariable'] as String? ?? 'escapedCount';
-      final oldValue = (state.variables[variable] as num?) ?? 0;
-      final newValue = oldValue + 1;
-      state.variables[variable] = newValue;
-      events.addAll([
-        GameEvent('multi_cell_object_exited', {
-          'id': block.id,
-          'kind': block.kind,
-          'direction': directionName,
-        }),
-        GameEvent.variableChanged(variable, oldValue, newValue),
-      ]);
-      return events;
-    }
-
-    for (final cell in newCells) {
-      if (!_isValidDestination(
-        cell,
-        block,
-        oldCellSet,
-        state,
-        game,
-        effectiveConfig,
-      )) {
-        return [GameEvent.actionVetoed()];
+    for (final plan in plans) {
+      final member = plan.block;
+      if (plan.exiting) {
+        state.board.multiCellObjects.removeWhere((m) => m.id == member.id);
+        final variable =
+            effectiveConfig['escapedVariable'] as String? ?? 'escapedCount';
+        final oldValue = (state.variables[variable] as num?) ?? 0;
+        state.variables[variable] = oldValue + 1;
+        events.addAll([
+          GameEvent('multi_cell_object_exited', {
+            'id': member.id,
+            'kind': member.kind,
+            'direction': plan.direction,
+          }),
+          GameEvent.variableChanged(variable, oldValue, oldValue + 1),
+        ]);
+      } else {
+        _moveBlockCells(member, plan.oldCells, plan.newCells);
+        events.add(GameEvent('multi_cell_object_moved', {
+          'id': member.id,
+          'kind': member.kind,
+          'fromCells': plan.oldCells,
+          'toCells': plan.newCells,
+          'direction': plan.direction,
+        }));
       }
     }
-
-    _moveBlockCells(block, oldCells, newCells);
-    events.add(
-      GameEvent('multi_cell_object_moved', {
-        'id': block.id,
-        'kind': block.kind,
-        'fromCells': oldCells,
-        'toCells': newCells,
-        'direction': directionName,
-      }),
-    );
     return events;
+  }
+
+  String? _movementGroup(MultiCellObjectInstance block) {
+    final group = block.params['movementGroup'];
+    return group is String && group.isNotEmpty ? group : null;
+  }
+
+  String _movementTransform(MultiCellObjectInstance block) {
+    final transform = block.params['movementTransform'];
+    return const {'identity', 'invert', 'mirror_x', 'mirror_y'}
+            .contains(transform)
+        ? transform as String
+        : 'identity';
+  }
+
+  String _directionName(Position delta) {
+    if (delta.x == 1) return 'right';
+    if (delta.x == -1) return 'left';
+    return delta.y == 1 ? 'down' : 'up';
   }
 
   MultiCellObjectInstance? _blockAt(LevelState state, Position pos) {
@@ -143,6 +199,7 @@ class SlidingBlocksSystem extends GameSystem {
     LevelState state,
     GameDefinition game,
     Map<String, dynamic> config,
+    Set<String> movingIds,
   ) {
     if (!state.board.isInBounds(pos)) return false;
     if (state.board.isVoid(pos)) return false;
@@ -158,7 +215,7 @@ class SlidingBlocksSystem extends GameSystem {
     }
 
     for (final other in state.board.multiCellObjects) {
-      if (other.id == movingBlock.id) continue;
+      if (movingIds.contains(other.id)) continue;
       if (other.cells.contains(pos)) return false;
     }
 

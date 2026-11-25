@@ -205,6 +205,8 @@ Levels may override specific config fields per system via `systemOverrides`. Ove
 |-------|------|-------------|
 | `axis` | string | `"horizontal"`, `"vertical"`, `"both"`, or any other value to make the object immovable. |
 | `role` | string | Semantic role used by `escapeRoles`, `coverableBlockedRoles`, and other systems. |
+| `movementGroup` | string | Optional nonempty group identifier. Selecting any member requests one simultaneous step for every remaining member with this identifier. Missing, empty, or non-string values leave a block independent. |
+| `movementTransform` | string | Direction in the group's shared frame: `identity` (default), `invert`, `mirror_x`, or `mirror_y`. Missing or unknown values use `identity`. Only affects movement relative to other group members. |
 
 **Presentation convention:** Give directly manipulated multi-cell entity kinds
 the semantic tag `sliding_block`. UI clients may use this tag to render those
@@ -219,6 +221,29 @@ params above.
 4. Reject the action if any translated cell collides with another multi-cell object, a new blocking entity, void, out-of-bounds space, or invalid ground. Rejected actions leave the board, variables, counters, and undo history unchanged. A block may continue to overlap a blocking entity that was already under one of its old cells. It may enter a blocking entity tagged by `coverableTags` only when its role is not listed in `coverableBlockedRoles`.
 5. If the translated cells leave the board, allow the move only when the block's `role` is listed in `escapeRoles` and its leading edge is currently on a ground cell tagged by `exitTags`. Remove the object, increment `escapedVariable`, and emit `multi_cell_object_exited`.
 6. Otherwise, replace the block's cell list with the translated cell list and preserve each cell's optional sprite mapping.
+
+**Movement groups:** Members with the same `movementGroup` share one accepted
+action and one undo step. Transforms use the same vocabulary as
+`coupled_actors.directionTransforms`. The selected member always moves in the
+requested direction; its transform converts that direction to the shared frame,
+then each member's transform determines its own direction. For example, members
+with `identity` and `invert` move oppositely regardless of which is selected.
+Two members with equal transforms move together. Existing ungrouped objects
+retain their original behavior.
+
+Every member must satisfy its own axis, terrain, role, and collision constraints.
+All destinations are validated before anything moves. Members may follow into
+cells vacated by another member, but overlapping destinations and head-on cell
+exchanges are rejected. A rejected group action changes no state or counters.
+Configured exits are checked per member; an exiting member is removed while
+other members remain linked. A failed exit vetoes the entire action.
+
+After committing the complete result, emit the existing movement or exit events
+for each member in board object order. Each event reports that member's actual
+direction. Existing event-driven systems therefore observe the complete final
+board. Per-cell sprite mappings move with their cells. Text observations expose
+a neutral numbered group label and the transform, without exposing the authored
+group identifier. Clients can use these observations to explain relationships.
 
 The system does not contain collection, visibility, inventory, or door logic.
 Compose it with [`line_of_sight`](#213-line_of_sight) and ordinary rules when

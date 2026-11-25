@@ -438,5 +438,48 @@ class SlidingBlocksTest(unittest.TestCase):
         )
 
 
+    def test_movement_groups(self) -> None:
+        import json
+        cases = json.loads((ROOT / "engines/testdata/sliding_groups.json").read_text())
+        for case in cases:
+            with self.subTest(case=case["name"]):
+                board = _single_block_board(size=[7, 3],
+                    ground_entries=case.get("ground"), object_entries=case.get("objects"))
+                board["multiCellObjects"] = [
+                    {"id": str(i), "kind": "slider", "params": b["params"],
+                     "cells": [{"position": p} for p in b["cells"]]}
+                    for i, b in enumerate(case["blocks"])]
+                engine = TurnEngine(_game(case.get("config")), _level("groups", board))
+                before = engine.state.to_key()
+                result = engine.execute_turn("move", {
+                    "position": case["position"], "direction": case["direction"]})
+                self.assertEqual(result.accepted, case["accepted"])
+                self.assertEqual([b.cells for b in engine.state.board.multi_cell_objects],
+                    [[Pos(*p) for p in cells] for cells in case["expected"]])
+                self.assertEqual(engine.state.action_count, int(case["accepted"]))
+                self.assertEqual(engine.state.variables["escapedCount"], case.get("escaped", 0))
+                if "directions" in case:
+                    self.assertEqual([e["direction"] for e in result.events
+                        if e["type"] == "multi_cell_object_moved"], case["directions"])
+                if case["accepted"]:
+                    self.assertEqual(engine.undo_depth, 1)
+                    self.assertTrue(engine.undo())
+                else:
+                    self.assertEqual([e["type"] for e in result.events], ["action_vetoed"])
+                    self.assertEqual(engine.undo_depth, 0)
+                self.assertEqual(engine.state.to_key(), before)
+
+    def test_group_observation_uses_neutral_labels(self) -> None:
+        from engines.python._systems.sliding_blocks import SlidingBlocksSystem
+        board = _single_block_board()
+        board["multiCellObjects"][0]["params"].update({
+            "movementGroup": "authoring_id", "movementTransform": "invert"})
+        game = _game()
+        engine = TurnEngine(game, _level("observation", board))
+        lines = SlidingBlocksSystem("sliding").observation_object_lines(
+            engine.state.board.multi_cell_objects[0], engine.state, game)
+        self.assertEqual(lines, ["axis: horizontal", "movement group: 1", "movement transform: invert"])
+
+
 if __name__ == "__main__":
     unittest.main()
