@@ -35,6 +35,8 @@ PACKS_DIR = SCRIPT_DIR.parent.parent / "packs"
 import sys
 sys.path.insert(0, str(SCRIPT_DIR.parent.parent))
 from engines.python.level_metrics import playable_cell_count
+sys.path.insert(0, str(SCRIPT_DIR))
+from run_protocol import CONDITION_FIELDS, run_condition
 
 _level_metrics_cache: dict[tuple[str, str], dict[str, Any]] = {}
 
@@ -59,7 +61,9 @@ def level_metrics(pack_id: str, level_id: str) -> dict[str, Any]:
 def load_results(results_dir: Path, mode_filter: str | None = None) -> dict[str, dict]:
     """Load all JSONL files. Returns {key: {meta, levels: [...]}}.
 
-    Key is "{model_id}|{inference_mode}" so different modes stay separate.
+    Group by model and run condition (run_protocol.CONDITION_FIELDS), so runs
+    with and without rules, under different attempt policies or with different
+    batch limits never pool.
     mode_filter restricts to a single inference mode if given.
     Missing inference_mode is treated as "single" for backwards compatibility.
     """
@@ -91,17 +95,10 @@ def load_results(results_dir: Path, mode_filter: str | None = None) -> dict[str,
             continue
 
         model_id = meta["model_id"]
-        file_anon = meta.get("anon", False)
-        file_input = meta.get("input_mode", "text")
-        key = f"{model_id}|{file_mode}|{'anon' if file_anon else 'named'}|{file_input}"
+        condition = run_condition(meta)
+        key = f"{model_id}|{json.dumps(condition, sort_keys=True)}"
         if key not in data:
-            data[key] = {
-                "meta": meta,
-                "levels": [],
-                "inference_mode": file_mode,
-                "anon": file_anon,
-                "input_mode": file_input,
-            }
+            data[key] = {"meta": meta, "levels": [], **condition}
         data[key]["levels"].extend(levels)
 
     return data
@@ -265,7 +262,11 @@ def _compute_behaviour(valid_levels: list[dict]) -> dict[str, Any]:
 def build_leaderboard(data: dict[str, dict]) -> dict:
     models_out: list[dict] = []
     # Compact columnar per-level rows (used by the analytic charts).
-    level_cols = ["model_id", "pack_id", "level_id", "gold_path_length", "success", "inference_mode", "anon", "playable_cells", "input_mode"]
+    # New condition settings are appended, so existing column positions hold.
+    extra_conditions = [name for name in CONDITION_FIELDS
+                        if name not in ("inference_mode", "anon", "input_mode",
+                                        "observation_interval", "board_legend")]
+    level_cols = ["model_id", "pack_id", "level_id", "gold_path_length", "success", "inference_mode", "anon", "playable_cells", "input_mode", "observation_interval", "board_legend", *extra_conditions]
     level_rows: list[list[Any]] = []
 
     for key, entry in data.items():
@@ -274,6 +275,9 @@ def build_leaderboard(data: dict[str, dict]) -> dict:
         inference_mode = entry["inference_mode"]
         anon = bool(entry.get("anon", False))
         input_mode = entry.get("input_mode", "text")
+        observation_interval = entry.get("observation_interval", 1)
+        board_legend = entry.get("board_legend", "normal")
+        condition = run_condition(entry)
 
         by_pack: dict[str, list[dict]] = defaultdict(list)
         for l in levels:
@@ -294,6 +298,9 @@ def build_leaderboard(data: dict[str, dict]) -> dict:
             "inference_mode": inference_mode,
             "anon": anon,
             "input_mode": input_mode,
+            "observation_interval": observation_interval,
+            "board_legend": board_legend,
+            **{name: condition[name] for name in extra_conditions},
             "overall": overall,
             "by_pack": pack_stats,
         })
@@ -312,6 +319,9 @@ def build_leaderboard(data: dict[str, dict]) -> dict:
                 anon,
                 metrics.get("playable_cells"),
                 input_mode,
+                observation_interval,
+                board_legend,
+                *(condition[name] for name in extra_conditions),
             ])
 
     # Sort by aggregate score descending, then success rate, then efficiency.

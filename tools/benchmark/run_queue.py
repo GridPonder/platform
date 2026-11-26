@@ -45,6 +45,7 @@ from bench import (
 )
 from live_progress import progress_path, write_progress_snapshot
 from run_manifest import source_snapshot
+from run_protocol import batch_settings
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 SCHEDULER_TYPE = "independent_model_executors"
@@ -162,15 +163,19 @@ def interleave_by_model(items: list[WorkItem]) -> list[WorkItem]:
 def filter_completed(
     items: list[WorkItem],
     scan_dir: Path | None = None,
+    flex_penalty: float = 0.5,
 ) -> list[WorkItem]:
-    cache: dict[tuple[str, bool, str], set[tuple[str, str, str]]] = {}
+    cache: dict[tuple, set[tuple[str, str, str]]] = {}
     filtered: list[WorkItem] = []
     for item in items:
-        key = (item.mode, item.anon, item.input_mode)
+        key = (item.mode, item.anon, item.input_mode, item.max_n)
         if key not in cache:
             cache[key] = load_completed(
-                RESULTS_BASE, item.mode, item.anon,
-                scan_dir=scan_dir, input_mode=item.input_mode,
+                RESULTS_BASE,
+                {"inference_mode": item.mode, "anon": item.anon,
+                 "input_mode": item.input_mode,
+                 **batch_settings(item.mode, item.max_n, flex_penalty)},
+                scan_dir=scan_dir,
             )
         done = cache[key]
         if (item.full_variant_id, item.pack_id, item.level_id) not in done:
@@ -194,6 +199,7 @@ def build_run_meta(item: WorkItem, args: argparse.Namespace) -> dict:
         "inference_mode": item.mode,
         "anon": item.anon,
         "input_mode": item.input_mode,
+        **batch_settings(item.mode, item.max_n, args.flex_penalty),
         "attempt_multiplier": args.attempt_multiplier,
         "total_multiplier": args.total_multiplier,
         "runs_per_level": 1,
@@ -697,7 +703,8 @@ def main() -> None:
     skipped = 0
     if not args.no_resume and args.run_dir:
         before = len(items)
-        items = filter_completed(items, scan_dir=Path(args.run_dir))
+        items = filter_completed(items, scan_dir=Path(args.run_dir),
+                                 flex_penalty=args.flex_penalty)
         skipped = before - len(items)
         if skipped:
             print(f"  Resume: skipping {skipped} already-completed, {len(items)} remaining.")

@@ -7,6 +7,8 @@ import '../animation/cascade_playback.dart';
 import '../services/pack_service.dart';
 import 'catalog_panel.dart' show CatalogIcon;
 
+part 'support_switch_overlay.dart';
+
 /// Resolves a colour name (e.g. "red") to a Color. Pack themes can override
 /// or extend the built-in palette via theme.json's `palette` block; any name
 /// the pack doesn't declare falls back to the canonical defaults below. The
@@ -324,9 +326,14 @@ String? resolveEntitySpritePath(
 
   final spriteParam = kindDef.spriteParam;
   if (spriteParam == null) return sprite;
-  final value = entity.param(spriteParam);
-  return sprite.replaceAll('{$spriteParam}', value?.toString() ?? '0');
+  // Every `{name}` placeholder is filled from the instance param of that
+  // name, so one sprite path can vary along several params at once.
+  return _fillSpriteParams(sprite, entity);
 }
+
+String _fillSpriteParams(String sprite, EntityInstance entity) =>
+    sprite.replaceAllMapped(RegExp(r'\{(\w+)\}'),
+        (m) => entity.param(m[1]!)?.toString() ?? '0');
 
 /// Finds the position of the first entity of [kind] on [layerId], or null.
 Position? _findKindPosition(Board board, String layerId, String kind) {
@@ -585,6 +592,59 @@ int resolveEntityMotionFrame(
     return (elapsedMs / raw.toDouble()).floor();
   }
   return travelled.floor();
+}
+
+class _ColumnGuidePainter extends CustomPainter {
+  final double cellSize;
+  final int rows;
+  final int columns;
+  final Color background;
+  final Color? line;
+
+  const _ColumnGuidePainter({
+    required this.cellSize,
+    required this.rows,
+    required this.columns,
+    required this.background,
+    required this.line,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final bounds = Offset.zero & size;
+    final wash = LinearGradient(
+      begin: Alignment.topCenter,
+      end: Alignment.bottomCenter,
+      colors: [
+        Color.lerp(background, Colors.white, 0.048)!,
+        background,
+        Color.lerp(background, Colors.black, 0.24)!,
+      ],
+    );
+    canvas.drawRect(bounds, Paint()..shader = wash.createShader(bounds));
+    final ink = line;
+    if (ink == null) return;
+
+    final guide = Paint()..strokeWidth = 0.75;
+    guide.color = ink.withValues(alpha: ink.a * 0.35);
+    for (var y = 1; y < rows; y++) {
+      final top = y * cellSize;
+      canvas.drawLine(Offset(0, top), Offset(size.width, top), guide);
+    }
+    guide.color = ink;
+    for (var x = 1; x < columns; x++) {
+      final left = x * cellSize;
+      canvas.drawLine(Offset(left, 0), Offset(left, size.height), guide);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ColumnGuidePainter oldDelegate) =>
+      cellSize != oldDelegate.cellSize ||
+      rows != oldDelegate.rows ||
+      columns != oldDelegate.columns ||
+      background != oldDelegate.background ||
+      line != oldDelegate.line;
 }
 
 class BoardRenderer extends StatelessWidget {
@@ -849,6 +909,10 @@ class BoardRenderer extends StatelessWidget {
     final cols = board.width;
     final rows = board.height;
     final bodyPaths = _connectedBodyPaths();
+    final theme = packService.theme;
+    final style = theme?.boardStyle;
+    final columnGuides = style?.columnGuides == true;
+    final switches = _SupportSwitches.fromBoard(state.board, game);
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -894,11 +958,30 @@ class BoardRenderer extends StatelessWidget {
           }
         }
 
-        return SizedBox(
+        final contents = SizedBox(
           width: gridWidth,
           height: gridHeight,
           child: Stack(
             children: [
+              if (columnGuides)
+                Positioned.fill(
+                  child: RepaintBoundary(
+                    child: CustomPaint(
+                      painter: _ColumnGuidePainter(
+                        cellSize: cellSize,
+                        rows: rows,
+                        columns: cols,
+                        background: cellNamedColor(
+                          'board',
+                          palette: theme?.palette,
+                        ),
+                        line: style!.showGridLines
+                            ? _parsePaletteHex(style.gridLineColor)
+                            : null,
+                      ),
+                    ),
+                  ),
+                ),
               for (final mco in backgroundMcos)
                 ..._buildMcoCells(
                   mco,
@@ -932,6 +1015,7 @@ class BoardRenderer extends StatelessWidget {
                           otherFacingAt: otherFacingAt,
                           floodedColorOverride: floodedColorOverride,
                           bodyPaths: bodyPaths,
+                          switchPlateLayer: switches.plates[Position(x, y)]?.layer,
                         ),
                       ),
                     ),
@@ -997,6 +1081,17 @@ class BoardRenderer extends StatelessWidget {
                             _buildMovingSprite(s, cellSize),
                         ],
                       ),
+                    ),
+                  ),
+                ),
+              if (switches.plates.isNotEmpty)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: _SupportSwitchOverlay(
+                      switches: switches,
+                      cellSize: cellSize,
+                      actionCount: state.actionCount,
+                      packService: packService,
                     ),
                   ),
                 ),
@@ -1107,6 +1202,22 @@ class BoardRenderer extends StatelessWidget {
                 ),
             ],
           ),
+        );
+        if (!columnGuides) return contents;
+        final radius = BorderRadius.circular((cellSize * 0.18).clamp(0.0, 9.0));
+        return DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: radius,
+            boxShadow: const [
+              BoxShadow(color: Color(0xFF334650), spreadRadius: 1),
+              BoxShadow(
+                color: Colors.black26,
+                blurRadius: 8,
+                offset: Offset(0, 4),
+              ),
+            ],
+          ),
+          child: ClipRRect(borderRadius: radius, child: contents),
         );
       },
     );
@@ -2096,6 +2207,9 @@ class _Cell extends StatelessWidget {
   final Map<String, Map<Position, String>> otherFacingAt;
   final Color? floodedColorOverride;
 
+  /// The support switch overlay will draw this layer's plate above occupants.
+  final String? switchPlateLayer;
+
   /// When set, the cell draws this entity alone and ignores the board — used
   /// for entities in flight, which sit between cells and so belong to no cell.
   final EntityInstance? entityOverride;
@@ -2118,6 +2232,7 @@ class _Cell extends StatelessWidget {
     this.floodedColorOverride,
     this.entityOverride,
     this.bodyPaths = const {},
+    this.switchPlateLayer,
   });
 
   @override
@@ -2155,11 +2270,13 @@ class _Cell extends StatelessWidget {
       children: [
         for (final layerId in layerOrder)
           if (layerId == 'ground' && !skipGround) _layer(layerId, pos),
-        IgnorePointer(
-          child: DecoratedBox(
-            decoration: BoxDecoration(border: border),
+        // Column-guide boards draw their own frame, so cells stay borderless.
+        if (packService.theme?.boardStyle?.columnGuides != true)
+          IgnorePointer(
+            child: DecoratedBox(
+              decoration: BoxDecoration(border: border),
+            ),
           ),
-        ),
         for (final layerId in layerOrder)
           if (layerId != 'ground') _layer(layerId, pos),
       ],
@@ -2208,6 +2325,7 @@ class _Cell extends StatelessWidget {
   }
 
   Widget _layer(String layerId, Position pos) {
+    if (layerId == switchPlateLayer) return const SizedBox.shrink();
     final entity = state.board.getEntity(layerId, pos);
     if (entity == null) return const SizedBox.shrink();
     if (state.avatar.enabled &&

@@ -17,6 +17,7 @@ def render(
     include_legend: bool = True,
     kind_symbol_overrides: dict[str, str] | None = None,
     level_def: dict | None = None,
+    randomized_symbols: bool = False,
 ) -> str:
     effective_game = (
         game_def.with_system_overrides(level_def.get("systemOverrides"))
@@ -81,7 +82,7 @@ def render(
                 if entity is None:
                     continue
                 kind_def = effective_game.entity_kinds.get(entity.kind)
-                sym = _get_symbol(entity, kind_def, kind_symbol_overrides)
+                sym = _get_symbol(entity, kind_def, kind_symbol_overrides, randomized_symbols)
                 if layer_id == "ground":
                     ground_symbol = sym
                 elif _is_background(effective_game, entity.kind):
@@ -102,6 +103,8 @@ def render(
 
     grid_str = "\n".join(lines)
     parts = [grid_str]
+    if randomized_symbols and not include_legend:
+        parts.append("Each character is one cell, each line is one row.")
 
     if include_legend:
         legend = _build_legend(
@@ -126,6 +129,7 @@ def render(
         mco_symbols,
         concealed_positions,
         layer_order,
+        randomized_symbols,
     )
     if overlay_block:
         parts.append(overlay_block)
@@ -139,6 +143,7 @@ def render(
         mco_owners,
         concealed_positions,
         layer_order,
+        randomized_symbols,
     )
     if stacked_block:
         parts.append(stacked_block)
@@ -153,7 +158,9 @@ def render(
     if entity_state_block:
         parts.append(entity_state_block)
 
-    mco_block = _build_mco_block(state, effective_game, kind_symbol_overrides, systems)
+    mco_block = _build_mco_block(
+        state, effective_game, kind_symbol_overrides, systems, randomized_symbols
+    )
     if mco_block:
         parts.append(mco_block)
 
@@ -169,7 +176,10 @@ def render(
     return "\n\n".join(parts)
 
 
-def _get_symbol(entity, kind_def: dict | None, kind_symbol_overrides: dict | None) -> str:
+def _get_symbol(entity, kind_def: dict | None, kind_symbol_overrides: dict | None,
+                randomized_symbols: bool = False) -> str:
+    if randomized_symbols and kind_symbol_overrides and entity.kind in kind_symbol_overrides:
+        return kind_symbol_overrides[entity.kind]
     if kind_def is None:
         return entity.kind[0].upper()
     if kind_def.get("symbolParam") is not None:
@@ -317,6 +327,7 @@ def _build_overlay_block(
     mco_symbols: dict[Pos, str],
     concealed_positions: set[Pos],
     layer_order: list[str],
+    randomized_symbols: bool = False,
 ) -> str:
     """Show the overlay region as a focused mini-view of its cells.
 
@@ -352,9 +363,9 @@ def _build_overlay_block(
                     continue
                 if _is_background(game_def, entity.kind):
                     if background is None:
-                        background = _get_symbol(entity, kind_def, kind_symbol_overrides)
+                        background = _get_symbol(entity, kind_def, kind_symbol_overrides, randomized_symbols)
                     continue
-                sym = _get_symbol(entity, kind_def, kind_symbol_overrides)
+                sym = _get_symbol(entity, kind_def, kind_symbol_overrides, randomized_symbols)
                 break
             chars.append(background if sym == "." and background is not None else sym)
         rows.append("".join(chars))
@@ -376,6 +387,7 @@ def _build_stacked_block(
     mco_owners: dict[Pos, object],
     concealed_positions: set[Pos],
     layer_order: list[str],
+    randomized_symbols: bool = False,
 ) -> str:
     """List every visible entity of cells where the grid hides something.
 
@@ -408,7 +420,10 @@ def _build_stacked_block(
                     if entity is None:
                         continue
                     kind_def = game_def.entity_kinds.get(entity.kind)
-                    if kind_def is None:
+                    if randomized_symbols:
+                        sym = _get_symbol(entity, kind_def, kind_symbol_overrides, True)
+                        label = "?"
+                    elif kind_def is None:
                         sym = entity.kind[0].upper()
                         label = "?" if anonymous else entity.kind.replace("_", " ")
                     elif kind_def.get("symbolParam") is not None:
@@ -554,14 +569,17 @@ def _build_entity_state_block(
     return "Entity state:\n" + "\n".join(entries)
 
 
-def _build_mco_block(state: GameState, game_def, kind_symbol_overrides, systems) -> str:
+def _build_mco_block(state: GameState, game_def, kind_symbol_overrides, systems,
+                     randomized_symbols: bool = False) -> str:
     if not state.board.multi_cell_objects:
         return ""
 
     parts: list[str] = ["Multi-cell objects:"]
     public_piece_index = 0
     for mco in state.board.multi_cell_objects:
-        if kind_symbol_overrides is not None:
+        if randomized_symbols:
+            label = (kind_symbol_overrides or {}).get(mco.kind, "?")
+        elif kind_symbol_overrides is not None:
             label = "?"
         else:
             label = game_def.observation_name(mco.kind)
@@ -575,7 +593,7 @@ def _build_mco_block(state: GameState, game_def, kind_symbol_overrides, systems)
         # Public details owned by the systems that act on this object, in
         # system declaration order; a line repeated by two systems prints once.
         detail_lines: list[str] = []
-        for system in systems:
+        for system in (() if randomized_symbols else systems):
             for line in system.observation_object_lines(mco, state, game_def):
                 if line not in detail_lines:
                     detail_lines.append(line)
@@ -610,7 +628,11 @@ def _build_mco_block(state: GameState, game_def, kind_symbol_overrides, systems)
             remaining = queue[current_index:]
             spawn_str = f" (next spawns at ({spawn_pos.x},{spawn_pos.y}))" if spawn_pos else ""
             if remaining:
-                queue_str = " → ".join(str(v) for v in remaining)
+                queue_str = " → ".join(
+                    (kind_symbol_overrides or {}).get(str(value), str(value))
+                    if randomized_symbols else str(value)
+                    for value in remaining
+                )
                 parts.append(f"    queue{spawn_str}: {queue_str}")
             else:
                 parts.append(f"    queue{spawn_str}: (empty)")

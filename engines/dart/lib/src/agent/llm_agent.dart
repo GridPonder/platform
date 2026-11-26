@@ -500,7 +500,7 @@ $descriptionSection$guideSection$memorySection
 GOAL: $goalDescriptions
 $lastActionSection
 
-AVAILABLE ACTIONS:
+${_actionFormats(obs.game, anonymize)}AVAILABLE ACTIONS:
 $actionsDesc
 {"action": "give_up"} — reset and start a fresh attempt''';
 
@@ -511,14 +511,68 @@ $actionsDesc
       ex1 = '{"action": "a1"}';
       ex2 = n > 1 ? '{"action": "a$n"}' : ex1;
     } else {
-      final va = obs.validActions;
-      ex1 =
-          va.isNotEmpty ? pyJsonDumps(va.first.toJson()) : '{"action": "..."}';
-      ex2 = va.length > 1 ? pyJsonDumps(va.last.toJson()) : ex1;
+      // Built from the declared action types only, so the examples are the
+      // same on every turn. Mirrors `_format_examples` in
+      // engines/python/observation.py.
+      final acts = obs.game.actions;
+      if (acts.isEmpty) {
+        ex1 = ex2 = '{"action": "..."}';
+      } else {
+        ex1 = pyJsonDumps(_exampleAction(acts.first));
+        ex2 = pyJsonDumps(acts.length > 1
+            ? _exampleAction(acts.last)
+            : _exampleAction(acts.first, lastValue: true));
+      }
     }
 
     return '$header\n\n$coordinatesNote\n'
         '${_promptTail(inferenceMode, stepSize, maxN, ex1: ex1, ex2: ex2)}';
+  }
+
+  /// One format example for [a], independent of the current state: each
+  /// parameter takes its first (or last) declared value, a position [0, 0].
+  /// Mirrors `_example_action` in engines/python/observation.py.
+  static Map<String, Object?> _exampleAction(ActionDef a,
+      {bool lastValue = false}) {
+    final m = <String, Object?>{'action': a.id};
+    a.params.forEach((name, p) {
+      final values = p.values;
+      if (values != null && values.isNotEmpty) {
+        m[name] = lastValue ? values.last : values.first;
+      } else if (p.type == 'position') {
+        m[name] = [0, 0];
+      } else {
+        m[name] = 0;
+      }
+    });
+    return m;
+  }
+
+  /// Every action type the game declares, with its JSON shape. Mirrors
+  /// `_action_formats` in engines/python/observation.py: AVAILABLE ACTIONS
+  /// lists only what is effectful right now, so without this an action with
+  /// a precondition stays invisible until that moment. Empty in anon mode.
+  static String _actionFormats(GameDefinition game, bool anonymize) {
+    if (anonymize) return '';
+    final lines = <String>[];
+    for (final a in game.actions) {
+      final parts = <String>['"action": ${pyJsonDumps(a.id)}'];
+      a.params.forEach((name, p) {
+        final String shape;
+        if (p.values != null && p.values!.isNotEmpty) {
+          shape = p.values!.map(pyJsonDumps).join(' | ');
+        } else if (p.type == 'position') {
+          shape = '[x, y]';
+        } else {
+          shape = '<${p.type}>';
+        }
+        parts.add('${pyJsonDumps(name)}: $shape');
+      });
+      lines.add('{${parts.join(', ')}}');
+    }
+    return 'ACTION FORMATS (every action type in this game; one not under '
+        'AVAILABLE ACTIONS would have no effect in the current state):\n'
+        '${lines.join('\n')}\n\n';
   }
 
   /// The coordinate convention, stated once in every text-mode prompt.

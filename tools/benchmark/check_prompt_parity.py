@@ -202,7 +202,7 @@ def section_of_lines(prompt: str) -> list[tuple[str, str]]:
             section = "board"
         elif line.startswith("Compare the two boards"):
             section = "commentary"
-        elif line.startswith("AVAILABLE ACTIONS:"):
+        elif line.startswith(("AVAILABLE ACTIONS:", "ACTION FORMATS")):
             section = "actions"
         elif line.startswith("Respond with"):
             section = "tail"

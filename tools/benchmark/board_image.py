@@ -34,6 +34,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 from engines.python._models import Pos as _Pos
+from engines.python._systems._base import config_list
 from engines.python.text_renderer import (
     observation_concealed_positions,
     order_layer_ids,
@@ -92,7 +93,7 @@ def render_board_image(
     # Cells under an observation_occluder piece: the text grid shows only the
     # piece there, so the image draws nothing below it either.
     concealed_positions = observation_concealed_positions(state, game_def)
-    ctx = _Ctx(game_def, state, pack_dir, base_dir, theme, concealed_positions)
+    ctx = _Ctx(game_def, state, pack_dir, base_dir, theme, concealed_positions, level_def)
 
     width_cells = state.board.width
     height_cells = state.board.height
@@ -165,9 +166,10 @@ _HIDDEN_COVER = 0.6               # fraction of an item covered to call it hidde
 
 class _Ctx:
     __slots__ = ("game_def", "state", "pack_dir", "base_dir", "theme", "palette", "raw_kinds",
-                 "concealed")
+                 "concealed", "switch_plate")
 
-    def __init__(self, game_def, state, pack_dir, base_dir, theme, concealed=frozenset()):
+    def __init__(self, game_def, state, pack_dir, base_dir, theme, concealed=frozenset(),
+                 level_def=None):
         self.game_def = game_def
         self.concealed = concealed
         self.state = state
@@ -177,6 +179,54 @@ class _Ctx:
         palette = theme.get("palette") if isinstance(theme, dict) else None
         self.palette = palette if isinstance(palette, dict) else {}
         self.raw_kinds = _load_raw_kinds(pack_dir)
+        self.switch_plate = _switch_plate_config(game_def, state, level_def)
+
+
+def _switch_plate_config(game_def, state, level_def):
+    if not any((kind.get("display") or {}).get("pressedSprite")
+               for kind in game_def.entity_kinds.values()):
+        return None
+    effective = game_def.with_system_overrides(level_def.get("systemOverrides")) if level_def else game_def
+    for system in effective.systems:
+        if system.get("type") != "support_collapse" or not system.get("enabled", True):
+            continue
+        config = system["config"]
+        switches = config.get("switches")
+        if not switches:
+            continue
+        structure = config.get("layer", "ground")
+        plate_layer = switches.get("plateLayer", structure)
+        if plate_layer in state.board.layers and switches.get("switchLayer", structure) in state.board.layers:
+            return (
+                plate_layer,
+                config_list(switches, "plateTags", ["plate"]),
+                config_list(switches, "pressLayers", [structure]),
+                config_list(switches, "pressTags", ["solid"]),
+            )
+    return None
+
+
+def _switch_plate_tile(ctx: _Ctx, pos: _Pos):
+    """Return an opted-in plate's transparent frame for the top of this cell."""
+    if ctx.switch_plate is None:
+        return None, None
+    plate_layer, plate_tags, press_layers, press_tags = ctx.switch_plate
+    plate = ctx.state.board.get_entity(plate_layer, pos)
+    if plate is None or not any(ctx.game_def.has_tag(plate.kind, tag) for tag in plate_tags):
+        return None, None
+    kind = ctx.game_def.entity_kinds[plate.kind]
+    pressed_sprite = (kind.get("display") or {}).get("pressedSprite")
+    if not isinstance(pressed_sprite, str):
+        return None, None
+    for layer in press_layers:
+        occupant = ctx.state.board.get_entity(layer, pos)
+        if occupant is not None and any(ctx.game_def.has_tag(occupant.kind, tag) for tag in press_tags):
+            pressed = _sprite_image(ctx, {"sprite": pressed_sprite}, plate.params)
+            if pressed is not None:
+                return plate_layer, pressed
+            break
+    released = _sprite_image(ctx, kind, plate.params)
+    return (plate_layer, released) if released is not None else (None, None)
 
 
 def _cell_origin(x: int, y: int) -> tuple[int, int]:
@@ -229,9 +279,13 @@ def _cell_tile(ctx: _Ctx, x: int, y: int) -> tuple[Image.Image, bool]:
             tile.alpha_composite(item)
         return tile, False
 
+    plate_layer, plate_tile = _switch_plate_tile(ctx, pos)
     ground = state.board.get_entity("ground", pos)
+    if plate_layer == "ground":
+        ground = None
     if ground is None:
-        stack.append((_solid(_EMPTY_FILL), False))
+        bg = _parse_hex(ctx.theme.get("backgroundColor")) if plate_tile is not None else None
+        stack.append((_solid(bg or _EMPTY_FILL), False))
     else:
         kind_def = game_def.entity_kinds.get(ground.kind, {})
         bg = _parse_hex(ctx.theme.get("backgroundColor")) if isinstance(ctx.theme, dict) else None
@@ -249,10 +303,14 @@ def _cell_tile(ctx: _Ctx, x: int, y: int) -> tuple[Image.Image, bool]:
         stack.append((_entity_tile(ctx, mco.kind, kind_def, mco.params, None), False))
 
     for layer in _layer_order(game_def, state)[1:]:
+        if layer == plate_layer:
+            continue
         ent = state.board.get_entity(layer, pos)
         if ent is not None:
             stack.append((_layer_tile(ctx, layer, ent), ent.kind != _layer_default(game_def, layer)))
 
+    if plate_tile is not None:
+        stack.append((plate_tile, False))
     _stack_avatar(ctx, stack, x, y)
 
     for item, _ in stack:

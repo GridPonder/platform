@@ -360,6 +360,7 @@ class _PackCardState extends State<_PackCard> {
             settings: widget.settings,
             progress: widget.progress,
             startLevelId: startId,
+            showIntroductionOnStart: true,
           ),
         ),
       );

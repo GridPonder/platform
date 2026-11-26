@@ -225,7 +225,7 @@ Defines all entity types used by this game. Levels reference kinds by their key 
 | `layer` | string | **yes** | Which board layer this kind belongs to. Must reference a defined layer. |
 | `tags` | array of strings | **yes** | Semantic labels. Systems use tags for entity selection. |
 | `sprite` | string or null | no | Path to sprite asset. `null` means invisible/transparent. May contain a `{paramName}` placeholder when used with `spriteParam`. |
-| `spriteParam` | string | no | If set, the `{paramName}` placeholder in `sprite` is substituted with this instance parameter's value at render time. Used for entities whose appearance varies by a numeric or string param (e.g. box fragments show different PNG tiles per sides bitmask). `sprite` must contain `{paramName}` when this field is set. |
+| `spriteParam` | string | no | If set, the `{paramName}` placeholder in `sprite` is substituted with this instance parameter's value at render time. Used for entities whose appearance varies by a numeric or string param (e.g. box fragments show different PNG tiles per sides bitmask). `sprite` must contain `{paramName}` when this field is set. Any other `{name}` placeholder in the path is filled the same way from the instance param of that name (missing params render as `0`), so one sprite can vary along several params, e.g. `strut_{capacity}_{endurance}.png`. |
 | `symbol` | string | **yes** | Single Unicode character used in text grid representations (`TextRenderer`). Must be unique within a game; `@` is reserved for the avatar. Use narrow (display-width 1) characters only — basic ASCII, box-drawing (`═║╬`), math symbols (`≈`), or similar. Wide characters (emoji, CJK) break grid alignment and must not be used. |
 | `observationSymbol` | string | no | Public symbol used by text observations instead of `symbol`. It may be shared by multiple kinds so distinct internal states can remain visually indistinguishable (for example, two yellow phases with different successors). `symbol` remains the unique engine/authoring identity. Must be a non-empty string other than `@`. See [Shared observation symbols](#shared-observation-symbols). |
 | `symbolParam` | string | no | If set, the symbol is taken from this instance parameter at render time instead of `symbol`. Used for entities whose symbol varies by value (e.g. number tiles show their numeric digit). `symbol` acts as the legend label and fallback. |
@@ -311,7 +311,7 @@ A `motion` block on an entity kind sets per-cell motion durations the renderer u
 | `pathStepDurationMs` | Engine emits `entity_path` (multi-cell traversal, e.g. queued-emitter routes). Per cell. | 80 |
 | `spawnDurationMs` | Engine emits `entity_spawn` (e.g. queued-emitter spawn). | 120 |
 | `frameDurationMs` | Optional time per frame for `motion.sprites.walk`. When present, walk frames advance by elapsed motion time; otherwise they retain the legacy one-frame-per-cell cadence. | absent |
-| `fallOnDown` | A straight downward move is normally drawn as a gravity drop (accelerating, with a landing squash). Set `false` for kinds that walk south rather than fall, so the move uses linear per-cell travel. | `true` |
+| `fallOnDown` | A downward move (straight, or stepped sideways by at most one cell per row) is normally drawn as a gravity drop (accelerating, with a landing squash). Set `false` for kinds that walk south rather than fall, so the move uses linear per-cell travel. | `true` |
 
 #### How motion events are sequenced
 

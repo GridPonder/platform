@@ -1,6 +1,7 @@
 """Anonymous-mode helpers — Python port of agent.dart buildAnonKindToLabel / buildAnonReverseMap."""
 from __future__ import annotations
 import json
+import random
 from typing import Any
 
 
@@ -59,6 +60,42 @@ def build_anon_reverse_map(valid_actions: list[dict[str, Any]]) -> dict[str, dic
     """
     sorted_actions = sorted(valid_actions, key=lambda a: json.dumps(a, sort_keys=True))
     return {f"a{i + 1}": a for i, a in enumerate(sorted_actions)}
+
+
+def build_random_board_symbols(game_def, seed: int | str) -> dict[str, str]:
+    """Shuffle public kind identities, preserving blanks and observation groups."""
+    original_symbols = {
+        symbol
+        for kind in game_def.entity_kinds.values()
+        for symbol in (kind.get("symbol"), kind.get("observationSymbol"))
+    }
+    original_symbols.add("N")  # Renderer glyph for parameterized kinds.
+    groups = sorted({
+        game_def.observation_kind(kind)
+        for kind in game_def.entity_kinds
+        if game_def.public_symbol(kind) not in {".", " ", "·"}
+    })
+    # Separate the board alphabet from the original symbols used by the guide.
+    letters = _ANON_ALPHABET[:52]
+    alphabet = [symbol for symbol in letters if symbol not in original_symbols]
+    if len(alphabet) < len(groups):
+        alphabet.extend(
+            symbol for symbol in "ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩαβγδεζηθικλμνξοπρστυφχψω"
+            if symbol not in original_symbols
+        )
+    index = 0
+    while len(alphabet) < len(groups):
+        symbol = chr(0x410 + index)
+        if symbol not in original_symbols:
+            alphabet.append(symbol)
+        index += 1
+    random.Random(seed).shuffle(alphabet)
+    aliases = dict(zip(groups, alphabet))
+    return {
+        kind: aliases[game_def.observation_kind(kind)]
+        for kind in game_def.entity_kinds
+        if game_def.observation_kind(kind) in aliases
+    }
 
 
 def build_anon_action_shapes(game_def) -> tuple[list[dict], dict[str, dict]]:

@@ -72,6 +72,7 @@ class PlayScreen extends StatefulWidget {
   final SettingsService settings;
   final ProgressService? progress;
   final String? startLevelId;
+  final bool showIntroductionOnStart;
 
   /// Where playtest events go. Defaults to the build's own tracker, which is
   /// inert unless compiled with `PLAYTEST_TRACK=1`; tests pass a recording one.
@@ -83,6 +84,7 @@ class PlayScreen extends StatefulWidget {
     required this.settings,
     this.progress,
     this.startLevelId,
+    this.showIntroductionOnStart = false,
     this.tracker,
   });
 
@@ -245,11 +247,15 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     _levelIds = widget.packService.levelIds;
     final startId = widget.startLevelId;
     if (startId != null) {
-      // For integration tests: jump directly to the requested level.
       final idx = _sequence.indexWhere(
         (e) => e.type == 'level' && e.ref == startId,
       );
       _seqIndex = idx >= 0 ? idx : 0;
+      if (widget.showIntroductionOnStart) {
+        while (_seqIndex > 0 && _sequence[_seqIndex - 1].type == 'story') {
+          _seqIndex--;
+        }
+      }
     } else {
       _seqIndex = 0; // may start on a story entry
     }
@@ -2089,10 +2095,14 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
             '_motionDirection': m.direction,
             '_motionFrame': motionFrame,
           });
+    // Move along the from→to line in proportion. Stepping each axis by the
+    // full distance overshot any move that changes both x and y (a piece
+    // deflected sideways mid-fall flew distance-many cells sideways).
+    final f = m.distance > 0 ? travelled / m.distance : 1.0;
     return MovingSprite(
       entity: entity,
-      x: m.from.x + (m.to.x - m.from.x).sign * travelled,
-      y: m.from.y + (m.to.y - m.from.y).sign * travelled,
+      x: m.from.x + (m.to.x - m.from.x) * f,
+      y: m.from.y + (m.to.y - m.from.y) * f,
       squash: squash,
     );
   }
@@ -2315,19 +2325,12 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
   // ---------------------------------------------------------------------------
 
   /// Returns the next sequence entry that is a playable level, or null.
-  SequenceEntry? get _nextLevelEntry {
-    for (int i = _seqIndex + 1; i < _sequence.length; i++) {
-      if (_sequence[i].type == 'level') return _sequence[i];
-    }
-    return null;
-  }
-
   /// True when the next level in the sequence is locked.
   bool get _nextIsLocked {
     final progress = widget.progress;
-    if (progress == null) return false;
-    final next = _nextLevelEntry;
-    if (next == null) return false;
+    if (progress == null || _seqIndex + 1 >= _sequence.length) return false;
+    final next = _sequence[_seqIndex + 1];
+    if (next.type != 'level') return false;
     return !progress.isUnlocked(next.ref!, _sequence);
   }
 
@@ -2365,19 +2368,6 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     setState(() {
       _seqIndex--;
       if (!_isShowingStory) _loadLevelById(_currentEntry.ref!);
-    });
-  }
-
-  /// Jump back to the previous level (skipping story entries).
-  void _prevLevel() {
-    if (_replaying || _animating) return;
-    setState(() {
-      var i = _seqIndex - 1;
-      while (i >= 0 && _sequence[i].type != 'level') i--;
-      if (i >= 0) {
-        _seqIndex = i;
-        _loadLevelById(_currentEntry.ref!);
-      }
     });
   }
 
@@ -2628,8 +2618,8 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
 
   void _onPanStart(DragStartDetails d) {
     _panStart = d.globalPosition;
-    _panStartCell = _cellAtGlobalPosition(d.globalPosition);
     if (_moveActionNeedsPosition) {
+      _panStartCell = _cellAtGlobalPosition(d.globalPosition);
       final selectedId = _panStartCell == null
           ? null
           : _multiCellObjectIdAt(_panStartCell!);
@@ -3560,7 +3550,7 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
         actions: [
           IconButton(
             icon: const Icon(Icons.navigate_before, color: Colors.black54),
-            onPressed: _prevLevel,
+            onPressed: _seqIndex > 0 ? _prevEntry : null,
           ),
           IconButton(
             icon: Icon(
@@ -3645,10 +3635,8 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
                   : 0,
               children: [
                 _buildStatusBar(state),
-                if (!_hasVisualWorkbench &&
-                    (widget.packService.game.ui.showGoal ||
-                        widget.packService.game.ui.showGuide))
-                  _buildGoalGuidePanel(state),
+                // The panel hides itself; a level can turn its goal on or off.
+                if (!_hasVisualWorkbench) _buildGoalGuidePanel(state),
                 Expanded(
                   child: Padding(
                     padding: const EdgeInsets.all(12),
@@ -3740,7 +3728,10 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
                         : _buildZoomableBoard(
                             state,
                             BoardRenderer(
-                              key: _boardKey,
+                              // Only position-based swipes query the board's
+                              // render box. Other boards can unmount normally
+                              // on navigation.
+                              key: _moveActionNeedsPosition ? _boardKey : null,
                               state: state,
                               game: widget.packService.game,
                               packService: widget.packService,
@@ -4023,14 +4014,14 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
                   ),
                 ),
               ),
-              if (!controlsAbove)
+              if (!controlsAbove && !_useColumnGuides)
                 Positioned(top: 0, right: 0, child: _buildZoomButtons()),
             ],
           );
         },
       ),
     );
-    return controlsAbove
+    return controlsAbove && !_useColumnGuides
         ? Column(children: [
             Align(alignment: Alignment.centerRight, child: _buildZoomButtons(horizontal: true)),
             Expanded(child: boardView),
@@ -4086,7 +4077,10 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildZoomButtons({bool horizontal = false}) {
+  bool get _useColumnGuides =>
+      widget.packService.theme?.boardStyle?.columnGuides == true;
+
+  Widget _buildZoomButtons({bool horizontal = false, bool inline = false}) {
     Widget button(IconData icon, String tooltip, VoidCallback? onPressed) {
       return IconButton(
         icon: Icon(icon, size: 20),
@@ -4097,28 +4091,37 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
       );
     }
 
+    final buttons = [
+      button(
+        Icons.zoom_in,
+        'Zoom in (+)',
+        _boardZoom < _maxBoardZoom
+            ? () => _setBoardZoom(_boardZoom * 1.25)
+            : null,
+      ),
+      button(
+        Icons.zoom_out,
+        'Zoom out (-)',
+        _boardZoom > _minBoardZoom
+            ? () => _setBoardZoom(_boardZoom / 1.25)
+            : null,
+      ),
+      if (inline)
+        button(
+          Icons.fit_screen,
+          'Fit board (0)',
+          _boardZoom > _minBoardZoom
+              ? () => _setBoardZoom(_minBoardZoom)
+              : null,
+        ),
+    ];
     return Material(
       color: Colors.white.withValues(alpha: 0.75),
       borderRadius: BorderRadius.circular(8),
       child: Flex(
-        direction: horizontal ? Axis.horizontal : Axis.vertical,
+        direction: horizontal || inline ? Axis.horizontal : Axis.vertical,
         mainAxisSize: MainAxisSize.min,
-        children: [
-          button(
-            Icons.zoom_in,
-            'Zoom in (+)',
-            _boardZoom < _maxBoardZoom
-                ? () => _setBoardZoom(_boardZoom * 1.25)
-                : null,
-          ),
-          button(
-            Icons.zoom_out,
-            'Zoom out (-)',
-            _boardZoom > _minBoardZoom
-                ? () => _setBoardZoom(_boardZoom / 1.25)
-                : null,
-          ),
-        ],
+        children: buttons,
       ),
     );
   }
@@ -4129,6 +4132,10 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
 
   Widget _buildGoalGuidePanel(LevelState state) {
     final ui = widget.packService.game.ui;
+    final goalEnabled = _levelDef.showGoal ?? ui.showGoal;
+    if (!goalEnabled && !ui.showGuide && !ui.showGoal) {
+      return const SizedBox.shrink();
+    }
     final networkView = _networkView;
     if (networkView != null) {
       return NetworkStatusRow(
@@ -4151,10 +4158,13 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
         ),
       );
     }
-    final showGoal = ui.showGoal && _levelDef.goals.isNotEmpty;
+    final showGoal = goalEnabled && _levelDef.goals.isNotEmpty;
     final showGuide = ui.showGuide && (_levelDef.guide?.isNotEmpty ?? false);
     final readouts = ui.readouts
-        .where((r) => state.variables.containsKey(r.variable))
+        .where(
+          (r) => state.variables.containsKey(r.variable) &&
+              !_levelDef.hiddenReadouts.contains(r.variable),
+        )
         .toList();
 
     if (!showGoal && !showGuide && readouts.isEmpty) {
@@ -5022,6 +5032,10 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
             '${_levelIndex + 1}/${_levelIds.length}',
             style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
           ),
+          if (_useColumnGuides) ...[
+            const SizedBox(width: 8),
+            _buildZoomButtons(inline: true),
+          ],
           const Spacer(),
           if (_aiRunning) ...[
             Text(

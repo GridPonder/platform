@@ -1,6 +1,9 @@
-import 'dart:ui';
+import 'dart:ui' show Rect;
 
+import 'package:flutter/material.dart'
+    show AssetImage, CustomPaint, Image, MaterialApp, SizedBox;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:gridponder_app/src/services/pack_service.dart';
 import 'package:gridponder_app/src/widgets/board_renderer.dart';
 import 'package:gridponder_engine/engine.dart';
 
@@ -28,6 +31,101 @@ EntityKindDef _actorKind() => EntityKindDef.fromJson('test_actor', {
 });
 
 void main() {
+  testWidgets('renders a switch frame over a solid and pulses on release', (
+    tester,
+  ) async {
+    final pack = (await tester.runAsync(
+      () => PackService.load('carrot_quest'),
+    ))!;
+    final game = GameDefinition.fromJson({
+      'layers': [
+        {'id': 'ground', 'occupancy': 'zero_or_one'},
+        {'id': 'objects', 'occupancy': 'zero_or_one'},
+      ],
+      'entityKinds': {
+        'plate': {
+          'layer': 'ground',
+          'symbol': '_',
+          'tags': ['plate'],
+          'sprite': 'assets/sprites/grass.png',
+          'display': {'pressedSprite': 'assets/sprites/water{channel}.png'},
+        },
+        'hull': {
+          'layer': 'objects',
+          'symbol': 'H',
+          'tags': ['solid'],
+          'sprite': 'assets/sprites/rock.png',
+        },
+        'diverter': {'layer': 'objects', 'symbol': '<'},
+        'diverter_right': {'layer': 'objects', 'symbol': '>'},
+      },
+      'systems': [
+        {
+          'id': 'collapse',
+          'type': 'support_collapse',
+          'config': {
+            'layer': 'objects',
+            'switches': {
+              'plateLayer': 'ground',
+              'pressed': {'diverter': 'diverter_right'},
+            },
+          },
+        },
+      ],
+    });
+    const plate = Position(0, 0);
+    final state = LevelState.fromJson(
+      {
+        'avatar': {'enabled': false},
+      },
+      Board.fromJson({
+        'size': [2, 1],
+      }, game.layers),
+    );
+    state.board.setEntity(
+      'ground',
+      plate,
+      const EntityInstance('plate', {'channel': 4}),
+    );
+    state.board.setEntity('objects', plate, const EntityInstance('hull'));
+    state.board.setEntity(
+      'objects',
+      const Position(1, 0),
+      const EntityInstance('diverter', {'channel': 4}),
+    );
+
+    Future<void> show(LevelState boardState) => tester.pumpWidget(
+      MaterialApp(
+        home: BoardRenderer(state: boardState, game: game, packService: pack),
+      ),
+    );
+    List<String> spriteNames() => tester
+        .widgetList<Image>(find.byType(Image))
+        .map((image) => (image.image as AssetImage).assetName)
+        .where((path) => path.startsWith('assets/packs/carrot_quest/'))
+        .map((path) => path.split('/').last)
+        .toList();
+
+    await show(state);
+    await tester.pumpWidget(const SizedBox());
+    expect(tester.takeException(), isNull);
+
+    await show(state);
+    await tester.pumpAndSettle();
+    expect(spriteNames(), ['rock.png', 'water4.png']);
+    expect(tester.binding.transientCallbackCount, 0);
+    final initialPaintCount = find.byType(CustomPaint).evaluate().length;
+
+    final released = state.copy()..actionCount = 1;
+    released.board.setEntity('objects', plate, null);
+    await show(released);
+    expect(spriteNames(), ['grass.png']);
+    expect(find.byType(CustomPaint), findsNWidgets(initialPaintCount + 1));
+    expect(tester.binding.transientCallbackCount, greaterThan(0));
+    await tester.pumpAndSettle();
+    expect(tester.binding.transientCallbackCount, 0);
+  });
+
   test('resolves static sprite when no motion sprites are active', () {
     final kind = EntityKindDef.fromJson('wall', {
       'layer': 'ground',

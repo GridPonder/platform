@@ -310,21 +310,80 @@ def _strip_noise(text: str) -> str:
 def extract_action(text: str) -> dict[str, Any] | None:
     """Extract a single JSON action object from the LLM response.
 
-    Mirrors the regex in llm_agent.dart: finds the first {...} block.
-    Returns None if no valid JSON action could be parsed.
+    Takes the action object that ends the reply; failing that, the first one
+    when at most a few characters follow it. Returns None if no valid JSON
+    action could be parsed, or if the only action objects are followed by
+    long prose (a move quoted mid-reasoning, not chosen).
 
     Strips <think>...</think> blocks and markdown code fences first.
     """
     stripped = _strip_noise(text)
     for candidate in [stripped or text, text]:
-        match = re.search(r"\{[^}]+\}", candidate)
-        if match:
+        found: list[tuple[dict[str, Any], int]] = []
+        for match in re.finditer(r"\{[^}]+\}", candidate):
             try:
                 obj = json.loads(match.group(0))
-                if isinstance(obj, dict) and "action" in obj:
-                    return obj
             except json.JSONDecodeError:
-                pass
+                continue
+            if isinstance(obj, dict) and "action" in obj:
+                found.append((obj, match.end()))
+        if not found:
+            continue
+        # An action object that ends the reply is the answer.
+        for obj, end in reversed(found):
+            if not candidate[end:].strip(" \t\r\n`."):
+                return obj
+        # Otherwise the first one, if only a little junk follows (e.g. "</br>").
+        # A move followed by long prose was only quoted mid-reasoning, typically
+        # in a reply cut off by max_tokens; playing it would apply a move the
+        # model never chose (seen in Qwen runs), so the reply is unparseable.
+        obj, end = found[0]
+        if len(re.sub(r"<[^>]*>", "", candidate[end:]).strip(" \t\r\n`.")) <= _MAX_TRAILING_CHARS:
+            return obj
+        return None
+    return None
+
+
+# Characters allowed after the action object when it does not end the reply.
+_MAX_TRAILING_CHARS = 20
+
+
+def extract_action_lenient(text: str) -> dict[str, Any] | None:
+    """Opt-in tolerant variant of extract_action (GRIDPONDER_LENIENT_PARSE=1).
+
+    Takes the LAST JSON object carrying "action" (reasoning that spills into
+    the answer usually quotes candidate moves before the final one) and, if
+    no object parses, repairs missing closing braces at the end of the reply.
+    Falls back to extract_action's behaviour first so clean replies parse
+    identically.
+    """
+    body = text.rsplit("</think>", 1)[-1] if "</think>" in text else text
+    body = (_strip_noise(body) or body).rstrip()
+    decoder = json.JSONDecoder()
+    # Only an object that ENDS the reply counts as the answer. A move quoted
+    # mid-prose ("if I choose {"action": "move", ...} it is refused") in a
+    # reply truncated by max_tokens must not be played.
+    for m in re.finditer(r"\{", body):
+        try:
+            obj, end = decoder.raw_decode(body, m.start())
+        except json.JSONDecodeError:
+            continue
+        if (isinstance(obj, dict) and isinstance(obj.get("action"), str)
+                and not body[end:].strip(" \t\r\n`.")):
+            return obj
+    # Repair: unclosed object(s) at the end, e.g. '{"action": "cut", "target": [3, 4]'
+    for m in reversed(list(re.finditer(r"\{", body))):
+        tail = body[m.start():].rstrip().rstrip(",")
+        missing = tail.count("{") - tail.count("}")
+        missing_sq = tail.count("[") - tail.count("]")
+        if missing <= 0:
+            continue
+        try:
+            obj = json.loads(tail + "]" * max(missing_sq, 0) + "}" * missing)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and isinstance(obj.get("action"), str):
+            return obj
     return None
 
 

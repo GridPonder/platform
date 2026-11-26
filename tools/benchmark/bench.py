@@ -42,8 +42,16 @@ import yaml
 from dotenv import load_dotenv
 from tqdm import tqdm
 
-from agent_client import call_llm, extract_action, extract_actions_list
+from agent_client import call_llm, extract_action, extract_action_lenient, extract_actions_list
+
+# Opt-in parse tolerance (default off so existing scores are unchanged):
+#   GRIDPONDER_LENIENT_PARSE=1  last action object wins, missing closing braces repaired
+#   GRIDPONDER_PARSE_RETRIES=N  re-ask up to N times on an unparseable single-mode reply
+#                               instead of sending give_up (which resets the level)
+LENIENT_PARSE = os.environ.get("GRIDPONDER_LENIENT_PARSE", "") not in ("", "0")
+PARSE_RETRIES = int(os.environ.get("GRIDPONDER_PARSE_RETRIES", "0") or 0)
 from connector_api import estimate_cost
+from run_protocol import batch_settings, run_protocol
 from instructions import (
     InstructionPayload,
     compose_study_prompt,
@@ -128,6 +136,30 @@ def expand_model_variants(
 
 # ── Level runner ───────────────────────────────────────────────────────────────
 
+# Opt-in per-call log (GRIDPONDER_CALL_LOG_DIR=<dir>): one JSON line per model
+# call, written as soon as the call returns (prompt, full reasoning, reply), so
+# levels cut off by a job time limit keep their traces for analysis.
+_CALL_LOG_DIR = os.environ.get("GRIDPONDER_CALL_LOG_DIR", "")
+_CALL_LOG_LOCK = threading.Lock()
+
+
+def _append_call_log(pack_id: str, level_id: str, model: dict, variant: dict,
+                     mode: str, record: dict) -> None:
+    if not _CALL_LOG_DIR:
+        return
+    try:
+        d = Path(_CALL_LOG_DIR)
+        d.mkdir(parents=True, exist_ok=True)
+        mid = f"{model.get('id', '')}{variant.get('suffix', '')}"
+        rec = {"ts": datetime.now(timezone.utc).isoformat(), "pack_id": pack_id,
+               "level_id": level_id, "model_id": mid, "mode": mode, **record}
+        line = json.dumps(rec, ensure_ascii=False) + "\n"
+        with _CALL_LOG_LOCK, open(d / f"{mid}_{mode}__{pack_id}__{level_id}.jsonl", "a") as f:
+            f.write(line)
+    except Exception as exc:  # never let logging break a run
+        print(f"call log write failed: {exc}", file=sys.stderr)
+
+
 def run_level(
     pack_id: str,
     level_id: str,
@@ -141,6 +173,11 @@ def run_level(
     max_n: int = 5,
     flex_penalty: float = 0.5,
     anon: bool = False,
+    single_attempt: bool = False,
+    no_rules: bool = False,
+    max_attempts: int | None = None,
+    full_attempts: bool = False,
+    give_up_uses_attempt: bool = False,
     runner: str = "auto",
     input_mode: str = "text",
     packs_dir: Path = PACKS_DIR,
@@ -148,6 +185,10 @@ def run_level(
     instruction_payload: InstructionPayload | None = None,
     game_notebook: str = "",
     result_context: dict[str, Any] | None = None,
+    observation_interval: int = 1,
+    board_legend: str = "normal",
+    legend_seed: int = 0,
+    legend_quiz: bool = False,
 ) -> dict[str, Any]:
     """Run one level with one model variant. Returns a result dict.
 
@@ -169,7 +210,12 @@ def run_level(
         raise ValueError("Authored curriculum instructions do not support anon mode")
     # Image input requires the PIL renderer which only exists in the Python
     # runner — force python regardless of the requested runner choice.
-    if input_mode != "text":
+    validate_observation_interval(observation_interval, mode, anon, runner)
+    validate_board_legend(board_legend, anon, no_rules, input_mode, runner)
+    if legend_quiz and board_legend == "normal":
+        raise ValueError("--legend-quiz requires a shown or hidden board legend")
+    if (input_mode != "text" or no_rules or observation_interval > 1
+            or board_legend != "normal" or give_up_uses_attempt):
         use_python = True
     else:
         use_python = runner == "python" or (runner == "auto" and not RUNNER_BIN.exists())
@@ -211,6 +257,22 @@ def run_level(
         cmd += ["--max-n", str(max_n)]
     if anon:
         cmd += ["--anon"]
+    if single_attempt:
+        cmd += ["--single-attempt"]
+    if no_rules:
+        cmd += ["--no-rules"]
+    if max_attempts is not None:
+        cmd += ["--max-attempts", str(max_attempts)]
+    if full_attempts:
+        cmd += ["--full-attempts"]
+    if give_up_uses_attempt:
+        cmd += ["--give-up-uses-attempt"]
+    if observation_interval > 1:
+        cmd += ["--observation-interval", str(observation_interval)]
+    if board_legend != "normal":
+        cmd += ["--board-legend", board_legend, "--legend-seed", str(legend_seed)]
+    if legend_quiz:
+        cmd += ["--legend-quiz"]
     if input_mode != "text":
         cmd += ["--input", input_mode]
 
@@ -232,6 +294,7 @@ def run_level(
     cost_sources: set[str] = set()
     resets = 0
     voluntary_resets = 0
+    parse_retries_total = 0
     llm_calls = 0
     total_rejections = 0
     consecutive_rejections = 0
@@ -245,6 +308,7 @@ def run_level(
     last_state: dict[str, Any] = {}
     initial_base_prompt_digest: str | None = None
     initial_prompt_digest: str | None = None
+    legend_opening_prompt = ""
     progress_warning_emitted = False
     started_at = datetime.now(timezone.utc)
     started_monotonic = time.monotonic()
@@ -296,6 +360,7 @@ def run_level(
             "llm_attempts": llm_attempts,
             "resets": resets,
             "voluntary_resets": voluntary_resets,
+            "parse_retries": parse_retries_total,
             "rejections": total_rejections,
             "latency_ms_total": sum(latencies),
             "last_call_latency_ms": last_call_latency_ms,
@@ -365,110 +430,138 @@ def run_level(
                 if initial_prompt_digest is None:
                     initial_base_prompt_digest = sha256_text(base_prompt)
                     initial_prompt_digest = sha256_text(prompt)
+                    if legend_quiz:
+                        legend_opening_prompt = prompt
                 image_b64: str | None = event.get("image_b64")
-                llm_ok = False
-                for _retry in range(3):
-                    llm_attempts += 1
-                    report_progress(
-                        "waiting_for_model" if _retry == 0 else "retrying_model",
-                        event=event,
-                        request_attempt=_retry + 1,
-                    )
-                    try:
-                        (
-                            response_text,
-                            latency_ms,
-                            in_tok,
-                            think_tok,
-                            out_tok,
-                            call_cost,
-                            reasoning_text,
-                        ) = call_llm(
-                            prompt, connector_model, extra_params,
-                            max_tokens=max_tokens,
-                            request_timeout=action_timeout,
-                            image_b64=image_b64,
-                            connector=connector,
+                parse_tries_left = PARSE_RETRIES
+                stop_run = False
+                while True:
+                    llm_ok = False
+                    for _retry in range(3):
+                        llm_attempts += 1
+                        report_progress(
+                            "waiting_for_model" if _retry == 0 else "retrying_model",
+                            event=event,
+                            request_attempt=_retry + 1,
                         )
-                        llm_ok = True
-                        break
-                    except Exception as exc:
-                        last_exc = exc
-                        last_model_error_type = type(exc).__name__
-                        if getattr(exc, "status_code", None) in (400, 401, 403, 404, 422):
+                        try:
+                            (
+                                response_text,
+                                latency_ms,
+                                in_tok,
+                                think_tok,
+                                out_tok,
+                                call_cost,
+                                reasoning_text,
+                            ) = call_llm(
+                                prompt, connector_model, extra_params,
+                                max_tokens=max_tokens,
+                                request_timeout=action_timeout,
+                                image_b64=image_b64,
+                                connector=connector,
+                            )
+                            llm_ok = True
                             break
-                        if _retry < 2:
-                            time.sleep(2 ** _retry)
-                if not llm_ok:
-                    message = str(last_exc)
-                    for name, value in os.environ.items():
-                        if len(value) >= 8 and any(word in name.upper() for word in ("KEY", "TOKEN", "SECRET")):
-                            message = message.replace(value, "[REDACTED]")
-                    model_error = f"LLM request failed ({last_model_error_type}): {message[:2000]}"
-                    cost_complete = False
-                    # Transport failures are not gameplay decisions. Do not
-                    # turn them into give_up/reset actions and failed puzzles.
-                    report_progress("error", status="error", error=model_error)
-                    break
+                        except Exception as exc:
+                            last_exc = exc
+                            last_model_error_type = type(exc).__name__
+                            if getattr(exc, "status_code", None) in (400, 401, 403, 404, 422):
+                                break
+                            if _retry < 2:
+                                time.sleep(2 ** _retry)
+                    if not llm_ok:
+                        message = str(last_exc)
+                        for name, value in os.environ.items():
+                            if len(value) >= 8 and any(word in name.upper() for word in ("KEY", "TOKEN", "SECRET")):
+                                message = message.replace(value, "[REDACTED]")
+                        model_error = f"LLM request failed ({last_model_error_type}): {message[:2000]}"
+                        cost_complete = False
+                        # Transport failures are not gameplay decisions. Do not
+                        # turn them into give_up/reset actions and failed puzzles.
+                        report_progress("error", status="error", error=model_error)
+                        stop_run = True
+                        break
 
-                consecutive_timeouts = 0
-                last_model_error_type = None
-                latencies.append(latency_ms)
-                last_call_latency_ms = latency_ms
-                input_tokens_total += in_tok
-                thinking_tokens_total += think_tok
-                output_tokens_total += out_tok
-                cost_source = "connector"
-                if call_cost is None:
-                    call_cost = estimate_cost(
-                        in_tok,
-                        out_tok,
-                        model.get("pricing"),
-                    )
-                    cost_source = (
-                        "configured_estimate"
-                        if call_cost is not None
-                        else "unavailable"
-                    )
-                if call_cost is None:
-                    cost_complete = False
-                else:
-                    cost_total += call_cost
-                cost_sources.add(cost_source)
-                llm_calls += 1
-                llm_entry: dict[str, Any] = {
-                    "latency_ms": round(latency_ms),
-                    "input_tokens": in_tok,
-                    "output_tokens": out_tok,
-                    "thinking_tokens": think_tok,
-                    "cost_usd": (
-                        round(call_cost, 6) if call_cost is not None else None
-                    ),
-                    "cost_source": cost_source,
-                    "response": response_text,
-                }
-                if reasoning_text:
-                    llm_entry["reasoning"] = reasoning_text
-                llm_log.append(llm_entry)
-
-                if mode == "single":
-                    action = extract_action(response_text)
-                    if action is None:
-                        action = {
-                            "action": "give_up",
-                            "memory": "Could not parse a valid action from response.",
-                        }
-                    send(action)
-                else:
-                    cap = step_size if mode == "fixed-n" else (max_n if mode == "flex-n" else None)
-                    actions, memory = extract_actions_list(response_text, max_n=cap)
-                    if not actions:
-                        _send_give_up(send, mode, "Could not parse valid actions from response.")
+                    consecutive_timeouts = 0
+                    last_model_error_type = None
+                    latencies.append(latency_ms)
+                    last_call_latency_ms = latency_ms
+                    input_tokens_total += in_tok
+                    thinking_tokens_total += think_tok
+                    output_tokens_total += out_tok
+                    cost_source = "connector"
+                    if call_cost is None:
+                        call_cost = estimate_cost(
+                            in_tok,
+                            out_tok,
+                            model.get("pricing"),
+                        )
+                        cost_source = (
+                            "configured_estimate"
+                            if call_cost is not None
+                            else "unavailable"
+                        )
+                    if call_cost is None:
+                        cost_complete = False
                     else:
-                        payload: dict[str, Any] = {"actions": actions}
-                        if memory:
-                            payload["memory"] = memory
-                        send(payload)
+                        cost_total += call_cost
+                    cost_sources.add(cost_source)
+                    llm_calls += 1
+                    llm_entry: dict[str, Any] = {
+                        "latency_ms": round(latency_ms),
+                        "input_tokens": in_tok,
+                        "output_tokens": out_tok,
+                        "thinking_tokens": think_tok,
+                        "cost_usd": (
+                            round(call_cost, 6) if call_cost is not None else None
+                        ),
+                        "cost_source": cost_source,
+                        "response": response_text,
+                    }
+                    if reasoning_text:
+                        llm_entry["reasoning"] = reasoning_text
+                    if "observation_fresh" in event:
+                        llm_entry["observation_fresh"] = event["observation_fresh"]
+                    llm_log.append(llm_entry)
+                    _append_call_log(pack_id, level_id, model, variant, mode, {
+                        "call": llm_calls,
+                        "attempt": event.get("attempt"),
+                        "actions_total": event.get("actions_total"),
+                        "prompt": prompt,
+                        **llm_entry,
+                    })
+
+                    if mode == "single":
+                        action = (
+                            extract_action_lenient(response_text)
+                            if LENIENT_PARSE
+                            else extract_action(response_text)
+                        )
+                        if action is None and parse_tries_left > 0:
+                            parse_tries_left -= 1
+                            parse_retries_total += 1
+                            llm_entry["parse_failed_retry"] = True
+                            continue
+                        if action is None:
+                            action = {
+                                "action": "give_up",
+                                "memory": "Could not parse a valid action from response.",
+                            }
+                        send(action)
+                    else:
+                        cap = step_size if mode == "fixed-n" else (max_n if mode == "flex-n" else None)
+                        actions, memory = extract_actions_list(response_text, max_n=cap)
+                        if not actions:
+                            _send_give_up(send, mode, "Could not parse valid actions from response.")
+                        else:
+                            payload: dict[str, Any] = {"actions": actions}
+                            if memory:
+                                payload["memory"] = memory
+                            send(payload)
+
+                    break
+                if stop_run:
+                    break
 
                 consecutive_rejections = 0
 
@@ -548,6 +641,9 @@ def run_level(
         "reasoning": variant.get("reasoning", False),
         "inference_mode": mode,
         "anon": anon,
+        **({"no_rules": True} if no_rules else {}),
+        **({"observation_interval": observation_interval} if observation_interval > 1 else {}),
+        **legend_metadata(board_legend, legend_seed),
         "input_mode": input_mode,
         "runner": "python" if use_python else "dart",
         "success": success,
@@ -558,6 +654,7 @@ def run_level(
         "attempts": attempts,
         "resets": resets,
         "voluntary_resets": voluntary_resets,
+        "parse_retries": parse_retries_total,
         "repeated_states": repeated_states,
         "llm_calls": llm_calls,
         "rejections": total_rejections,
@@ -606,6 +703,11 @@ def run_level(
     if model_error is not None:
         result["model_error_type"] = last_model_error_type
         result["llm_attempts"] = llm_attempts
+    if legend_quiz and final_event.get("legend_answers"):
+        result["legend_quiz"] = run_legend_quiz(
+            legend_opening_prompt, final_event["legend_memory"], final_event["legend_answers"],
+            connector_model, extra_params, connector, action_timeout,
+        )
 
     report_progress(
         "completed" if runner_error is None else "error",
@@ -614,6 +716,42 @@ def run_level(
         success=success,
     )
     return result
+
+
+def run_legend_quiz(
+    opening_prompt: str, memory: str, answers: dict[str, str],
+    model: str, params: dict, connector: str, timeout: int | None,
+) -> dict:
+    """Score identification after gameplay, without changing its score or call count."""
+    prompt = (
+        f"{opening_prompt}\n\nThe episode is over. The instructions below replace the gameplay instructions. "
+        "Your final notes from play follow.\n"
+        f"{memory or '(no notes)'}\n\n"
+        f"Identify these opening-board symbols: {', '.join(sorted(answers))}. "
+        "Use the exact piece names from the piece guide. Return only a JSON object "
+        "with one key per listed symbol and a piece name or null as each value."
+    )
+    try:
+        response, latency, in_tokens, think_tokens, out_tokens, cost, _ = call_llm(
+            prompt, model, params, max_tokens=1024, request_timeout=timeout,
+            image_b64=None, connector=connector,
+        )
+        guesses = json.loads(response)
+        if not isinstance(guesses, dict):
+            raise ValueError("legend quiz response must be a JSON object")
+    except Exception as exc:
+        return {"total": len(answers), "error": str(exc)}
+    correct = sum(
+        isinstance(guess := guesses.get(symbol), str)
+        and guess.strip().casefold() == name.casefold()
+        for symbol, name in answers.items()
+    )
+    return {
+        "correct": correct, "total": len(answers), "guesses": guesses,
+        "expected": answers, "latency_ms": round(latency),
+        "input_tokens": in_tokens, "thinking_tokens": think_tokens,
+        "output_tokens": out_tokens, "cost_usd": cost,
+    }
 
 
 def _send_give_up(send: Any, mode: str, memory: str) -> None:
@@ -627,25 +765,24 @@ def _send_give_up(send: Any, mode: str, memory: str) -> None:
 # ── Resume helpers ─────────────────────────────────────────────────────────────
 
 def load_completed(
-    results_base: Path, mode: str, anon: bool, scan_dir: Path | None = None,
-    input_mode: str = "text",
+    results_base: Path, settings: dict, scan_dir: Path | None = None,
 ) -> set[tuple[str, str, str]]:
     """Scan JSONL runs and return (model_id, pack_id, level_id) triples
-    that already have a successful (non-error) result for the given
-    (mode, anon, input_mode) combination.
+    that already have a successful (non-error) result under the same run
+    protocol as *settings* (run_meta fields; see run_protocol.py). Older
+    files that predate a setting count as its default.
 
     When *scan_dir* is given, only that directory is scanned (non-recursive).
     Otherwise all subdirectories under *results_base* are scanned.
     """
+    wanted = run_protocol(settings)
     done: set[tuple[str, str, str]] = set()
     base = scan_dir or results_base
     if not base.exists():
         return done
     glob_pattern = "*.jsonl" if scan_dir else "**/*.jsonl"
     for jsonl_file in sorted(base.glob(glob_pattern)):
-        file_mode: str | None = None
-        file_anon: bool = False
-        file_input: str = "text"
+        matches = False
         with open(jsonl_file) as f:
             for line in f:
                 line = line.strip()
@@ -656,15 +793,9 @@ def load_completed(
                 except json.JSONDecodeError:
                     continue
                 if rec.get("type") == "run_meta":
-                    file_mode = rec.get("inference_mode", "single")
-                    file_anon = rec.get("anon", False)
-                    file_input = rec.get("input_mode", "text")
-                elif (rec.get("type") == "level"
-                      and file_mode == mode
-                      and file_anon == anon
-                      and file_input == input_mode):
-                    if "error" not in rec:
-                        done.add((rec["model_id"], rec["pack_id"], rec["level_id"]))
+                    matches = run_protocol(rec) == wanted
+                elif rec.get("type") == "level" and matches and "error" not in rec:
+                    done.add((rec["model_id"], rec["pack_id"], rec["level_id"]))
     return done
 
 
@@ -711,6 +842,24 @@ def _wait_if_paused() -> None:
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
+
+def validate_observation_interval(interval: int, mode: str, anon: bool, runner: str) -> None:
+    if interval < 1:
+        raise ValueError("--observation-interval must be at least 1")
+    if interval > 1 and (mode != "single" or anon or runner == "dart"):
+        raise ValueError("delayed observations require single mode and the named Python runner")
+
+
+def validate_board_legend(legend: str, anon: bool, no_rules: bool, input_mode: str, runner: str) -> None:
+    if legend not in ("normal", "shown", "hidden"):
+        raise ValueError("board legend must be normal, shown or hidden")
+    if legend != "normal" and (anon or no_rules or input_mode != "text" or runner == "dart"):
+        raise ValueError("randomized board symbols require rules-given text and the Python runner")
+
+
+def legend_metadata(legend: str, seed: int) -> dict:
+    return {"board_legend": legend, "legend_seed": seed} if legend != "normal" else {}
+
 
 def main() -> None:
     load_dotenv()
@@ -761,8 +910,35 @@ def main() -> None:
                         help="Max actions per LLM call for flex-n mode (default: unlimited)")
     parser.add_argument("--flex-penalty", type=float, default=0.5,
                         help="Efficiency penalty per extra step beyond first in flex-n (default: 0.5)")
+    parser.add_argument("--observation-interval", type=int, default=1, metavar="N",
+                        help="Reveal the board every N submitted actions in single mode (default: 1).")
+    parser.add_argument("--board-legend", choices=["normal", "shown", "hidden"], default="normal",
+                        help="Randomize the board symbols and show or hide their legend.")
+    parser.add_argument("--legend-seed", type=int, default=0,
+                        help="Use the same seed for a paired shown and hidden run.")
+    parser.add_argument("--legend-quiz", action="store_true",
+                        help="Ask for an opening-board symbol mapping after the game and score it separately.")
+    parser.add_argument("--single-attempt", action="store_true",
+                        help="Exactly one attempt: give_up ends the run as a loss instead of "
+                             "resetting, and the prompt says so (Python runner only)")
     parser.add_argument("--anon", action="store_true",
                         help="Anonymise entity kinds and action IDs (ARC-AGI style)")
+    parser.add_argument("--max-attempts", type=int, default=None,
+                        help="Attempts per run: a loss resets the board until this many "
+                             "attempts are used (runner default when omitted: 1, a loss "
+                             "ends the run)")
+    parser.add_argument("--full-attempts", action="store_true",
+                        help="Each attempt gets the level's own move limit and the run's "
+                             "total is their sum (instead of gold-path multipliers)")
+    parser.add_argument("--give-up-uses-attempt", action="store_true",
+                        help="Count a give_up against --max-attempts: giving up on the last "
+                             "attempt ends the run, and the prompt states the allowance "
+                             "(Python runner only)")
+    parser.add_argument("--no-rules", action="store_true",
+                        help="Real board, symbols, kind names and actions, but no rule "
+                             "text (game description, kind descriptions, goal prose, "
+                             "status-header prose). Not combinable with --anon; text "
+                             "input and Python runner only")
     parser.add_argument("--input", choices=["text", "image", "text+image"],
                         default="text",
                         help="What the model sees: text grid, board image, or both. "
@@ -831,9 +1007,37 @@ def main() -> None:
     # Anon + image is silently downgraded to text by the runner; mirror that here.
     if args.anon and args.input != "text":
         args.input = "text"
+    if args.no_rules and args.anon:
+        sys.exit("--no-rules and --anon are separate modes; pick one")
+    if args.no_rules and args.input != "text":
+        sys.exit("--no-rules supports text input only (an image would show the pack's sprites)")
+    try:
+        validate_observation_interval(args.observation_interval, args.mode, args.anon, args.runner)
+        validate_board_legend(args.board_legend, args.anon, args.no_rules, args.input, args.runner)
+        if args.legend_quiz and args.board_legend == "normal":
+            parser.error("--legend-quiz requires a shown or hidden board legend")
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    # The settings that define this run's protocol (see run_protocol.py).
+    # Written into every run_meta and compared by --resume and aggregate.py.
+    protocol_settings = {
+        "inference_mode": args.mode,
+        "observation_interval": args.observation_interval,
+        **legend_metadata(args.board_legend, args.legend_seed),
+        **({"legend_quiz": True} if args.legend_quiz else {}),
+        "anon": args.anon,
+        **({"no_rules": True} if args.no_rules else {}),
+        **({"max_attempts": args.max_attempts} if args.max_attempts is not None else {}),
+        **({"full_attempts": True} if args.full_attempts else {}),
+        **({"give_up_uses_attempt": True} if args.give_up_uses_attempt else {}),
+        "single_attempt": args.single_attempt,
+        "input_mode": args.input,
+        **batch_settings(args.mode, args.max_n, args.flex_penalty, args.step_size),
+    }
 
     if args.resume:
-        completed = load_completed(RESULTS_BASE, args.mode, args.anon, input_mode=args.input)
+        completed = load_completed(RESULTS_BASE, protocol_settings)
         if completed:
             before = len(work)
             work = [
@@ -849,7 +1053,16 @@ def main() -> None:
         mode_label = f"fixed-{args.step_size}"
     elif args.mode == "flex-n":
         mode_label = f"flex-{args.max_n}(f={args.flex_penalty})"
-    anon_label = " [anon]" if args.anon else ""
+    observation_tag = ""
+    if args.observation_interval > 1:
+        mode_label += f", observations every {args.observation_interval} actions"
+        observation_tag = f"_obs{args.observation_interval}"
+    if args.board_legend != "normal":
+        mode_label += f", board legend {args.board_legend}"
+        observation_tag += f"_legend-{args.board_legend}-{args.legend_seed}"
+    if args.legend_quiz:
+        observation_tag += "_quiz"
+    anon_label = " [anon]" if args.anon else (" [no-rules]" if args.no_rules else "")
     input_label = "" if args.input == "text" else f" [{args.input}]"
     print(f"Benchmark [{mode_label}]{anon_label}{input_label}: {total} run(s) — "
           f"{len(model_variants)} model variant(s) × "
@@ -881,6 +1094,9 @@ def main() -> None:
         "runs_per_level": args.runs,
         "action_timeout": args.action_timeout,
         "inference_mode": args.mode,
+        "observation_interval": args.observation_interval,
+        **legend_metadata(args.board_legend, args.legend_seed),
+        **({"legend_quiz": True} if args.legend_quiz else {}),
         "step_size": args.step_size if args.mode == "fixed-n" else None,
         "max_n": args.max_n if args.mode == "flex-n" else None,
         "flex_penalty": args.flex_penalty if args.mode == "flex-n" else None,
@@ -896,9 +1112,9 @@ def main() -> None:
         _mode_tag = args.mode
         if args.mode == "flex-n":
             _mode_tag = f"flex-{args.max_n}" if args.max_n else "flex-n"
-        _anon_tag = "_anon" if args.anon else ""
+        _anon_tag = "_anon" if args.anon else ("_norules" if args.no_rules else "")
         _model_tag = (args.models[0] if args.models else "all")
-        meta_file = RESULTS_DIR / f"meta_{_model_tag}_{_mode_tag}{_anon_tag}{_input_tag}.json"
+        meta_file = RESULTS_DIR / f"meta_{_model_tag}_{_mode_tag}{_anon_tag}{_input_tag}{observation_tag}.json"
     else:
         meta_file = RESULTS_DIR / "meta.json"
     with open(meta_file, "w") as f:
@@ -923,11 +1139,11 @@ def main() -> None:
     mode_tag = args.mode
     if args.mode == "flex-n":
         mode_tag = f"flex-{args.max_n}" if args.max_n else "flex-n"
-    anon_tag = "_anon" if args.anon else ""
+    anon_tag = "_anon" if args.anon else ("_norules" if args.no_rules else "")
     input_tag = "" if args.input == "text" else f"_{args.input.replace('+', '-')}"
 
     for full_id, items in by_variant.items():
-        out_file = RESULTS_DIR / f"{full_id}_{mode_tag}{anon_tag}{input_tag}.jsonl"
+        out_file = RESULTS_DIR / f"{full_id}_{mode_tag}{anon_tag}{input_tag}{observation_tag}.jsonl"
         model_cfg = items[0][2]
         variant_cfg = items[0][3]
 
@@ -943,9 +1159,7 @@ def main() -> None:
             "pricing": model_cfg.get("pricing"),
             "local": model_cfg.get("local", True),
             "reasoning": variant_cfg.get("reasoning", False),
-            "inference_mode": args.mode,
-            "anon": args.anon,
-            "input_mode": args.input,
+            **protocol_settings,
             "attempt_multiplier": args.attempt_multiplier,
             "total_multiplier": args.total_multiplier,
             "runs_per_level": args.runs,
@@ -953,11 +1167,6 @@ def main() -> None:
             "run_id": run_id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        if args.mode == "fixed-n":
-            run_meta["step_size"] = args.step_size
-        elif args.mode == "flex-n":
-            run_meta["max_n"] = args.max_n
-            run_meta["flex_penalty"] = args.flex_penalty
 
         with open(out_file, "w") as fout:
             fout.write(json.dumps(run_meta) + "\n")
@@ -976,6 +1185,15 @@ def main() -> None:
                         max_n=args.max_n,
                         flex_penalty=args.flex_penalty,
                         anon=args.anon,
+                        single_attempt=args.single_attempt,
+                        no_rules=args.no_rules,
+                        max_attempts=args.max_attempts,
+                        full_attempts=args.full_attempts,
+                        give_up_uses_attempt=args.give_up_uses_attempt,
+                        observation_interval=args.observation_interval,
+                        board_legend=args.board_legend,
+                        legend_seed=args.legend_seed,
+                        legend_quiz=args.legend_quiz,
                         runner=args.runner,
                         input_mode=args.input,
                         packs_dir=args.packs_dir,
