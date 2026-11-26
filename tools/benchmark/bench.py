@@ -183,6 +183,10 @@ def run_level(
     instruction_payload: InstructionPayload | None = None,
     game_notebook: str = "",
     result_context: dict[str, Any] | None = None,
+    observation_interval: int = 1,
+    board_legend: str = "normal",
+    legend_seed: int = 0,
+    legend_quiz: bool = False,
 ) -> dict[str, Any]:
     """Run one level with one model variant. Returns a result dict.
 
@@ -204,8 +208,12 @@ def run_level(
         raise ValueError("Authored curriculum instructions do not support anon mode")
     # Image input requires the PIL renderer which only exists in the Python
     # runner — force python regardless of the requested runner choice.
-    if input_mode != "text" or no_rules:
-        use_python = True  # image input and no-rules mode are Python-only
+    validate_observation_interval(observation_interval, mode, anon, runner)
+    validate_board_legend(board_legend, anon, no_rules, input_mode, runner)
+    if legend_quiz and board_legend == "normal":
+        raise ValueError("--legend-quiz requires a shown or hidden board legend")
+    if input_mode != "text" or no_rules or observation_interval > 1 or board_legend != "normal":
+        use_python = True
     else:
         use_python = runner == "python" or (runner == "auto" and not RUNNER_BIN.exists())
         if not use_python and not RUNNER_BIN.exists():
@@ -254,6 +262,12 @@ def run_level(
         cmd += ["--max-attempts", str(max_attempts)]
     if full_attempts:
         cmd += ["--full-attempts"]
+    if observation_interval > 1:
+        cmd += ["--observation-interval", str(observation_interval)]
+    if board_legend != "normal":
+        cmd += ["--board-legend", board_legend, "--legend-seed", str(legend_seed)]
+    if legend_quiz:
+        cmd += ["--legend-quiz"]
     if input_mode != "text":
         cmd += ["--input", input_mode]
 
@@ -289,6 +303,7 @@ def run_level(
     last_state: dict[str, Any] = {}
     initial_base_prompt_digest: str | None = None
     initial_prompt_digest: str | None = None
+    legend_opening_prompt = ""
     progress_warning_emitted = False
     started_at = datetime.now(timezone.utc)
     started_monotonic = time.monotonic()
@@ -410,6 +425,8 @@ def run_level(
                 if initial_prompt_digest is None:
                     initial_base_prompt_digest = sha256_text(base_prompt)
                     initial_prompt_digest = sha256_text(prompt)
+                    if legend_quiz:
+                        legend_opening_prompt = prompt
                 image_b64: str | None = event.get("image_b64")
                 parse_tries_left = PARSE_RETRIES
                 stop_run = False
@@ -498,6 +515,8 @@ def run_level(
                     }
                     if reasoning_text:
                         llm_entry["reasoning"] = reasoning_text
+                    if "observation_fresh" in event:
+                        llm_entry["observation_fresh"] = event["observation_fresh"]
                     llm_log.append(llm_entry)
                     _append_call_log(pack_id, level_id, model, variant, mode, {
                         "call": llm_calls,
@@ -618,6 +637,8 @@ def run_level(
         "inference_mode": mode,
         "anon": anon,
         **({"no_rules": True} if no_rules else {}),
+        **({"observation_interval": observation_interval} if observation_interval > 1 else {}),
+        **legend_metadata(board_legend, legend_seed),
         "input_mode": input_mode,
         "runner": "python" if use_python else "dart",
         "success": success,
@@ -677,6 +698,11 @@ def run_level(
     if model_error is not None:
         result["model_error_type"] = last_model_error_type
         result["llm_attempts"] = llm_attempts
+    if legend_quiz and final_event.get("legend_answers"):
+        result["legend_quiz"] = run_legend_quiz(
+            legend_opening_prompt, final_event["legend_memory"], final_event["legend_answers"],
+            connector_model, extra_params, connector, action_timeout,
+        )
 
     report_progress(
         "completed" if runner_error is None else "error",
@@ -685,6 +711,42 @@ def run_level(
         success=success,
     )
     return result
+
+
+def run_legend_quiz(
+    opening_prompt: str, memory: str, answers: dict[str, str],
+    model: str, params: dict, connector: str, timeout: int | None,
+) -> dict:
+    """Score identification after gameplay, without changing its score or call count."""
+    prompt = (
+        f"{opening_prompt}\n\nThe episode is over. The instructions below replace the gameplay instructions. "
+        "Your final notes from play follow.\n"
+        f"{memory or '(no notes)'}\n\n"
+        f"Identify these opening-board symbols: {', '.join(sorted(answers))}. "
+        "Use the exact piece names from the piece guide. Return only a JSON object "
+        "with one key per listed symbol and a piece name or null as each value."
+    )
+    try:
+        response, latency, in_tokens, think_tokens, out_tokens, cost, _ = call_llm(
+            prompt, model, params, max_tokens=1024, request_timeout=timeout,
+            image_b64=None, connector=connector,
+        )
+        guesses = json.loads(response)
+        if not isinstance(guesses, dict):
+            raise ValueError("legend quiz response must be a JSON object")
+    except Exception as exc:
+        return {"total": len(answers), "error": str(exc)}
+    correct = sum(
+        isinstance(guess := guesses.get(symbol), str)
+        and guess.strip().casefold() == name.casefold()
+        for symbol, name in answers.items()
+    )
+    return {
+        "correct": correct, "total": len(answers), "guesses": guesses,
+        "expected": answers, "latency_ms": round(latency),
+        "input_tokens": in_tokens, "thinking_tokens": think_tokens,
+        "output_tokens": out_tokens, "cost_usd": cost,
+    }
 
 
 def _send_give_up(send: Any, mode: str, memory: str) -> None:
@@ -699,7 +761,9 @@ def _send_give_up(send: Any, mode: str, memory: str) -> None:
 
 def load_completed(
     results_base: Path, mode: str, anon: bool, scan_dir: Path | None = None,
-    input_mode: str = "text", no_rules: bool = False,
+    input_mode: str = "text", no_rules: bool = False, observation_interval: int = 1,
+    board_legend: str = "normal", legend_seed: int = 0,
+    legend_quiz: bool = False,
 ) -> set[tuple[str, str, str]]:
     """Scan JSONL runs and return (model_id, pack_id, level_id) triples
     that already have a successful (non-error) result for the given
@@ -718,6 +782,9 @@ def load_completed(
         file_anon: bool = False
         file_input: str = "text"
         file_no_rules: bool = False
+        file_observation_interval = 1
+        file_legend: dict = {}
+        file_legend_quiz = False
         with open(jsonl_file) as f:
             for line in f:
                 line = line.strip()
@@ -732,10 +799,17 @@ def load_completed(
                     file_anon = rec.get("anon", False)
                     file_input = rec.get("input_mode", "text")
                     file_no_rules = rec.get("no_rules", False)
+                    file_observation_interval = rec.get("observation_interval", 1)
+                    file_legend = legend_metadata(rec.get("board_legend", "normal"),
+                                                  rec.get("legend_seed", 0))
+                    file_legend_quiz = rec.get("legend_quiz", False)
                 elif (rec.get("type") == "level"
                       and file_mode == mode
                       and file_anon == anon
                       and file_no_rules == no_rules
+                      and file_observation_interval == observation_interval
+                      and file_legend == legend_metadata(board_legend, legend_seed)
+                      and file_legend_quiz == legend_quiz
                       and file_input == input_mode):
                     if "error" not in rec:
                         done.add((rec["model_id"], rec["pack_id"], rec["level_id"]))
@@ -786,6 +860,24 @@ def _wait_if_paused() -> None:
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
+def validate_observation_interval(interval: int, mode: str, anon: bool, runner: str) -> None:
+    if interval < 1:
+        raise ValueError("--observation-interval must be at least 1")
+    if interval > 1 and (mode != "single" or anon or runner == "dart"):
+        raise ValueError("delayed observations require single mode and the named Python runner")
+
+
+def validate_board_legend(legend: str, anon: bool, no_rules: bool, input_mode: str, runner: str) -> None:
+    if legend not in ("normal", "shown", "hidden"):
+        raise ValueError("board legend must be normal, shown or hidden")
+    if legend != "normal" and (anon or no_rules or input_mode != "text" or runner == "dart"):
+        raise ValueError("randomized board symbols require rules-given text and the Python runner")
+
+
+def legend_metadata(legend: str, seed: int) -> dict:
+    return {"board_legend": legend, "legend_seed": seed} if legend != "normal" else {}
+
+
 def main() -> None:
     load_dotenv()
 
@@ -835,6 +927,14 @@ def main() -> None:
                         help="Max actions per LLM call for flex-n mode (default: unlimited)")
     parser.add_argument("--flex-penalty", type=float, default=0.5,
                         help="Efficiency penalty per extra step beyond first in flex-n (default: 0.5)")
+    parser.add_argument("--observation-interval", type=int, default=1, metavar="N",
+                        help="Reveal the board every N submitted actions in single mode (default: 1).")
+    parser.add_argument("--board-legend", choices=["normal", "shown", "hidden"], default="normal",
+                        help="Randomize the board symbols and show or hide their legend.")
+    parser.add_argument("--legend-seed", type=int, default=0,
+                        help="Use the same seed for a paired shown and hidden run.")
+    parser.add_argument("--legend-quiz", action="store_true",
+                        help="Ask for an opening-board symbol mapping after the game and score it separately.")
     parser.add_argument("--single-attempt", action="store_true",
                         help="Exactly one attempt: give_up ends the run as a loss instead of "
                              "resetting, and the prompt says so (Python runner only)")
@@ -924,10 +1024,19 @@ def main() -> None:
         sys.exit("--no-rules and --anon are separate modes; pick one")
     if args.no_rules and args.input != "text":
         sys.exit("--no-rules supports text input only (an image would show the pack's sprites)")
+    try:
+        validate_observation_interval(args.observation_interval, args.mode, args.anon, args.runner)
+        validate_board_legend(args.board_legend, args.anon, args.no_rules, args.input, args.runner)
+        if args.legend_quiz and args.board_legend == "normal":
+            parser.error("--legend-quiz requires a shown or hidden board legend")
+    except ValueError as exc:
+        parser.error(str(exc))
 
     if args.resume:
         completed = load_completed(RESULTS_BASE, args.mode, args.anon, input_mode=args.input,
-                                   no_rules=args.no_rules)
+                                   no_rules=args.no_rules, observation_interval=args.observation_interval,
+                                   board_legend=args.board_legend, legend_seed=args.legend_seed,
+                                   legend_quiz=args.legend_quiz)
         if completed:
             before = len(work)
             work = [
@@ -943,6 +1052,15 @@ def main() -> None:
         mode_label = f"fixed-{args.step_size}"
     elif args.mode == "flex-n":
         mode_label = f"flex-{args.max_n}(f={args.flex_penalty})"
+    observation_tag = ""
+    if args.observation_interval > 1:
+        mode_label += f", observations every {args.observation_interval} actions"
+        observation_tag = f"_obs{args.observation_interval}"
+    if args.board_legend != "normal":
+        mode_label += f", board legend {args.board_legend}"
+        observation_tag += f"_legend-{args.board_legend}-{args.legend_seed}"
+    if args.legend_quiz:
+        observation_tag += "_quiz"
     anon_label = " [anon]" if args.anon else (" [no-rules]" if args.no_rules else "")
     input_label = "" if args.input == "text" else f" [{args.input}]"
     print(f"Benchmark [{mode_label}]{anon_label}{input_label}: {total} run(s) — "
@@ -975,6 +1093,9 @@ def main() -> None:
         "runs_per_level": args.runs,
         "action_timeout": args.action_timeout,
         "inference_mode": args.mode,
+        "observation_interval": args.observation_interval,
+        **legend_metadata(args.board_legend, args.legend_seed),
+        **({"legend_quiz": True} if args.legend_quiz else {}),
         "step_size": args.step_size if args.mode == "fixed-n" else None,
         "max_n": args.max_n if args.mode == "flex-n" else None,
         "flex_penalty": args.flex_penalty if args.mode == "flex-n" else None,
@@ -992,7 +1113,7 @@ def main() -> None:
             _mode_tag = f"flex-{args.max_n}" if args.max_n else "flex-n"
         _anon_tag = "_anon" if args.anon else ("_norules" if args.no_rules else "")
         _model_tag = (args.models[0] if args.models else "all")
-        meta_file = RESULTS_DIR / f"meta_{_model_tag}_{_mode_tag}{_anon_tag}{_input_tag}.json"
+        meta_file = RESULTS_DIR / f"meta_{_model_tag}_{_mode_tag}{_anon_tag}{_input_tag}{observation_tag}.json"
     else:
         meta_file = RESULTS_DIR / "meta.json"
     with open(meta_file, "w") as f:
@@ -1021,7 +1142,7 @@ def main() -> None:
     input_tag = "" if args.input == "text" else f"_{args.input.replace('+', '-')}"
 
     for full_id, items in by_variant.items():
-        out_file = RESULTS_DIR / f"{full_id}_{mode_tag}{anon_tag}{input_tag}.jsonl"
+        out_file = RESULTS_DIR / f"{full_id}_{mode_tag}{anon_tag}{input_tag}{observation_tag}.jsonl"
         model_cfg = items[0][2]
         variant_cfg = items[0][3]
 
@@ -1038,6 +1159,9 @@ def main() -> None:
             "local": model_cfg.get("local", True),
             "reasoning": variant_cfg.get("reasoning", False),
             "inference_mode": args.mode,
+            "observation_interval": args.observation_interval,
+            **legend_metadata(args.board_legend, args.legend_seed),
+            **({"legend_quiz": True} if args.legend_quiz else {}),
             "anon": args.anon,
             **({"no_rules": True} if args.no_rules else {}),
             **({"max_attempts": args.max_attempts} if args.max_attempts is not None else {}),
@@ -1078,6 +1202,10 @@ def main() -> None:
                         no_rules=args.no_rules,
                         max_attempts=args.max_attempts,
                         full_attempts=args.full_attempts,
+                        observation_interval=args.observation_interval,
+                        board_legend=args.board_legend,
+                        legend_seed=args.legend_seed,
+                        legend_quiz=args.legend_quiz,
                         runner=args.runner,
                         input_mode=args.input,
                         packs_dir=args.packs_dir,

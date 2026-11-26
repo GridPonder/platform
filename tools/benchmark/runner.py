@@ -35,6 +35,7 @@ from engines.python.anon import (
     build_anon_action_shapes,
     build_anon_kind_to_label,
     build_anon_reverse_map,
+    build_random_board_symbols,
     resolve_anon_action,
 )
 from engines.python.action_enum import enumerate_actions
@@ -178,7 +179,7 @@ def main() -> None:
     parser.add_argument(
         "--max-attempts",
         type=int,
-        default=1,
+        default=None,
         help="How many attempts the agent gets before the run ends. At the "
              "default of 1 a loss ends the run, which is the historical "
              "behaviour. Above 1 a lost attempt resets the board and costs "
@@ -205,7 +206,16 @@ def main() -> None:
     )
     parser.add_argument("--step-size", type=int, default=1)
     parser.add_argument("--max-n", type=int, default=None)
+    parser.add_argument(
+        "--observation-interval", type=int, default=1, metavar="N",
+        help="Reveal the board every N submitted actions in single mode. "
+             "Between updates, show the last observed board and the submitted "
+             "actions without their outcomes.",
+    )
     parser.add_argument("--anon", action="store_true", default=False)
+    parser.add_argument("--board-legend", choices=["normal", "shown", "hidden"], default="normal")
+    parser.add_argument("--legend-seed", type=int, default=0)
+    parser.add_argument("--legend-quiz", action="store_true")
     parser.add_argument(
         "--no-rules",
         action="store_true",
@@ -232,13 +242,20 @@ def main() -> None:
              "Anon mode forces text (image carries no semantic anonymisation).",
     )
     args = parser.parse_args()
+    observation_interval = args.observation_interval
+    if observation_interval < 1:
+        parser.error("--observation-interval must be at least 1")
+    if observation_interval > 1 and (
+        args.mode != "single" or args.anon or args.observation == "harness"
+    ):
+        parser.error("delayed observations require single mode and named paper observations")
 
     pack_id: str = args.pack
     level_id: str = args.level
     packs_dir = Path(args.packs_dir) if args.packs_dir else _PACKS_DIR
     attempt_mul: int = args.attempt_multiplier
     total_mul: int = args.total_multiplier
-    max_attempts: int = max(1, args.max_attempts)
+    max_attempts: int = max(1, args.max_attempts or 1)
     single_attempt: bool = bool(args.single_attempt)
     if single_attempt:
         max_attempts = 1
@@ -247,6 +264,12 @@ def main() -> None:
     max_n: int | None = args.max_n
     anon: bool = args.anon
     no_rules: bool = args.no_rules
+    board_legend = args.board_legend
+    randomized_symbols = board_legend != "normal"
+    if args.legend_quiz and not randomized_symbols:
+        parser.error("--legend-quiz requires a shown or hidden board legend")
+    if randomized_symbols and (anon or no_rules or args.input != "text" or args.observation == "harness"):
+        parser.error("randomized board symbols require rules-given text paper observations")
     if no_rules and (anon or args.observation == "harness"):
         _die("--no-rules cannot be combined with --anon or --observation harness")
         return
@@ -288,8 +311,30 @@ def main() -> None:
     kind_symbol_overrides: dict[str, str] | None = (
         build_anon_kind_to_label(game_def) if anon else None
     )
+    if randomized_symbols:
+        kind_symbol_overrides = build_random_board_symbols(
+            game_def, f"{args.legend_seed}:{pack_id}:{level_id}"
+        )
 
     engine = TurnEngine(game_def, level_def)
+    legend_answers = {}
+    if args.legend_quiz:
+        opening_board = render_board(
+            engine.state, game_def, include_legend=False,
+            kind_symbol_overrides=kind_symbol_overrides, level_def=level_def,
+            randomized_symbols=True,
+        )
+        opening_grid = opening_board.splitlines()[:engine.state.board.height]
+        visible_symbols = set("".join(opening_grid))
+        visible_symbols.update(
+            kind_symbol_overrides.get(obj.kind, "?")
+            for obj in engine.state.board.multi_cell_objects
+        )
+        legend_answers = {
+            symbol: game_def.observation_name(kind)
+            for kind, symbol in kind_symbol_overrides.items()
+            if symbol in visible_symbols
+        }
 
     attempt_number = 1
     total_game_actions = 0
@@ -335,13 +380,28 @@ def main() -> None:
     # prompt; and the most recent submission when it was rejected.
     previous_attempt: str | None = None
     last_rejected: tuple[dict, str] | None = None
+    submitted_actions: list[dict] = []
+    submission_outcomes: list[str] = []
+    observed_state = engine.state
+    observed_total = 0
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def emit_state() -> None:
-        nonlocal current_anon_map, previous_attempt
+        nonlocal current_anon_map, previous_attempt, observed_state, observed_total
         total_now = total_game_actions + give_up_count
-        valid_actions = enumerate_actions(game_def, engine.state, engine=engine)
+        observation_actions = tuple(submitted_actions)
+        observation_outcomes: tuple[str, ...] = ()
+        if len(submitted_actions) == observation_interval:
+            observation_outcomes = tuple(submission_outcomes)
+            submitted_actions.clear()
+            submission_outcomes.clear()
+        hidden = bool(submitted_actions)
+        valid_actions = [] if hidden else enumerate_actions(game_def, engine.state, engine=engine)
+        if observation_interval > 1 and not hidden:
+            observed_state = engine.state.copy()
+            observed_total = total_now
+        prompt_state = observed_state if hidden else engine.state
 
         if anon:
             current_anon_map = build_anon_reverse_map(valid_actions)
@@ -382,18 +442,18 @@ def main() -> None:
         png: bytes | None = None
         image_marks: list[str] | None = None
         if include_image:
-            png, image_marks = _get_renderer()(game_def, engine.state, pack_dir, level_def)
+            png, image_marks = _get_renderer()(game_def, prompt_state, pack_dir, level_def)
 
         prompt = build_prompt(
             game_def,
             level_def,
-            engine.state,
+            prompt_state,
             attempt_number=attempt_number,
-            total_actions=total_now,
-            last_action=last_action,
-            previous_board_text=prev_board_text,
-            previous_inventory=prev_inventory,
-            previous_status=prev_status,
+            total_actions=observed_total if hidden else total_now,
+            last_action=last_action if observation_interval == 1 else None,
+            previous_board_text=prev_board_text if observation_interval == 1 else None,
+            previous_inventory=prev_inventory if observation_interval == 1 else None,
+            previous_status=prev_status if observation_interval == 1 else None,
             anonymize=anon,
             no_rules=no_rules,
             kind_symbol_overrides=kind_symbol_overrides,
@@ -409,9 +469,30 @@ def main() -> None:
             rejection_detail=last_rejected[1] if last_rejected else None,
             image_marks=image_marks,
             last_action_label=last_action_label if anon else None,
+            observation_interval=observation_interval,
+            observation_actions=observation_actions,
+            observation_outcomes=observation_outcomes,
+            board_legend=board_legend,
         )
-        if single_attempt:
+        if single_attempt or (args.max_attempts is not None and max_attempts == 1):
             prompt = _single_attempt_prompt(prompt)
+        elif args.max_attempts is not None:
+            discovery_instruction = (
+                "Use observations to infer the rules and revise your plan when an attempt fails. "
+                if no_rules else ""
+            )
+            prompt = prompt.replace(
+                "Minimize total actions — give up early if stuck rather than wasting moves.",
+                f"You have up to {max_attempts} attempts on this level. "
+                f"{discovery_instruction}Your memory notes carry over when the board resets. "
+                "Minimize actions while trying to solve.",
+                1,
+            )
+            if attempt_number >= max_attempts:
+                prompt = prompt.replace(
+                    " — reset and start a fresh attempt",
+                    " — stop playing and end the run",
+                )
         previous_attempt = None
 
         event: dict = {
@@ -429,6 +510,8 @@ def main() -> None:
             "inference_mode": mode,
             "input_mode": input_mode,
         }
+        if observation_interval > 1:
+            event["observation_fresh"] = not hidden
         if png is not None:
             import base64
             event["image_b64"] = base64.b64encode(png).decode("ascii")
@@ -442,6 +525,8 @@ def main() -> None:
         nonlocal attempt_number, last_action, prev_board_text, prev_inventory, prev_status, seen_states
         nonlocal previous_attempt, last_rejected, last_action_label
         engine.reset()
+        submitted_actions.clear()
+        submission_outcomes.clear()
         attempt_number += 1
         last_action = None
         last_action_label = None
@@ -472,7 +557,7 @@ def main() -> None:
         seen_states.add(key)
 
     def _terminal(event: str) -> dict:
-        return {
+        result = {
             "event": event,
             "actions_this_attempt": engine.state.action_count,
             "actions_total": total_game_actions + give_up_count,
@@ -483,6 +568,10 @@ def main() -> None:
             "rejected_schema": rejected_schema,
             "rejected_illegal": rejected_illegal,
         }
+        if args.legend_quiz:
+            result["legend_answers"] = legend_answers
+            result["legend_memory"] = memory
+        return result
 
     def won_event() -> dict:
         return _terminal("won")
@@ -491,7 +580,7 @@ def main() -> None:
         return {**_terminal("lost"), "loss_reason": loss_reason}
 
     def engine_loss_reason(result) -> str:
-        return describe_loss(level_def, result.lose_reason, anonymize=anon,
+        return describe_loss(level_def, result.lose_reason, anonymize=anon or randomized_symbols,
                              no_rules=no_rules)
 
     def end_attempt(reason: str, loss_reason: str | None = None) -> bool:
@@ -523,6 +612,8 @@ def main() -> None:
             {k: v for k, v in action_input.items() if k != "memory"},
             prompt_detail if prompt_detail is not None else detail,
         )
+        if observation_interval > 1:
+            submission_outcomes.append(f"rejected ({last_rejected[1]})")
         if reason == "schema":
             rejected_schema += 1
             consecutive_schema += 1
@@ -552,7 +643,7 @@ def main() -> None:
              and e.get("reason")),
             None,
         )
-        if veto_reason is not None and not anon and not no_rules:
+        if veto_reason is not None and not anon and not no_rules and not randomized_symbols:
             return veto_reason, veto_reason
         if anon:
             return f"{submitted.get('action')} is not legal in this state", "not legal in this state"
@@ -612,7 +703,7 @@ def main() -> None:
 
             if action_id == "give_up":
                 consecutive_schema = consecutive_illegal = 0
-                if single_attempt:
+                if single_attempt or (args.max_attempts is not None and attempt_number >= max_attempts):
                     _out(lost_event(_REASON_GIVE_UP))
                     break
                 give_up_count += 1
@@ -624,13 +715,17 @@ def main() -> None:
                 emit_state()
                 continue
 
-            prev_board_text = render_board(
-                engine.state, game_def, include_legend=False,
-                kind_symbol_overrides=kind_symbol_overrides,
-                level_def=level_def,
-            )
-            prev_inventory = engine.state.avatar.item if engine.state.avatar.enabled else None
-            prev_status = status_fingerprint(game_def, level_def, engine.state)
+            if observation_interval > 1:
+                submitted_actions.append({k: v for k, v in inp.items() if k != "memory"})
+            else:
+                prev_board_text = render_board(
+                    engine.state, game_def, include_legend=False,
+                    kind_symbol_overrides=kind_symbol_overrides,
+                    level_def=level_def,
+                    randomized_symbols=randomized_symbols,
+                )
+                prev_inventory = engine.state.avatar.item if engine.state.avatar.enabled else None
+                prev_status = status_fingerprint(game_def, level_def, engine.state)
 
             real, schema_error, game_params = resolve(
                 {k: v for k, v in inp.items() if k != "memory"}
@@ -653,6 +748,8 @@ def main() -> None:
                 emit_state()
                 continue
 
+            if observation_interval > 1:
+                submission_outcomes.append("accepted")
             consecutive_schema = consecutive_illegal = 0
             last_action = real
             last_action_label = action_id
@@ -699,7 +796,8 @@ def main() -> None:
 
             if action_id == "give_up":
                 consecutive_schema = consecutive_illegal = 0
-                if mode == "full" or single_attempt:
+                if (mode == "full" or single_attempt
+                    or (args.max_attempts is not None and attempt_number >= max_attempts)):
                     _out(lost_event(_REASON_GIVE_UP))
                     outer_break = True
                 else:
@@ -715,6 +813,7 @@ def main() -> None:
                 engine.state, game_def, include_legend=False,
                 kind_symbol_overrides=kind_symbol_overrides,
                 level_def=level_def,
+                randomized_symbols=randomized_symbols,
             )
             prev_inventory = engine.state.avatar.item if engine.state.avatar.enabled else None
             prev_status = status_fingerprint(game_def, level_def, engine.state)

@@ -120,6 +120,10 @@ def build_prompt(
     image_marks: list[str] | None = None,
     last_action_label: str | None = None,
     no_rules: bool = False,
+    observation_interval: int = 1,
+    observation_actions: tuple[dict, ...] = (),
+    observation_outcomes: tuple[str, ...] = (),
+    board_legend: str = "normal",
 ) -> str:
     """Build the full LLM prompt string matching the Dart runner output.
 
@@ -144,7 +148,12 @@ def build_prompt(
     "The board did not change." is printed only when the board text, the
     inventory and this fingerprint are all unchanged (None skips the status
     comparison).
+    On hidden turns, state and total_actions describe the last observation.
+    observation_actions contains submissions since the previous observation.
+    observation_outcomes is populated only once the observation refreshes.
     """
+    hidden = bool(observation_actions) and not observation_outcomes
+    randomized_symbols = board_legend != "normal"
     if valid_actions is None:
         valid_actions = enumerate_actions(game_def, state)
     if no_rules:
@@ -176,6 +185,7 @@ def build_prompt(
             state, game_def, include_legend=False,
             kind_symbol_overrides=kind_symbol_overrides,
             level_def=level_def,
+            randomized_symbols=randomized_symbols,
         )
         current_inv = state.avatar.item if state.avatar.enabled else None
         board_unchanged = (
@@ -191,11 +201,16 @@ def build_prompt(
         board_text = render_board(
             state,
             game_def,
+            include_legend=not randomized_symbols,
             kind_symbol_overrides=kind_symbol_overrides,
             level_def=level_def,
+            randomized_symbols=randomized_symbols,
         )
     else:
-        board_text = _IMAGE_BOARD_NOTE
+        board_text = (
+            _IMAGE_BOARD_NOTE.replace("current board", "last observed board")
+            if hidden else _IMAGE_BOARD_NOTE
+        )
         if marks_sentence:
             board_text += "\n" + marks_sentence
         if previous_board_text is not None:
@@ -220,13 +235,16 @@ def build_prompt(
     # The inventory holds a kind id; an anonymous prompt shows its alias, as
     # the board and legend do, so the raw kind name never leaks.
     def _shown_item(item):
+        if randomized_symbols:
+            return (kind_symbol_overrides or {}).get(item, "?")
         return kind_to_label.get(item, item) if anonymize else item
 
     inventory_line = f"\nInventory: {_shown_item(inv)}" if inv is not None else ""
 
     moves_line = status_lines(
         game_def, level_def, state,
-        anonymize=anonymize, kind_to_label=kind_to_label,
+        anonymize=anonymize or randomized_symbols,
+        kind_to_label=kind_symbol_overrides if randomized_symbols else kind_to_label,
     )
 
     memory_section = (
@@ -249,7 +267,22 @@ def build_prompt(
             last_action_shown = json.dumps(last_action, sort_keys=True)
 
     # ── Last action section ───────────────────────────────────────────────────
-    if rejected_action is not None:
+    submitted = [json.dumps(action, sort_keys=True) for action in observation_actions]
+    if hidden:
+        action_lines = "\n".join(submitted)
+        last_action_section = (
+            f"LAST OBSERVED BOARD:\n{board_text}{inventory_line}{moves_line}\n\n"
+            f"ACTIONS SUBMITTED SINCE THAT OBSERVATION (outcomes hidden):\n{action_lines}"
+        )
+    elif observation_outcomes:
+        action_lines = "\n".join(
+            f"{action} — {outcome}" for action, outcome in zip(submitted, observation_outcomes)
+        )
+        last_action_section = (
+            f"ACTIONS SUBMITTED SINCE THE PREVIOUS OBSERVATION:\n{action_lines}\n\n"
+            f"CURRENT BOARD (observation updated):\n{board_text}{inventory_line}{moves_line}"
+        )
+    elif rejected_action is not None:
         # The action exactly as submitted (an anonymous label in anon mode).
         rejected_label = json.dumps(
             {k: v for k, v in rejected_action.items() if k != "memory"},
@@ -318,6 +351,10 @@ def build_prompt(
         description_section = f"\n{game_def.description}\n"
     else:
         description_section = ""
+    if randomized_symbols:
+        description_section += _randomized_board_guide(
+            game_def, kind_symbol_overrides or {}, show_legend=board_legend == "shown"
+        )
 
     guide = level_def.get("guide") or ""
     guide_section = (f"\nCURRENT LEVEL GUIDE:\n{guide}\n"
@@ -328,23 +365,30 @@ def build_prompt(
     # image mode already substitutes the board section with a note that
     # references the image.)
     image_note = (
-        "\nThe attached image is a sprite rendering of the current board "
+        f"\nThe attached image is a sprite rendering of the {'last observed' if hidden else 'current'} board "
         "(same state as the text grid above).\n"
         + (marks_sentence + "\n" if marks_sentence else "")
         if (text_board and attach_image) else ""
     )
 
+    cadence = (
+        f"An updated board is shown after every {observation_interval} submitted actions. "
+        "Between updates, use the last observed board and your submitted actions to choose the next action.\n"
+        if observation_interval > 1 else ""
+    )
+    available_actions = "" if hidden else f"AVAILABLE ACTIONS:\n{actions_desc}\n"
+    total_label = "Actions at last observation" if hidden else "Total actions across all attempts"
     header = (
         f"{title_line}\n"
         f"Minimize total actions — give up early if stuck rather than wasting moves.\n"
-        f"Attempt {attempt_number} | Total actions across all attempts: {total_actions}\n"
+        f"Attempt {attempt_number} | {total_label}: {total_actions}\n"
+        f"{cadence}"
         f"{description_section}{guide_section}{memory_section}\n"
         f"GOAL: {goal_descriptions}\n"
         f"{last_action_section}{image_note}\n"
         f"\n"
-        f"{_action_formats(game_def, anonymize)}"
-        f"AVAILABLE ACTIONS:\n"
-        f"{actions_desc}\n"
+        f"{_action_formats(game_def, anonymize, show_available=not hidden)}"
+        f"{available_actions}"
         f'{{"action": "give_up"}} — reset and start a fresh attempt'
     )
 
@@ -363,7 +407,31 @@ def build_prompt(
     return strip_status_prose(prompt) if no_rules else prompt
 
 
-def _action_formats(game_def, anonymize: bool) -> str:
+def _randomized_board_guide(game_def, aliases: dict[str, str], *, show_legend: bool) -> str:
+    guide = {}
+    legend = {}
+    for kind in game_def.entity_kinds:
+        public_kind = game_def.observation_kind(kind)
+        name = game_def.observation_name(public_kind)
+        description = game_def.observation_description(public_kind)
+        guide[public_kind] = f"{name} — {description}" if description else name
+        if kind in aliases:
+            legend[aliases[kind]] = name
+
+    instructions = (
+        "\nBoard symbols are randomized and stay fixed throughout this level and its retries. "
+        "@ is the avatar, and . denotes blank cells. The guide and goal use their original "
+        "names or symbols, which are separate from the randomized board symbols.\n"
+    )
+    kinds = "\n".join(f"- {line}" for line in sorted(guide.values(), key=str.casefold))
+    guide_text = f"PIECE GUIDE:\n{kinds}\n"
+    if show_legend:
+        mappings = "\n".join(f"{symbol} = {name}" for symbol, name in sorted(legend.items()))
+        guide_text += f"BOARD LEGEND:\n{mappings}\n"
+    return instructions + guide_text
+
+
+def _action_formats(game_def, anonymize: bool, *, show_available: bool = True) -> str:
     """Every action type the game declares, with its JSON shape.
 
     AVAILABLE ACTIONS lists only what is legal and effectful right now, so an
@@ -385,9 +453,12 @@ def _action_formats(game_def, anonymize: bool) -> str:
                 shape = f"<{param.get('type')}>"
             parts.append(f"{json.dumps(name)}: {shape}")
         lines.append("{" + ", ".join(parts) + "}")
-    return ("ACTION FORMATS (every action type in this game; one not under "
-            "AVAILABLE ACTIONS would have no effect in the current state):\n"
-            + "\n".join(lines) + "\n\n")
+    heading = (
+        "ACTION FORMATS (every action type in this game; one not under "
+        "AVAILABLE ACTIONS would have no effect in the current state):"
+        if show_available else "ACTION FORMATS (current legality is hidden):"
+    )
+    return heading + "\n" + "\n".join(lines) + "\n\n"
 
 
 def _example_action(action_def: dict, last_value: bool = False) -> dict:

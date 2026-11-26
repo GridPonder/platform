@@ -9,6 +9,33 @@ python3.12 -m venv .venv
   --output tools/benchmark/results/preflight/public.json
 ```
 
+## Observation interval
+
+Use `bench.py --mode single --runner python --observation-interval 2` to
+compare against the default interval of 1. Both runs request one action per
+model call. Interval 2 shows the initial board and refreshes it after every
+two submissions, including rejected actions. Between refreshes, the model
+gets the last observed state and the actions it submitted since then. Current
+legal actions and action outcomes are withheld until the refresh. Wins and
+losses are reported immediately, and a reset starts with a fresh observation.
+Delayed runs record the interval in their result metadata.
+
+## Randomized board legend
+
+Use `--board-legend shown` and `--board-legend hidden` with the same
+`--legend-seed` to compare symbol identification with and without a legend.
+Both conditions use the Python text runner, with identical randomized boards,
+named rules and goals, action formats and legal actions. Symbols stay fixed
+within a level and across retries. The avatar, blank background, and geometric
+markers keep their usual glyphs. Named board annotations and authored failure
+messages are omitted in both conditions to avoid revealing the mapping.
+Engine numeric board values remain visible. Rule and goal text use the
+original vocabulary and a separate symbol alphabet.
+Add `--legend-quiz` for a separate model call after gameplay. It shows the
+opening prompt and the agent's final notes, then asks for the names of the
+opening grid and multi-cell object symbols. The quiz result leaves gameplay
+scoring intact.
+
 ## Model connectors
 
 Models use LiteLLM unless their registry entry sets `connector`. Additional

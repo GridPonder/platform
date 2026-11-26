@@ -148,6 +148,85 @@ def test_a_selection_change_is_not_reported_as_no_change():
     assert "The board did not change." not in prompt, prompt
 
 
+def test_delayed_observation_hides_selection_and_action_outcome_until_refresh():
+    events = _run([{**_SELECT, "memory": "Check selection."}, _LEFT],
+                  "--observation-interval", "2")
+    initial, hidden, refreshed = [event for event in events if event["event"] == "state"]
+    assert [event["observation_fresh"] for event in (initial, hidden, refreshed)] == [
+        True, False, True,
+    ]
+    prompt = hidden["prompt"]
+    assert "LAST OBSERVED BOARD:" in prompt
+    assert "Selected: none" in prompt
+    assert "Selected: Red piece" not in prompt
+    assert "AVAILABLE ACTIONS:" not in prompt
+    assert "Check selection." in prompt
+    assert json.dumps(_SELECT, sort_keys=True) in prompt
+    assert hidden["valid_actions"] == [{"action": "give_up"}]
+    assert "Selected: Red piece" in refreshed["prompt"]
+    assert "BOARD BEFORE:" not in refreshed["prompt"]
+
+
+def test_delayed_observation_counts_rejected_submissions_and_restarts_on_loss():
+    events = _run([_LEFT, _SELECT, _LEFT, _LEFT], "--observation-interval", "2",
+                  "--max-attempts", "2")
+    initial, hidden, refreshed, next_hidden, reset = [
+        event for event in events if event["event"] == "state"
+    ]
+    assert [event["observation_fresh"] for event in
+            (initial, hidden, refreshed, next_hidden, reset)] == [True, False, True, False, True]
+    assert "REJECTED" not in hidden["prompt"]
+    assert "rejected (" not in hidden["prompt"]
+    assert "rejected (move is not legal in this state)" in refreshed["prompt"]
+    assert "PREVIOUS ATTEMPT: lost" in reset["prompt"]
+    assert "Selected: none" in reset["prompt"]
+    assert "ACTIONS SUBMITTED SINCE" not in reset["prompt"]
+
+
+def test_randomized_board_legend_is_the_only_difference_between_conditions():
+    actions = [_SELECT, _LEFT, _LEFT]
+    options = ("--max-attempts", "2", "--legend-seed", "29")
+    shown = _run(actions, *options, "--board-legend", "shown", description="Red piece lost")
+    hidden = _run(actions, *options, "--board-legend", "hidden", description="Red piece lost")
+    assert len(shown) == len(hidden)
+
+    alias = None
+    for left, right in zip(shown, hidden):
+        if left["event"] != "state":
+            assert left == right
+            continue
+        header, body = left["prompt"].split("BOARD LEGEND:\n", 1)
+        legend, board = body.split("\n\nGOAL:", 1)
+        assert header + "\nGOAL:" + board == right["prompt"]
+        assert "PIECE GUIDE:" in right["prompt"]
+        assert "BOARD LEGEND:" not in right["prompt"]
+        if alias is None:
+            alias = next(row.split(" = ")[0] for row in legend.splitlines()
+                         if row.endswith(" = Red piece"))
+        assert f"{alias} = Red piece" in legend
+        assert f"{alias} = Red piece" not in right["prompt"]
+    assert "Selected: Red piece" not in hidden[1]["prompt"]
+    assert f"Selected: {alias}" in hidden[1]["prompt"]
+    assert "PREVIOUS ATTEMPT: lost — move limit of 2 reached" in hidden[-1]["prompt"]
+
+
+def test_randomized_board_legend_changes_symbols_with_seed():
+    first = _run([], "--board-legend", "shown", "--legend-seed", "29")[0]["prompt"]
+    second = _run([], "--board-legend", "shown", "--legend-seed", "30")[0]["prompt"]
+    assert first.split("CURRENT BOARD", 1)[1].splitlines()[1] != (
+        second.split("CURRENT BOARD", 1)[1].splitlines()[1]
+    )
+
+
+def test_legend_answers_are_available_only_after_gameplay():
+    events = _run([{"action": "give_up", "memory": "I found the wall."}],
+                  "--board-legend", "hidden", "--legend-quiz", "--single-attempt")
+    initial, terminal = events
+    assert "legend_answers" not in initial
+    assert set(terminal["legend_answers"].values()) == {"wall", "Red piece"}
+    assert terminal["legend_memory"] == "I found the wall."
+
+
 _STAMP_GAME = {
     "layers": [
         {"id": "ground", "occupancy": "exactly_one", "default": "empty"},
