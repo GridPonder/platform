@@ -36,7 +36,7 @@ import sys
 sys.path.insert(0, str(SCRIPT_DIR.parent.parent))
 from engines.python.level_metrics import playable_cell_count
 sys.path.insert(0, str(SCRIPT_DIR))
-from run_protocol import CONDITION_DEFAULTS, run_condition
+from run_protocol import CONDITION_FIELDS, run_condition
 
 _level_metrics_cache: dict[tuple[str, str], dict[str, Any]] = {}
 
@@ -61,8 +61,9 @@ def level_metrics(pack_id: str, level_id: str) -> dict[str, Any]:
 def load_results(results_dir: Path, mode_filter: str | None = None) -> dict[str, dict]:
     """Load all JSONL files. Returns {key: {meta, levels: [...]}}.
 
-    Group by model and run condition (run_protocol.CONDITION_DEFAULTS), so runs
-    with and without rules, or under different attempt policies, never pool.
+    Group by model and run condition (run_protocol.CONDITION_FIELDS), so runs
+    with and without rules, under different attempt policies or with different
+    batch limits never pool.
     mode_filter restricts to a single inference mode if given.
     Missing inference_mode is treated as "single" for backwards compatibility.
     """
@@ -262,7 +263,7 @@ def build_leaderboard(data: dict[str, dict]) -> dict:
     models_out: list[dict] = []
     # Compact columnar per-level rows (used by the analytic charts).
     # New condition settings are appended, so existing column positions hold.
-    extra_conditions = [name for name in CONDITION_DEFAULTS
+    extra_conditions = [name for name in CONDITION_FIELDS
                         if name not in ("inference_mode", "anon", "input_mode",
                                         "observation_interval", "board_legend")]
     level_cols = ["model_id", "pack_id", "level_id", "gold_path_length", "success", "inference_mode", "anon", "playable_cells", "input_mode", "observation_interval", "board_legend", *extra_conditions]

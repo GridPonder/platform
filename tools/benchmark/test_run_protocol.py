@@ -63,3 +63,45 @@ def test_resume_does_not_reuse_a_result_from_another_give_up_policy(tmp_path):
     assert load_completed(tmp_path, {**default, "give_up_uses_attempt": True}) == set()
     assert load_completed(tmp_path, {**default, "no_rules": True}) == set()
     assert load_completed(tmp_path, {**default, "max_attempts": 1}) == set()
+
+
+def test_flex_n_caps_are_part_of_the_protocol(tmp_path):
+    flex = {"inference_mode": "flex-n", "anon": False, "input_mode": "text"}
+    _write_run(tmp_path / "cap2.jsonl", {**flex, "max_n": 2, "flex_penalty": 0.5}, success=True)
+    done = ("m1", "carrot_quest", "fw_001")
+
+    assert load_completed(tmp_path, {**flex, "max_n": 2}) == {done}
+    assert load_completed(tmp_path, {**flex, "max_n": 5}) == set()
+    assert load_completed(tmp_path, {**flex, "max_n": 2, "flex_penalty": 0.25}) == set()
+
+    _write_run(tmp_path / "cap5.jsonl", {**flex, "max_n": 5, "flex_penalty": 0.5}, success=False)
+    board = aggregate.build_leaderboard(aggregate.load_results(tmp_path))
+    assert sorted((m["max_n"], m["overall"]["success_rate"]) for m in board["models"]) == [
+        (2, 1.0), (5, 0.0)]
+
+
+def test_batch_settings_only_count_for_their_own_mode():
+    # A stray flex-n value on a single-mode run does not split it off.
+    assert run_condition({"inference_mode": "single", "max_n": 4}) == run_condition({})
+    assert run_condition({"inference_mode": "fixed-n"})["step_size"] == 3
+    assert run_condition({"inference_mode": "flex-n"})["flex_penalty"] == 0.5
+
+
+def test_run_queue_records_the_batch_settings_it_resumes_on(tmp_path):
+    from types import SimpleNamespace
+    from run_queue import build_run_meta, filter_completed
+
+    item = SimpleNamespace(full_variant_id="m1", model={"display_name": "M"}, variant={},
+                           connector="litellm", connector_model="x", concurrency_group="g",
+                           mode="flex-n", anon=False, input_mode="text", max_n=2,
+                           pack_id="carrot_quest", level_id="fw_001")
+    args = SimpleNamespace(attempt_multiplier=2, total_multiplier=4, action_timeout=None,
+                           run_id="r", flex_penalty=0.5)
+    meta = build_run_meta(item, args)
+    assert (meta["max_n"], meta["flex_penalty"]) == (2, 0.5)
+
+    _write_run(tmp_path / "run.jsonl", {k: v for k, v in meta.items() if k != "type"},
+               success=True)
+    assert filter_completed([item], scan_dir=tmp_path) == []
+    item5 = SimpleNamespace(**{**vars(item), "max_n": 5})
+    assert filter_completed([item5], scan_dir=tmp_path) == [item5]

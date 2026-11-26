@@ -51,7 +51,7 @@ from agent_client import call_llm, extract_action, extract_action_lenient, extra
 LENIENT_PARSE = os.environ.get("GRIDPONDER_LENIENT_PARSE", "") not in ("", "0")
 PARSE_RETRIES = int(os.environ.get("GRIDPONDER_PARSE_RETRIES", "0") or 0)
 from connector_api import estimate_cost
-from run_protocol import run_protocol
+from run_protocol import batch_settings, run_protocol
 from instructions import (
     InstructionPayload,
     compose_study_prompt,
@@ -1033,6 +1033,7 @@ def main() -> None:
         **({"give_up_uses_attempt": True} if args.give_up_uses_attempt else {}),
         "single_attempt": args.single_attempt,
         "input_mode": args.input,
+        **batch_settings(args.mode, args.max_n, args.flex_penalty, args.step_size),
     }
 
     if args.resume:
@@ -1166,11 +1167,6 @@ def main() -> None:
             "run_id": run_id,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        if args.mode == "fixed-n":
-            run_meta["step_size"] = args.step_size
-        elif args.mode == "flex-n":
-            run_meta["max_n"] = args.max_n
-            run_meta["flex_penalty"] = args.flex_penalty
 
         with open(out_file, "w") as fout:
             fout.write(json.dumps(run_meta) + "\n")
