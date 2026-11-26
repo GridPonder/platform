@@ -401,3 +401,19 @@ if __name__ == "__main__":
                 failed += 1
                 print(f"  FAIL  {name}: {exc}")
     sys.exit(1 if failed else 0)
+
+
+def test_give_up_resets_for_free_unless_it_uses_an_attempt():
+    give_up = {"action": "give_up"}
+    # Default: --max-attempts alone keeps the historical protocol, so a give_up
+    # on the last attempt resets and the prompt wording is unchanged.
+    plain = _run([give_up], "--max-attempts", "1")
+    assert [e["event"] for e in plain] == ["state", "reset", "state"]
+    assert "You have up to" not in plain[0]["prompt"]
+
+    # Opt-in: the allowance is stated and the last attempt's give_up loses.
+    counted = _run([give_up, give_up], "--max-attempts", "2", "--give-up-uses-attempt")
+    events = [e["event"] for e in counted]
+    assert events[-1] == "lost"
+    assert events.count("reset") == 1
+    assert "You have up to 2 attempts on this level." in counted[0]["prompt"]

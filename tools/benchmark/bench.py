@@ -176,6 +176,7 @@ def run_level(
     no_rules: bool = False,
     max_attempts: int | None = None,
     full_attempts: bool = False,
+    give_up_uses_attempt: bool = False,
     runner: str = "auto",
     input_mode: str = "text",
     packs_dir: Path = PACKS_DIR,
@@ -212,7 +213,8 @@ def run_level(
     validate_board_legend(board_legend, anon, no_rules, input_mode, runner)
     if legend_quiz and board_legend == "normal":
         raise ValueError("--legend-quiz requires a shown or hidden board legend")
-    if input_mode != "text" or no_rules or observation_interval > 1 or board_legend != "normal":
+    if (input_mode != "text" or no_rules or observation_interval > 1
+            or board_legend != "normal" or give_up_uses_attempt):
         use_python = True
     else:
         use_python = runner == "python" or (runner == "auto" and not RUNNER_BIN.exists())
@@ -262,6 +264,8 @@ def run_level(
         cmd += ["--max-attempts", str(max_attempts)]
     if full_attempts:
         cmd += ["--full-attempts"]
+    if give_up_uses_attempt:
+        cmd += ["--give-up-uses-attempt"]
     if observation_interval > 1:
         cmd += ["--observation-interval", str(observation_interval)]
     if board_legend != "normal":
@@ -947,6 +951,10 @@ def main() -> None:
     parser.add_argument("--full-attempts", action="store_true",
                         help="Each attempt gets the level's own move limit and the run's "
                              "total is their sum (instead of gold-path multipliers)")
+    parser.add_argument("--give-up-uses-attempt", action="store_true",
+                        help="Count a give_up against --max-attempts: giving up on the last "
+                             "attempt ends the run, and the prompt states the allowance "
+                             "(Python runner only)")
     parser.add_argument("--no-rules", action="store_true",
                         help="Real board, symbols, kind names and actions, but no rule "
                              "text (game description, kind descriptions, goal prose, "
@@ -1166,6 +1174,7 @@ def main() -> None:
             **({"no_rules": True} if args.no_rules else {}),
             **({"max_attempts": args.max_attempts} if args.max_attempts is not None else {}),
             **({"full_attempts": True} if args.full_attempts else {}),
+            **({"give_up_uses_attempt": True} if args.give_up_uses_attempt else {}),
             "single_attempt": args.single_attempt,
             "input_mode": args.input,
             "attempt_multiplier": args.attempt_multiplier,
@@ -1202,6 +1211,7 @@ def main() -> None:
                         no_rules=args.no_rules,
                         max_attempts=args.max_attempts,
                         full_attempts=args.full_attempts,
+                        give_up_uses_attempt=args.give_up_uses_attempt,
                         observation_interval=args.observation_interval,
                         board_legend=args.board_legend,
                         legend_seed=args.legend_seed,

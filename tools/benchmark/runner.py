@@ -177,6 +177,15 @@ def main() -> None:
              "resetting the board, and the prompt tells the agent so.",
     )
     parser.add_argument(
+        "--give-up-uses-attempt",
+        action="store_true",
+        default=False,
+        help="Count a voluntary give_up against --max-attempts: giving up on "
+             "the last attempt ends the run as a loss, and the prompt states "
+             "the attempt allowance. Without this a give_up resets for free "
+             "and only the total budget ends the run.",
+    )
+    parser.add_argument(
         "--max-attempts",
         type=int,
         default=None,
@@ -474,9 +483,9 @@ def main() -> None:
             observation_outcomes=observation_outcomes,
             board_legend=board_legend,
         )
-        if single_attempt or (args.max_attempts is not None and max_attempts == 1):
+        if single_attempt or (args.give_up_uses_attempt and max_attempts == 1):
             prompt = _single_attempt_prompt(prompt)
-        elif args.max_attempts is not None:
+        elif args.give_up_uses_attempt:
             discovery_instruction = (
                 "Use observations to infer the rules and revise your plan when an attempt fails. "
                 if no_rules else ""
@@ -703,7 +712,7 @@ def main() -> None:
 
             if action_id == "give_up":
                 consecutive_schema = consecutive_illegal = 0
-                if single_attempt or (args.max_attempts is not None and attempt_number >= max_attempts):
+                if single_attempt or (args.give_up_uses_attempt and attempt_number >= max_attempts):
                     _out(lost_event(_REASON_GIVE_UP))
                     break
                 give_up_count += 1
@@ -797,7 +806,7 @@ def main() -> None:
             if action_id == "give_up":
                 consecutive_schema = consecutive_illegal = 0
                 if (mode == "full" or single_attempt
-                    or (args.max_attempts is not None and attempt_number >= max_attempts)):
+                    or (args.give_up_uses_attempt and attempt_number >= max_attempts)):
                     _out(lost_event(_REASON_GIVE_UP))
                     outer_break = True
                 else:

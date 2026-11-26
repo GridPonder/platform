@@ -20,6 +20,14 @@ legal actions and action outcomes are withheld until the refresh. Wins and
 losses are reported immediately, and a reset starts with a fresh observation.
 Delayed runs record the interval in their result metadata.
 
+## Attempt allowance
+
+`--max-attempts N` lets a lost attempt reset the board until N attempts are
+used. A `give_up` still resets for free; only the total budget ends the run.
+Add `--give-up-uses-attempt` (Python runner) to count a `give_up` against the
+allowance as well: giving up on the last attempt ends the run as a loss, and
+the prompt states how many attempts the level allows.
+
 ## Randomized board legend
 
 Use `--board-legend shown` and `--board-legend hidden` with the same
