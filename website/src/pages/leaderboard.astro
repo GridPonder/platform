@@ -22,6 +22,43 @@ if (existsSync(leaderboardPath)) {
       : null;
 }
 
+// The page compares models under one condition per view (mode, anon, input).
+// Experimental conditions recorded by aggregate.py (rules withheld, delayed
+// observations, randomized legends, attempt policies) are left out, and for
+// each mode only the most common batch setting is kept, so rows, baselines
+// and charts never mix conditions. Missing fields mean the default.
+const EXPERIMENTAL_DEFAULTS: Record<string, unknown> = {
+  no_rules: false,
+  observation_interval: 1,
+  board_legend: 'normal',
+  single_attempt: false,
+  max_attempts: 1,
+  full_attempts: false,
+  give_up_uses_attempt: false,
+};
+const BATCH_FIELDS = ['step_size', 'max_n', 'flex_penalty'];
+const isStandard = (entry: Record<string, unknown>) =>
+  Object.entries(EXPERIMENTAL_DEFAULTS).every(([field, fallback]) =>
+    (entry[field] ?? fallback) === fallback);
+const batchKey = (entry: Record<string, unknown>) =>
+  `${entry.inference_mode}|${BATCH_FIELDS.map(f => String(entry[f] ?? null)).join('|')}`;
+
+const standardModels = models.filter(isStandard);
+const batchCounts = new Map<string, number>();
+for (const m of standardModels) batchCounts.set(batchKey(m), (batchCounts.get(batchKey(m)) ?? 0) + 1);
+const shownBatch = new Map<string, string>();
+for (const [key, count] of batchCounts) {
+  const mode = key.split('|')[0];
+  const best = shownBatch.get(mode);
+  if (best === undefined || count > (batchCounts.get(best) ?? 0)) shownBatch.set(mode, key);
+}
+const isShown = (entry: Record<string, unknown>) =>
+  isStandard(entry) && shownBatch.get(String(entry.inference_mode)) === batchKey(entry);
+const hiddenGroups = models.length - models.filter(isShown).length;
+models = models.filter(isShown);
+levelResults = levelResults.filter(row =>
+  isShown(Object.fromEntries(levelResultsCols.map((c, i) => [c, row[i]]))));
+
 // All pack IDs across all entries (union, for table columns)
 const allPacks = [...new Set(models.flatMap((m: any) => Object.keys(m.by_pack ?? {})))].sort() as string[];
 
@@ -30,7 +67,9 @@ const allPacksJson = JSON.stringify(allPacks);
 const levelResultsJson = JSON.stringify({ columns: levelResultsCols, rows: levelResults });
 const reportTitle = 'AI Leaderboard';
 const reportDescription = 'Results on public example games across interaction modes and input modalities.';
-const reportNotice = '';
+const reportNotice = hiddenGroups > 0
+  ? `${hiddenGroups} result group${hiddenGroups === 1 ? ' was' : 's were'} run under experimental or non-standard settings and ${hiddenGroups === 1 ? 'is' : 'are'} not shown here.`
+  : '';
 const reportModelDescription = 'Models included in this report are listed in the rankings below.';
 ---
 <Base
