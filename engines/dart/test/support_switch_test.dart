@@ -6,7 +6,7 @@ import 'package:test/test.dart';
 Map<String, dynamic> _kind(String layer, List<String> tags, String symbol) =>
     {'layer': layer, 'tags': tags, 'symbol': symbol};
 
-GameDefinition _game() {
+GameDefinition _game([Map<String, String>? pressed]) {
   const member = ['solid', 'walkable', 'supported'];
   return GameDefinition.fromJson({
     'layers': [
@@ -49,7 +49,7 @@ GameDefinition _game() {
           'deflect': {'slope_left': 'left', 'slope_right': 'right'},
           'switches': {
             'plateLayer': 'marks',
-            'pressed': {'chute_l': 'chute_r', 'clamp': 'clamp_open'},
+            'pressed': pressed ?? {'chute_l': 'chute_r', 'clamp': 'clamp_open'},
           },
         },
       },
@@ -274,6 +274,40 @@ void main() {
       expect(result.newState.board.getEntity('ground', const Position(3, 5))?.kind,
           'wreck');
       expect(kind(engine, 3, 2), 'hull');
+    });
+  });
+
+  group('switch map', () {
+    // A released cell must come back as the kind it was.
+    TurnEngine engineWith(Map<String, String> pressed) {
+      final bad = _game(pressed);
+      return TurnEngine(
+        bad,
+        _level(bad, _fork, [
+          _at(1, 5, 'plate', {'channel': 1}),
+        ], [2, 0]),
+      );
+    }
+
+    Matcher failsWith(String text) => throwsA(
+          isA<FormatException>()
+              .having((e) => e.message, 'message', contains(text)),
+        );
+
+    test('two released kinds cannot share a pressed kind', () {
+      final engine = engineWith({'chute_l': 'chute_r', 'clamp': 'chute_r'});
+      expect(
+        () => engine.executeTurn(_cut('down')),
+        failsWith("maps both 'chute_l' and 'clamp' to 'chute_r'"),
+      );
+    });
+
+    test('a kind cannot be both released and pressed', () {
+      final engine = engineWith({'chute_l': 'chute_r', 'chute_r': 'chute_l'});
+      expect(
+        () => engine.executeTurn(_cut('down')),
+        failsWith('both a released and a pressed kind'),
+      );
     });
   });
 }

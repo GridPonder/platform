@@ -33,6 +33,30 @@ class SupportCollapseSystem(GameSystem):
         super().__init__(sys_id, "support_collapse")
         self.config = config or {}
 
+    @staticmethod
+    def _switch_kinds(sw: dict) -> tuple[dict, dict]:
+        """The `pressed` map and its reverse.
+
+        A released cell must come back as the kind it was, so the map must be
+        one-to-one, and no kind may be both a released and a pressed form (a
+        pressed cell would otherwise switch again on every pass).
+        """
+        to_pressed = {str(k): str(v) for k, v in (sw.get("pressed") or {}).items()}
+        to_released: dict = {}
+        for released, pressed in to_pressed.items():
+            if pressed in to_released:
+                raise ValueError(
+                    f"support_collapse switches.pressed maps both "
+                    f"'{to_released[pressed]}' and '{released}' to '{pressed}'; "
+                    "each pressed kind needs exactly one released kind")
+            to_released[pressed] = released
+        both = sorted(set(to_pressed) & set(to_released))
+        if both:
+            raise ValueError(
+                "support_collapse switches.pressed uses "
+                f"{', '.join(repr(k) for k in both)} as both a released and a pressed kind")
+        return to_pressed, to_released
+
     # ── config ──────────────────────────────────────────────────────────────
     def _cfg(self, game: GameDef) -> dict:
         return self.config or game.system_config(self.id)
@@ -269,8 +293,8 @@ class SupportCollapseSystem(GameSystem):
         press_layers = config_list(sw, "pressLayers", [layer_id])
         press_tags = config_list(sw, "pressTags", ["solid"])
         ch = sw.get("channelParam", "channel")
-        to_pressed = {str(k): str(v) for k, v in (sw.get("pressed") or {}).items()}
-        switch_kinds = set(to_pressed) | set(to_pressed.values())
+        to_pressed, to_released = self._switch_kinds(sw)
+        switch_kinds = set(to_pressed) | set(to_released)
         lines: list[str] = []
         for y in range(board.height):
             for x in range(board.width):
@@ -457,8 +481,7 @@ class SupportCollapseSystem(GameSystem):
         press_layers = config_list(sw, "pressLayers", [layer_id])
         press_tags = config_list(sw, "pressTags", ["solid"])
         ch = sw.get("channelParam", "channel")
-        to_pressed = {str(k): str(v) for k, v in (sw.get("pressed") or {}).items()}
-        to_released = {v: k for k, v in to_pressed.items()}
+        to_pressed, to_released = self._switch_kinds(sw)
 
         pressed: set = set()
         for y in range(board.height):

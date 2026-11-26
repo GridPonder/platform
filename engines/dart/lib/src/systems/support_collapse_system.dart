@@ -44,6 +44,35 @@ class SupportCollapseSystem extends GameSystem {
     Position(1, 1),
   ];
 
+  /// The `pressed` map and its reverse. Mirrors Python `_switch_kinds`.
+  ///
+  /// A released cell must come back as the kind it was, so the map must be
+  /// one-to-one, and no kind may be both a released and a pressed form (a
+  /// pressed cell would otherwise switch again on every pass).
+  static ({Map<String, String> toPressed, Map<String, String> toReleased})
+      _switchKinds(Map sw) {
+    final toPressed = (sw['pressed'] as Map? ?? const {})
+        .map((k, v) => MapEntry(k.toString(), v.toString()));
+    final toReleased = <String, String>{};
+    for (final MapEntry(key: released, value: pressed) in toPressed.entries) {
+      final other = toReleased[pressed];
+      if (other != null) {
+        throw FormatException(
+            "support_collapse switches.pressed maps both '$other' and "
+            "'$released' to '$pressed'; each pressed kind needs exactly one "
+            'released kind');
+      }
+      toReleased[pressed] = released;
+    }
+    final both = toPressed.keys.where(toReleased.containsKey).toList()..sort();
+    if (both.isNotEmpty) {
+      throw FormatException('support_collapse switches.pressed uses '
+          "${both.map((k) => "'$k'").join(', ')} as both a released and a "
+          'pressed kind');
+    }
+    return (toPressed: toPressed, toReleased: toReleased);
+  }
+
   Map<String, dynamic> _cfg(GameDefinition game) =>
       config ?? game.systemConfig(id, {});
 
@@ -204,9 +233,7 @@ class SupportCollapseSystem extends GameSystem {
       final entity = layer.getAt(p)!;
       final left = endurance(p) - 1 < 0 ? 0 : endurance(p) - 1;
       layer.setAt(
-          p,
-          EntityInstance(
-              entity.kind, {...entity.params, endParam: left}));
+          p, EntityInstance(entity.kind, {...entity.params, endParam: left}));
     }
 
     var avatarPos = state.avatar.enabled ? state.avatar.position : null;
@@ -495,13 +522,12 @@ class SupportCollapseSystem extends GameSystem {
     final targetId = sw['switchLayer'] as String? ?? layerId;
     final board = state.board;
     final target = board.layers[targetId];
-    if (target == null || board.layers[sw['plateLayer'] as String? ?? layerId] == null) {
+    if (target == null ||
+        board.layers[sw['plateLayer'] as String? ?? layerId] == null) {
       return const [];
     }
     final ch = sw['channelParam'] as String? ?? 'channel';
-    final toPressed = (sw['pressed'] as Map? ?? const {})
-        .map((k, v) => MapEntry(k.toString(), v.toString()));
-    final toReleased = toPressed.map((k, v) => MapEntry(v, k));
+    final (:toPressed, :toReleased) = _switchKinds(sw);
     final pressed = _pressedChannels(state, game, cfg);
     final events = <GameEvent>[];
     for (var y = 0; y < board.height; y++) {
@@ -537,9 +563,8 @@ class SupportCollapseSystem extends GameSystem {
     final pressLayers = _stringList(sw['pressLayers'], [layerId]);
     final pressTags = _stringList(sw['pressTags'], const ['solid']);
     final ch = sw['channelParam'] as String? ?? 'channel';
-    final toPressed = (sw['pressed'] as Map? ?? const {})
-        .map((k, v) => MapEntry(k.toString(), v.toString()));
-    final switchKinds = {...toPressed.keys, ...toPressed.values};
+    final (:toPressed, :toReleased) = _switchKinds(sw);
+    final switchKinds = {...toPressed.keys, ...toReleased.keys};
     final lines = <String>[];
     for (var y = 0; y < board.height; y++) {
       for (var x = 0; x < board.width; x++) {

@@ -1357,7 +1357,7 @@ cells while something rests on them:
 | `pressTags` | array of strings | `["solid"]` | A plate is pressed while a cell carrying one of these tags sits on its position in a `pressLayers` layer. |
 | `switchLayer` | string | `layer` | Layer holding the switched cells. |
 | `channelParam` | string | `"channel"` | Instance param linking plates to switched cells. Cells and plates without it share the `null` channel. |
-| `pressed` | object | `{}` | Map of released kind → pressed kind. |
+| `pressed` | object | `{}` | Map of released kind → pressed kind. It must be one-to-one, and no kind may appear as both a released and a pressed kind, so a released cell always returns to the kind it was; both engines reject other maps. |
 
 - **Rule.** A channel is pressed while any of its plates is pressed. Every cell
   on `switchLayer` whose kind is a key of `pressed` and whose channel is

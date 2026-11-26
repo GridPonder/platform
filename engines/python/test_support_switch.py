@@ -23,7 +23,7 @@ def _kind(layer: str, tags: list[str], symbol: str) -> dict:
     return {"layer": layer, "tags": tags, "symbol": symbol}
 
 
-def _game() -> GameDef:
+def _game(pressed: dict | None = None) -> GameDef:
     member = ["solid", "walkable", "supported"]
     return GameDef.from_dict(
         {
@@ -67,7 +67,7 @@ def _game() -> GameDef:
                         "deflect": {"slope_left": "left", "slope_right": "right"},
                         "switches": {
                             "plateLayer": "marks",
-                            "pressed": {"chute_l": "chute_r", "clamp": "clamp_open"},
+                            "pressed": pressed or {"chute_l": "chute_r", "clamp": "clamp_open"},
                         },
                     },
                 },
@@ -233,3 +233,19 @@ class TripClampTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SwitchMapTest(unittest.TestCase):
+    """A released cell must come back as the kind it was."""
+
+    def test_two_released_kinds_cannot_share_a_pressed_kind(self):
+        engine = TurnEngine(_game({"chute_l": "chute_r", "clamp": "chute_r"}),
+                            _level(_FORK, [_at(1, 5, "plate", channel=1)], [2, 0]))
+        with self.assertRaisesRegex(ValueError, "maps both 'chute_l' and 'clamp' to 'chute_r'"):
+            engine.execute_turn("cut", {"direction": "down"})
+
+    def test_a_kind_cannot_be_both_released_and_pressed(self):
+        engine = TurnEngine(_game({"chute_l": "chute_r", "chute_r": "chute_l"}),
+                            _level(_FORK, [_at(1, 5, "plate", channel=1)], [2, 0]))
+        with self.assertRaisesRegex(ValueError, "both a released and a pressed kind"):
+            engine.execute_turn("cut", {"direction": "down"})
