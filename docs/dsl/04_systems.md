@@ -1173,11 +1173,12 @@ components. A structure is held up by cells tagged as roots; after any cell is
 removed, every maximal group of member cells that can no longer reach a root is
 an orphan and falls, keeping its exact shape.
 
-**Phase:** `action_resolution` (the sever verb) and `cascade_resolution`
-(event-driven recompute)
+**Phase:** `action_resolution` (the sever verb), `cascade_resolution`
+(event-driven recompute) and `npc_resolution` (fuses and strain, only when
+`fuse` or `strain` is set)
 
 **Events emitted:** `cell_cleared`, `object_settled`, `variable_changed`,
-`action_vetoed`
+`action_vetoed`, and with `fuse` or `switches` set, `cell_transformed`
 
 **Config:**
 
@@ -1197,6 +1198,9 @@ an orphan and falls, keeping its exact shape.
 | `carryAvatar` | boolean | `true` | Whether the avatar rides the component it is standing on. |
 | `avatarFellVariable` | string | — | Variable incremented when the avatar rides a component down. Pair with a [`variable_threshold`](03_levels.md#variable_threshold) lose condition. |
 | `triggerEvents` | array of strings | `[]` | Event types that trigger a cascade-phase recompute. Empty disables the cascade path. |
+| `strain` | object | — | Load limits. Omit to disable. See [Strain](#strain) below. |
+| `fuse` | object | — | Cells that burn away on a delay. Omit to disable. See [Fuses](#fuse) below. |
+| `switches` | object | — | Load-operated cells: plates that change linked cells while weighted. Omit to disable. See [Switches](#switches) below. |
 
 **Behavior:**
 1. On the sever action, resolve the target cell. The action may name it either
@@ -1239,6 +1243,50 @@ an orphan and falls, keeping its exact shape.
 **Clearing on an `exactly_one` layer** writes that layer's declared `default`
 kind, not an empty cell.
 
+<a id="strain"></a>
+**Strain (load limits).** With `strain` set, cells carrying one of its tags have
+a load limit and give way on their own when it is exceeded for long enough:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `tags` | array of strings | `["load_limited"]` | Cells with a load limit. They are ordinary structure otherwise (normally also `memberTags`; a root may carry one too). Leave them out of `severableTags` to make strain the only way to remove them. |
+| `capacityParam` | string | `"capacity"` | Instance param holding the limit. A cell without an integer value here has no limit. |
+| `enduranceParam` | string | `"endurance"` | Instance param holding the turns of overload the cell can still take. Written back as it wears. |
+| `endurance` | integer | `0` | Endurance for cells that do not set `enduranceParam`. |
+
+- **Load.** A cell's load is the number of member cells that are supported now
+  but would not be if that cell were removed — everything that hangs *only*
+  through it. Cells sharing a load carry none of it between them: two supports
+  under one span each carry 0 until the other is gone.
+- **Wear.** Once per accepted turn, in `npc_resolution`, every load-limited cell
+  whose load exceeds its capacity loses 1 endurance (never below 0). Walking,
+  waiting and cutting elsewhere all count; a vetoed action does not. Wear is
+  permanent: taking the load off stops it but restores nothing.
+- **Failure.** Then every overloaded cell at 0 endurance fails at once: it is
+  removed (emitting `cell_cleared`), the structure collapses exactly as after a
+  sever, and loads are recomputed. This repeats, without further wear, until
+  nothing else fails — so a cell already at 0 gives way in the same turn a
+  failure overloads it, while a cell with endurance left only starts counting.
+  Failures in one pass are resolved in row-major order.
+- An avatar standing on a cell that fails falls with it: `avatarFellVariable` is
+  incremented, like riding a component down.
+- Rules see the resulting `cell_cleared` / `object_settled` events in the pass
+  that follows NPC resolution.
+- **Observation.** Named-mode text observations get a status block listing
+  every load-limited cell with its capacity and remaining endurance. Pair the
+  kind with `symbolParam` on the capacity so anonymous mode shows the limit too,
+  and with a `{capacity}_{endurance}` sprite path (see
+  [`spriteParam`](02_game.md#entity-kinds)) so the board shows both.
+
+```json
+"strain": {
+  "tags": ["load_limited"],
+  "capacityParam": "capacity",
+  "enduranceParam": "endurance",
+  "endurance": 3
+}
+```
+
 Example:
 
 ```json
@@ -1262,13 +1310,105 @@ Example:
 }
 ```
 
+<a id="fuse"></a>
+**Fuses (delayed severing).** With `fuse` set, severing certain cells lights
+them instead of removing them, and a lit cell burns away later, lighting its
+neighbours as it goes:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `ignite` | object | `{}` | Map of unlit kind → lit kind. A cell of an unlit kind is lit (transformed to its lit kind) when severed, or when a neighbouring lit cell burns. Both kinds are normally `memberTags` structure; leave the lit kind out of `severableTags`. |
+| `delayParam` | string | `"delay"` | Instance param on a lit cell holding the turns left before it burns. |
+| `delay` | integer | `1` | Delay given to a cell lit by the sever action. |
+
+- **Lighting.** The sever action on an `ignite` kind transforms the cell to its
+  lit kind with `delay` and emits `cell_transformed`. Nothing is removed, so
+  nothing collapses.
+- **Burning.** Once per accepted turn, at the start of `npc_resolution` (before
+  strain), every lit cell with a delay above 0 loses 1. Every lit cell already at
+  0 burns: it is removed (`cell_cleared`), and every `ignite` cell touching it
+  (by `connectivity`) is lit with delay 0, emitting `cell_transformed`. Cells lit
+  this way burn on the next turn, not this one, so a run burns one cell per turn
+  and a fork burns both branches together. Then the structure collapses once.
+- With the default `delay` of 1, a cell lit on turn *t* burns at the end of turn
+  *t*+1, and the *n*th cell of a run at the end of turn *t*+*n*.
+- A lit cell is still structure until it burns: it holds, carries load and can
+  be stood on. An avatar standing on a cell when it burns falls
+  (`avatarFellVariable` is incremented). A lit cell that falls is settled like
+  any other (`settleTransform`) and burns only if it is still a lit kind.
+- Strain wear in the same turn sees the board after the burn, so a burn that
+  hands a load to a load-limited cell costs it endurance that same turn.
+- **Observation.** Named-mode text observations list every lit cell with the
+  number of turns until it burns.
+
+```json
+"fuse": { "ignite": { "fuse": "fuse_lit" }, "delay": 1 }
+```
+
+<a id="switches"></a>
+**Switches (load-operated cells).** With `switches` set, plates change other
+cells while something rests on them:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `plateLayer` | string | `layer` | Layer holding the plates. |
+| `plateTags` | array of strings | `["plate"]` | Tags marking a plate. |
+| `pressLayers` | array of strings | `[layer]` | Layers checked for what is on a plate. |
+| `pressTags` | array of strings | `["solid"]` | A plate is pressed while a cell carrying one of these tags sits on its position in a `pressLayers` layer. |
+| `switchLayer` | string | `layer` | Layer holding the switched cells. |
+| `channelParam` | string | `"channel"` | Instance param linking plates to switched cells. Cells and plates without it share the `null` channel. |
+| `pressed` | object | `{}` | Map of released kind → pressed kind. |
+
+- **Rule.** A channel is pressed while any of its plates is pressed. Every cell
+  on `switchLayer` whose kind is a key of `pressed` and whose channel is
+  pressed takes the mapped kind; every cell of a mapped kind whose channel is
+  not pressed reverts. Each change emits `cell_transformed`; params are kept.
+- **When.** Switches update at the start of every collapse (so a cut, a burn or
+  a strain failure that empties a plate releases it at once), and again after
+  each falling component lands, before the next component is resolved. Since
+  components are resolved furthest along the fall direction first, one release
+  can drop a weight onto a plate and route a higher piece through the switched
+  cell in the same turn.
+- **Switched supports (cascades).** A mapped kind may change whether a cell is
+  a support root (`rootTags`) or a member (`memberTags`). An example is a clamp
+  that lets go while its plate is pressed:
+  `"pressed": { "clamp": "clamp_open" }`, where only `clamp` is a root. When a
+  collapse pass switches such a cell, the collapse runs another pass, and
+  repeats until a pass changes no support. Everything the opened clamp held
+  falls in the same turn, and its landing can press further plates. Within a
+  pass, components land lowest first as above. The passes are bounded by the
+  board area. A clamp whose plates are all released again becomes a root again
+  and holds whatever is still attached to it; pieces that already fell stay
+  down. Keep the open kind solid if pieces could otherwise come to rest in its
+  cell.
+- Anything satisfying `pressTags` presses, settled or still standing: structure
+  hanging or standing in a plate cell presses it until it is removed.
+- Levels must start consistent: the update runs only when something changes,
+  so a level whose switched cells disagree with its plates is corrected at the
+  first collapse, not at load.
+- **Observation.** Named-mode text observations list every plate (pressed or
+  empty) and every switched cell with its channel.
+
+```json
+"switches": {
+  "plateLayer": "ground", "pressLayers": ["objects"],
+  "pressed": { "diverter_left": "diverter_right" }
+}
+```
+
 **Reuse:** `severAction` is optional, so the collapse half stands alone for any
 game where rules or other systems remove cells. Suits hanging structures,
 crumbling bridges, calving ice shelves, mining a ceiling, or any "cut the
 support" mechanic. Without `deflect`, gravity is a straight translation: with
 `direction: "down"` a cell's column never changes, only how far it falls.
 `deflect` relaxes exactly that, and only at obstructions — a component never
-changes lane in free fall.
+changes lane in free fall. `strain` turns time into a second way to cut: a
+structure can be made to fail by loading it rather than by touching it, which
+suits sagging bridges, overloaded shelves, or ice that holds only so much.
+`fuse` is a cut on a timer: burning ropes, fuse cords, thawing ice bridges, or
+anything the player sets going now that gives way later, somewhere else. `switches`
+lets the falling structure operate the level: weighted plates that turn
+chutes, open gates or swap tiles while loaded.
 
 ---
 
@@ -2600,7 +2740,7 @@ lights, edge connections, undo and stage allowances retain their existing rules.
 | Elastic Block | `elastic_block` | `action_resolution` | `move(direction)` |
 | Line of Sight | `line_of_sight` | `cascade_resolution` | event-triggered detection |
 | Flank Capture | `flank_capture` | `cascade_resolution` | event-triggered bracket capture |
-| Support Collapse | `support_collapse` | `action_resolution` + `cascade_resolution` | configurable sever verb (`position` or `direction`) |
+| Support Collapse | `support_collapse` | `action_resolution` + `cascade_resolution` (+ `npc_resolution` with `strain`) | configurable sever verb (`position` or `direction`); optional load limits |
 | Portals | `portals` | `movement_resolution` | (automatic on portal entry) |
 | Slide Merge | `slide_merge` | `action_resolution` | `move` |
 | Queued Emitters | `queued_emitters` | `cascade_resolution` | (event-triggered) |

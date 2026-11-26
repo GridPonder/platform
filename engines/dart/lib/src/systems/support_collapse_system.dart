@@ -1,6 +1,7 @@
 import 'dart:collection';
 
 import '../engine/game_system.dart';
+import '../models/board.dart';
 import '../models/direction.dart';
 import '../models/entity.dart';
 import '../models/event.dart';
@@ -126,6 +127,17 @@ class SupportCollapseSystem extends GameSystem {
     }
 
     final previousKind = entity.kind;
+    final ignite = _ignite(cfg);
+    final lit = ignite[previousKind];
+    if (lit != null) {
+      // Lighting a fuse removes nothing yet: the cell burns later.
+      final fuse = cfg['fuse'] as Map;
+      final delayParam = fuse['delayParam'] as String? ?? 'delay';
+      final delay = (fuse['delay'] as num?)?.toInt() ?? 1;
+      layer.setAt(
+          target, EntityInstance(lit, {...entity.params, delayParam: delay}));
+      return [GameEvent.cellTransformed(target, previousKind, lit, layerId)];
+    }
     layer.setAt(target, _empty(game, layerId));
     return [
       GameEvent.cellCleared(target, previousKind, layer: layerId),
@@ -149,38 +161,275 @@ class SupportCollapseSystem extends GameSystem {
     return _collapse(state, game, cfg);
   }
 
-  // ── the algorithm ─────────────────────────────────────────────────────────
-  List<GameEvent> _collapse(
-    LevelState state,
-    GameDefinition game,
-    Map<String, dynamic> cfg,
-  ) {
+  // ── phase 6: strain ───────────────────────────────────────────────────────
+  /// Overloaded load-limited cells tire once per turn and fail at zero.
+  ///
+  /// The load on a cell is every member cell that would fall if that cell
+  /// were removed — so supports that share a load carry none of it until one
+  /// of them goes. Each accepted turn, every overloaded cell loses one point of
+  /// endurance; then every overloaded cell with none left fails at once (it is
+  /// removed and the structure collapses). Failures repeat without further
+  /// wear until nothing more breaks, so a cell already at zero gives way the
+  /// moment a failure overloads it. Mirrors Python `execute_npc_resolution`.
+  @override
+  List<GameEvent> executeNpcResolution(LevelState state, GameDefinition game) {
+    final cfg = _cfg(game);
+    final events = _burn(state, game, cfg);
+    final strain = cfg['strain'];
+    if (strain is! Map) return events;
     final layerId = cfg['layer'] as String? ?? 'ground';
     final layer = state.board.layers[layerId];
-    if (layer == null) return const [];
+    if (layer == null) return events;
     final board = state.board;
+    final tags = _stringList(strain['tags'], const ['load_limited']);
+    final capParam = strain['capacityParam'] as String? ?? 'capacity';
+    final endParam = strain['enduranceParam'] as String? ?? 'endurance';
+    final defaultEndurance = (strain['endurance'] as num?)?.toInt() ?? 0;
 
-    final rootTags = _stringList(cfg['rootTags'], const ['support_root']);
-    final memberTags = _stringList(cfg['memberTags'], const ['supported']);
+    List<Position> overloaded() {
+      final out = <Position>[];
+      _loads(state, game, cfg, tags).forEach((p, load) {
+        final cap = layer.getAt(p)!.param(capParam);
+        if (cap is int && load > cap) out.add(p);
+      });
+      return out;
+    }
+
+    int endurance(Position p) {
+      final value = layer.getAt(p)!.param(endParam);
+      return value is int ? value : defaultEndurance;
+    }
+
+    for (final p in overloaded()) {
+      final entity = layer.getAt(p)!;
+      final left = endurance(p) - 1 < 0 ? 0 : endurance(p) - 1;
+      layer.setAt(
+          p,
+          EntityInstance(
+              entity.kind, {...entity.params, endParam: left}));
+    }
+
+    var avatarPos = state.avatar.enabled ? state.avatar.position : null;
+    for (var pass = 0; pass < board.width * board.height + 1; pass++) {
+      final failing = overloaded().where((p) => endurance(p) <= 0).toList();
+      if (failing.isEmpty) break;
+      for (final p in failing) {
+        final kind = layer.getAt(p)!.kind;
+        layer.setAt(p, _empty(game, layerId));
+        events.add(GameEvent.cellCleared(p, kind, layer: layerId));
+      }
+      if (avatarPos != null && failing.contains(avatarPos)) {
+        events.addAll(_avatarFell(state, cfg));
+      }
+      events.addAll(_collapse(state, game, cfg));
+      avatarPos = state.avatar.enabled ? state.avatar.position : null;
+    }
+    return events;
+  }
+
+  Map<String, String> _ignite(Map<String, dynamic> cfg) {
+    final fuse = cfg['fuse'];
+    if (fuse is! Map) return const {};
+    final raw = fuse['ignite'];
+    if (raw is! Map) return const {};
+    return raw.map((k, v) => MapEntry(k.toString(), v.toString()));
+  }
+
+  /// Lit fuse cells count down, then burn away and light their neighbours.
+  ///
+  /// Every lit cell whose delay is above 0 loses 1. Every lit cell already at
+  /// 0 when the turn began is removed, and each fuse cell touching it is lit
+  /// with delay 0, so it burns one turn later: a fuse burns one cell per turn.
+  /// Then the structure collapses once. Mirrors Python `_burn`.
+  List<GameEvent> _burn(
+      LevelState state, GameDefinition game, Map<String, dynamic> cfg) {
+    final ignite = _ignite(cfg);
+    if (ignite.isEmpty) return <GameEvent>[];
+    final layerId = cfg['layer'] as String? ?? 'ground';
+    final layer = state.board.layers[layerId];
+    if (layer == null) return <GameEvent>[];
+    final board = state.board;
+    final delayParam = (cfg['fuse'] as Map)['delayParam'] as String? ?? 'delay';
+    final litKinds = ignite.values.toSet();
     final deltas = cfg['connectivity'] == 'diagonal' ? _diagonals : _cardinals;
 
-    bool isRoot(Position pos) {
-      final e = layer.getAt(pos);
-      return e != null && _hasAnyTag(game, e.kind, rootTags);
+    final burning = <Position>[];
+    for (var y = 0; y < board.height; y++) {
+      for (var x = 0; x < board.width; x++) {
+        final p = Position(x, y);
+        final e = layer.getAt(p);
+        if (e == null || !litKinds.contains(e.kind)) continue;
+        final delay = e.param(delayParam);
+        if (delay is int && delay > 0) {
+          layer.setAt(
+              p, EntityInstance(e.kind, {...e.params, delayParam: delay - 1}));
+        } else {
+          burning.add(p);
+        }
+      }
     }
+    if (burning.isEmpty) return <GameEvent>[];
 
-    bool isMember(Position pos) {
-      final e = layer.getAt(pos);
-      return e != null && _hasAnyTag(game, e.kind, memberTags);
+    final events = <GameEvent>[];
+    for (final p in burning) {
+      final kind = layer.getAt(p)!.kind;
+      layer.setAt(p, _empty(game, layerId));
+      events.add(GameEvent.cellCleared(p, kind, layer: layerId));
     }
+    for (final p in burning) {
+      for (final d in deltas) {
+        final nb = p + d;
+        if (!board.isInBounds(nb)) continue;
+        final e = layer.getAt(nb);
+        if (e == null) continue;
+        final lit = ignite[e.kind];
+        if (lit == null) continue;
+        layer.setAt(nb, EntityInstance(lit, {...e.params, delayParam: 0}));
+        events.add(GameEvent.cellTransformed(nb, e.kind, lit, layerId));
+      }
+    }
+    final avatarPos = state.avatar.enabled ? state.avatar.position : null;
+    if (avatarPos != null && burning.contains(avatarPos)) {
+      events.addAll(_avatarFell(state, cfg));
+    }
+    events.addAll(_collapse(state, game, cfg));
+    return events;
+  }
 
-    // 1. BFS the supported set outward from every root.
+  /// Burning fuse cells, then capacity and endurance for load-limited cells.
+  @override
+  List<String> observationStatusLines(
+          LevelState state, GameDefinition game, Board initialBoard) =>
+      [
+        ..._fuseLines(state, game),
+        ..._strainLines(state, game),
+        ..._switchLines(state, game),
+      ];
+
+  List<String> _fuseLines(LevelState state, GameDefinition game) {
+    final cfg = _cfg(game);
+    final fuse = cfg['fuse'];
+    if (fuse is! Map) return const [];
+    final layer = state.board.layers[cfg['layer'] as String? ?? 'ground'];
+    if (layer == null) return const [];
+    final litKinds = _ignite(cfg).values.toSet();
+    final delayParam = fuse['delayParam'] as String? ?? 'delay';
+    final lines = <String>[];
+    for (var y = 0; y < state.board.height; y++) {
+      for (var x = 0; x < state.board.width; x++) {
+        final e = layer.getAt(Position(x, y));
+        if (e == null || !litKinds.contains(e.kind)) continue;
+        final delay = e.param(delayParam);
+        final turns = (delay is int && delay > 0 ? delay : 0) + 1;
+        final plural = turns == 1 ? '' : 's';
+        final name = game.observationName(e.kind);
+        lines.add('($x,$y): $name burns away in $turns turn$plural');
+      }
+    }
+    if (lines.isEmpty) return const [];
+    return [
+      'Burning fuses (in 1 turn = at the end of your next turn; as a cell '
+          'burns away it lights the fuse cells touching it, which burn away '
+          'one turn later):',
+      ...lines,
+    ];
+  }
+
+  List<String> _strainLines(LevelState state, GameDefinition game) {
+    final cfg = _cfg(game);
+    final strain = cfg['strain'];
+    if (strain is! Map) return const [];
+    final layer = state.board.layers[cfg['layer'] as String? ?? 'ground'];
+    if (layer == null) return const [];
+    final tags = _stringList(strain['tags'], const ['load_limited']);
+    final capParam = strain['capacityParam'] as String? ?? 'capacity';
+    final endParam = strain['enduranceParam'] as String? ?? 'endurance';
+    final defaultEndurance = (strain['endurance'] as num?)?.toInt() ?? 0;
+    final lines = <String>[];
+    for (var y = 0; y < state.board.height; y++) {
+      for (var x = 0; x < state.board.width; x++) {
+        final e = layer.getAt(Position(x, y));
+        if (e == null || !_hasAnyTag(game, e.kind, tags)) continue;
+        final cap = e.param(capParam);
+        if (cap is! int) continue;
+        final raw = e.param(endParam);
+        final left = raw is int ? raw : defaultEndurance;
+        final name = game.observationName(e.kind);
+        lines.add('($x,$y): $name capacity $cap, endurance $left');
+      }
+    }
+    if (lines.isEmpty) return const [];
+    return [
+      "Load limits (a cell's load is every structure cell that would fall "
+          'without it; each turn it is over capacity it loses 1 endurance, '
+          'and at 0 it fails):',
+      ...lines,
+    ];
+  }
+
+  /// Load on every cell carrying one of [tags], in row-major order.
+  Map<Position, int> _loads(LevelState state, GameDefinition game,
+      Map<String, dynamic> cfg, List<String> tags) {
+    final layer = state.board.layers[cfg['layer'] as String? ?? 'ground']!;
+    final board = state.board;
+    final limited = <Position>[];
+    for (var y = 0; y < board.height; y++) {
+      for (var x = 0; x < board.width; x++) {
+        final e = layer.getAt(Position(x, y));
+        if (e != null && _hasAnyTag(game, e.kind, tags)) {
+          limited.add(Position(x, y));
+        }
+      }
+    }
+    final loads = <Position, int>{};
+    if (limited.isEmpty) return loads;
+    final held = _supported(state, game, cfg);
+    for (final p in limited) {
+      final without = _supported(state, game, cfg, removed: p);
+      var load = 0;
+      for (final c in held) {
+        if (c != p &&
+            !without.contains(c) &&
+            _isMember(layer.getAt(c), game, cfg)) {
+          load++;
+        }
+      }
+      loads[p] = load;
+    }
+    return loads;
+  }
+
+  List<GameEvent> _avatarFell(LevelState state, Map<String, dynamic> cfg) {
+    final variable = cfg['avatarFellVariable'] as String?;
+    if (variable == null) return const [];
+    final old = state.variables[variable];
+    final oldNum = old is num ? old.toInt() : 0;
+    state.variables[variable] = oldNum + 1;
+    return [GameEvent.variableChanged(variable, oldNum, oldNum + 1)];
+  }
+
+  bool _isMember(
+      EntityInstance? entity, GameDefinition game, Map<String, dynamic> cfg) {
+    final memberTags = _stringList(cfg['memberTags'], const ['supported']);
+    return entity != null && _hasAnyTag(game, entity.kind, memberTags);
+  }
+
+  /// Every root, and every member cell connected to one. [removed] is treated
+  /// as empty, which is how a cell's load is measured.
+  Set<Position> _supported(
+      LevelState state, GameDefinition game, Map<String, dynamic> cfg,
+      {Position? removed}) {
+    final layer = state.board.layers[cfg['layer'] as String? ?? 'ground']!;
+    final board = state.board;
+    final rootTags = _stringList(cfg['rootTags'], const ['support_root']);
+    final deltas = cfg['connectivity'] == 'diagonal' ? _diagonals : _cardinals;
     final supported = <Position>{};
     final queue = Queue<Position>();
     for (var y = 0; y < board.height; y++) {
       for (var x = 0; x < board.width; x++) {
         final p = Position(x, y);
-        if (isRoot(p)) {
+        final e = layer.getAt(p);
+        if (p != removed && e != null && _hasAnyTag(game, e.kind, rootTags)) {
           supported.add(p);
           queue.add(p);
         }
@@ -190,13 +439,195 @@ class SupportCollapseSystem extends GameSystem {
       final cur = queue.removeFirst();
       for (final d in deltas) {
         final nb = cur + d;
-        if (supported.contains(nb) || !board.isInBounds(nb)) continue;
-        if (isMember(nb)) {
+        if (supported.contains(nb) || nb == removed || !board.isInBounds(nb)) {
+          continue;
+        }
+        if (_isMember(layer.getAt(nb), game, cfg)) {
           supported.add(nb);
           queue.add(nb);
         }
       }
     }
+    return supported;
+  }
+
+  /// Channels with at least one pressed plate. Mirrors Python `_switch`.
+  Set<Object?> _pressedChannels(
+      LevelState state, GameDefinition game, Map<String, dynamic> cfg) {
+    final sw = cfg['switches'] as Map;
+    final layerId = cfg['layer'] as String? ?? 'ground';
+    final board = state.board;
+    final plates = board.layers[sw['plateLayer'] as String? ?? layerId];
+    final pressed = <Object?>{};
+    if (plates == null) return pressed;
+    final plateTags = _stringList(sw['plateTags'], const ['plate']);
+    final pressLayers = _stringList(sw['pressLayers'], [layerId]);
+    final pressTags = _stringList(sw['pressTags'], const ['solid']);
+    final ch = sw['channelParam'] as String? ?? 'channel';
+    for (var y = 0; y < board.height; y++) {
+      for (var x = 0; x < board.width; x++) {
+        final p = Position(x, y);
+        final e = plates.getAt(p);
+        if (e == null || !_hasAnyTag(game, e.kind, plateTags)) continue;
+        for (final pl in pressLayers) {
+          final o = board.layers[pl]?.getAt(p);
+          if (o != null && _hasAnyTag(game, o.kind, pressTags)) {
+            pressed.add(e.param(ch));
+            break;
+          }
+        }
+      }
+    }
+    return pressed;
+  }
+
+  /// Point every switched cell the way its channel's plates say.
+  ///
+  /// A plate is pressed while a cell carrying one of `pressTags` sits on its
+  /// position. While any plate of a channel is pressed, every cell of that
+  /// channel whose kind is a key of `pressed` takes the mapped kind; while
+  /// none is, mapped kinds revert.
+  List<GameEvent> _switch(
+      LevelState state, GameDefinition game, Map<String, dynamic> cfg) {
+    final sw = cfg['switches'];
+    if (sw is! Map) return const [];
+    final layerId = cfg['layer'] as String? ?? 'ground';
+    final targetId = sw['switchLayer'] as String? ?? layerId;
+    final board = state.board;
+    final target = board.layers[targetId];
+    if (target == null || board.layers[sw['plateLayer'] as String? ?? layerId] == null) {
+      return const [];
+    }
+    final ch = sw['channelParam'] as String? ?? 'channel';
+    final toPressed = (sw['pressed'] as Map? ?? const {})
+        .map((k, v) => MapEntry(k.toString(), v.toString()));
+    final toReleased = toPressed.map((k, v) => MapEntry(v, k));
+    final pressed = _pressedChannels(state, game, cfg);
+    final events = <GameEvent>[];
+    for (var y = 0; y < board.height; y++) {
+      for (var x = 0; x < board.width; x++) {
+        final p = Position(x, y);
+        final e = target.getAt(p);
+        if (e == null) continue;
+        final on = pressed.contains(e.param(ch));
+        String? next;
+        if (on && toPressed.containsKey(e.kind)) {
+          next = toPressed[e.kind];
+        } else if (!on && toReleased.containsKey(e.kind)) {
+          next = toReleased[e.kind];
+        }
+        if (next == null || next == e.kind) continue;
+        target.setAt(p, e.copyWith(kind: next));
+        events.add(GameEvent.cellTransformed(p, e.kind, next, targetId));
+      }
+    }
+    return events;
+  }
+
+  List<String> _switchLines(LevelState state, GameDefinition game) {
+    final cfg = _cfg(game);
+    final sw = cfg['switches'];
+    if (sw is! Map) return const [];
+    final layerId = cfg['layer'] as String? ?? 'ground';
+    final board = state.board;
+    final target = board.layers[sw['switchLayer'] as String? ?? layerId];
+    final plates = board.layers[sw['plateLayer'] as String? ?? layerId];
+    if (target == null || plates == null) return const [];
+    final plateTags = _stringList(sw['plateTags'], const ['plate']);
+    final pressLayers = _stringList(sw['pressLayers'], [layerId]);
+    final pressTags = _stringList(sw['pressTags'], const ['solid']);
+    final ch = sw['channelParam'] as String? ?? 'channel';
+    final toPressed = (sw['pressed'] as Map? ?? const {})
+        .map((k, v) => MapEntry(k.toString(), v.toString()));
+    final switchKinds = {...toPressed.keys, ...toPressed.values};
+    final lines = <String>[];
+    for (var y = 0; y < board.height; y++) {
+      for (var x = 0; x < board.width; x++) {
+        final p = Position(x, y);
+        final e = plates.getAt(p);
+        if (e == null || !_hasAnyTag(game, e.kind, plateTags)) continue;
+        var down = false;
+        for (final pl in pressLayers) {
+          final o = board.layers[pl]?.getAt(p);
+          if (o != null && _hasAnyTag(game, o.kind, pressTags)) down = true;
+        }
+        final name = game.observationName(e.kind);
+        lines.add('($x,$y): $name ${_pyStr(e.param(ch))}, '
+            '${down ? 'pressed' : 'empty'}');
+      }
+    }
+    for (var y = 0; y < board.height; y++) {
+      for (var x = 0; x < board.width; x++) {
+        final e = target.getAt(Position(x, y));
+        if (e == null || !switchKinds.contains(e.kind)) continue;
+        final name = game.observationName(e.kind);
+        lines.add('($x,$y): $name, channel ${_pyStr(e.param(ch))}');
+      }
+    }
+    if (lines.isEmpty) return const [];
+    return [
+      'Switches (a plate is pressed while a solid piece rests in its cell; '
+          "while any plate of a channel is pressed, that channel's switched "
+          'cells take their pressed form):',
+      ...lines,
+    ];
+  }
+
+  /// Python's str() of a param value, so status lines match across engines.
+  static String _pyStr(Object? v) => v == null ? 'None' : v.toString();
+
+  // ── the algorithm ─────────────────────────────────────────────────────────
+  /// Drop everything unsupported; repeat while switches change what holds.
+  /// Mirrors Python `_collapse`: a switch that turns a support root or member
+  /// into a kind that is not one (a clamp letting go) triggers another pass,
+  /// so cascades resolve within one turn. Bounded by the board area.
+  List<GameEvent> _collapse(
+    LevelState state,
+    GameDefinition game,
+    Map<String, dynamic> cfg,
+  ) {
+    final events = <GameEvent>[];
+    final board = state.board;
+    for (var i = 0; i < board.width * board.height + 1; i++) {
+      final step = _collapsePass(state, game, cfg);
+      events.addAll(step);
+      final changed = step.any((e) =>
+          e.type == 'cell_transformed' &&
+          _holds(e['fromKind'] as String?, game, cfg) !=
+              _holds(e['toKind'] as String?, game, cfg));
+      if (!changed) break;
+    }
+    return events;
+  }
+
+  /// Encodes (is a support root, is a member) for a kind name as 0..3.
+  int _holds(String? kind, GameDefinition game, Map<String, dynamic> cfg) {
+    if (kind == null) return 0;
+    final roots = _stringList(cfg['rootTags'], const ['support_root']);
+    final members = _stringList(cfg['memberTags'], const ['supported']);
+    return (_hasAnyTag(game, kind, roots) ? 2 : 0) +
+        (_hasAnyTag(game, kind, members) ? 1 : 0);
+  }
+
+  List<GameEvent> _collapsePass(
+    LevelState state,
+    GameDefinition game,
+    Map<String, dynamic> cfg,
+  ) {
+    final layerId = cfg['layer'] as String? ?? 'ground';
+    final layer = state.board.layers[layerId];
+    if (layer == null) return const [];
+    final board = state.board;
+
+    final deltas = cfg['connectivity'] == 'diagonal' ? _diagonals : _cardinals;
+
+    bool isMember(Position pos) => _isMember(layer.getAt(pos), game, cfg);
+
+    // 0. Removals may have emptied a plate: switches update first.
+    final switched = _switch(state, game, cfg);
+
+    // 1. BFS the supported set outward from every root.
+    final supported = _supported(state, game, cfg);
 
     // 2. Group the unsupported members into maximal connected components.
     final remaining = <Position>{};
@@ -206,7 +637,7 @@ class SupportCollapseSystem extends GameSystem {
         if (isMember(p) && !supported.contains(p)) remaining.add(p);
       }
     }
-    if (remaining.isEmpty) return const [];
+    if (remaining.isEmpty) return switched;
 
     final components = <List<Position>>[];
     while (remaining.isNotEmpty) {
@@ -317,7 +748,7 @@ class SupportCollapseSystem extends GameSystem {
         return minYOf(components[a]).compareTo(minYOf(components[b]));
       });
 
-    final events = <GameEvent>[];
+    final events = <GameEvent>[...switched];
     final avatarPos = state.avatar.enabled ? state.avatar.position : null;
     int? avatarComponent;
     Position? avatarDestination;
@@ -363,6 +794,8 @@ class SupportCollapseSystem extends GameSystem {
         events.add(GameEvent.objectSettled(newKind, dst, src,
             layer: layerId, fromKind: entity.kind));
       }
+      // A landed piece may press a plate before the next piece moves.
+      events.addAll(_switch(state, game, cfg));
     }
 
     // 6. The avatar rides its component down.
