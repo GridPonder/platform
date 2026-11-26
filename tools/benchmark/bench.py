@@ -51,6 +51,7 @@ from agent_client import call_llm, extract_action, extract_action_lenient, extra
 LENIENT_PARSE = os.environ.get("GRIDPONDER_LENIENT_PARSE", "") not in ("", "0")
 PARSE_RETRIES = int(os.environ.get("GRIDPONDER_PARSE_RETRIES", "0") or 0)
 from connector_api import estimate_cost
+from run_protocol import run_protocol
 from instructions import (
     InstructionPayload,
     compose_study_prompt,
@@ -764,31 +765,24 @@ def _send_give_up(send: Any, mode: str, memory: str) -> None:
 # ── Resume helpers ─────────────────────────────────────────────────────────────
 
 def load_completed(
-    results_base: Path, mode: str, anon: bool, scan_dir: Path | None = None,
-    input_mode: str = "text", no_rules: bool = False, observation_interval: int = 1,
-    board_legend: str = "normal", legend_seed: int = 0,
-    legend_quiz: bool = False,
+    results_base: Path, settings: dict, scan_dir: Path | None = None,
 ) -> set[tuple[str, str, str]]:
     """Scan JSONL runs and return (model_id, pack_id, level_id) triples
-    that already have a successful (non-error) result for the given
-    (mode, anon, input_mode) combination.
+    that already have a successful (non-error) result under the same run
+    protocol as *settings* (run_meta fields; see run_protocol.py). Older
+    files that predate a setting count as its default.
 
     When *scan_dir* is given, only that directory is scanned (non-recursive).
     Otherwise all subdirectories under *results_base* are scanned.
     """
+    wanted = run_protocol(settings)
     done: set[tuple[str, str, str]] = set()
     base = scan_dir or results_base
     if not base.exists():
         return done
     glob_pattern = "*.jsonl" if scan_dir else "**/*.jsonl"
     for jsonl_file in sorted(base.glob(glob_pattern)):
-        file_mode: str | None = None
-        file_anon: bool = False
-        file_input: str = "text"
-        file_no_rules: bool = False
-        file_observation_interval = 1
-        file_legend: dict = {}
-        file_legend_quiz = False
+        matches = False
         with open(jsonl_file) as f:
             for line in f:
                 line = line.strip()
@@ -799,24 +793,9 @@ def load_completed(
                 except json.JSONDecodeError:
                     continue
                 if rec.get("type") == "run_meta":
-                    file_mode = rec.get("inference_mode", "single")
-                    file_anon = rec.get("anon", False)
-                    file_input = rec.get("input_mode", "text")
-                    file_no_rules = rec.get("no_rules", False)
-                    file_observation_interval = rec.get("observation_interval", 1)
-                    file_legend = legend_metadata(rec.get("board_legend", "normal"),
-                                                  rec.get("legend_seed", 0))
-                    file_legend_quiz = rec.get("legend_quiz", False)
-                elif (rec.get("type") == "level"
-                      and file_mode == mode
-                      and file_anon == anon
-                      and file_no_rules == no_rules
-                      and file_observation_interval == observation_interval
-                      and file_legend == legend_metadata(board_legend, legend_seed)
-                      and file_legend_quiz == legend_quiz
-                      and file_input == input_mode):
-                    if "error" not in rec:
-                        done.add((rec["model_id"], rec["pack_id"], rec["level_id"]))
+                    matches = run_protocol(rec) == wanted
+                elif rec.get("type") == "level" and matches and "error" not in rec:
+                    done.add((rec["model_id"], rec["pack_id"], rec["level_id"]))
     return done
 
 
@@ -1040,11 +1019,24 @@ def main() -> None:
     except ValueError as exc:
         parser.error(str(exc))
 
+    # The settings that define this run's protocol (see run_protocol.py).
+    # Written into every run_meta and compared by --resume and aggregate.py.
+    protocol_settings = {
+        "inference_mode": args.mode,
+        "observation_interval": args.observation_interval,
+        **legend_metadata(args.board_legend, args.legend_seed),
+        **({"legend_quiz": True} if args.legend_quiz else {}),
+        "anon": args.anon,
+        **({"no_rules": True} if args.no_rules else {}),
+        **({"max_attempts": args.max_attempts} if args.max_attempts is not None else {}),
+        **({"full_attempts": True} if args.full_attempts else {}),
+        **({"give_up_uses_attempt": True} if args.give_up_uses_attempt else {}),
+        "single_attempt": args.single_attempt,
+        "input_mode": args.input,
+    }
+
     if args.resume:
-        completed = load_completed(RESULTS_BASE, args.mode, args.anon, input_mode=args.input,
-                                   no_rules=args.no_rules, observation_interval=args.observation_interval,
-                                   board_legend=args.board_legend, legend_seed=args.legend_seed,
-                                   legend_quiz=args.legend_quiz)
+        completed = load_completed(RESULTS_BASE, protocol_settings)
         if completed:
             before = len(work)
             work = [
@@ -1166,17 +1158,7 @@ def main() -> None:
             "pricing": model_cfg.get("pricing"),
             "local": model_cfg.get("local", True),
             "reasoning": variant_cfg.get("reasoning", False),
-            "inference_mode": args.mode,
-            "observation_interval": args.observation_interval,
-            **legend_metadata(args.board_legend, args.legend_seed),
-            **({"legend_quiz": True} if args.legend_quiz else {}),
-            "anon": args.anon,
-            **({"no_rules": True} if args.no_rules else {}),
-            **({"max_attempts": args.max_attempts} if args.max_attempts is not None else {}),
-            **({"full_attempts": True} if args.full_attempts else {}),
-            **({"give_up_uses_attempt": True} if args.give_up_uses_attempt else {}),
-            "single_attempt": args.single_attempt,
-            "input_mode": args.input,
+            **protocol_settings,
             "attempt_multiplier": args.attempt_multiplier,
             "total_multiplier": args.total_multiplier,
             "runs_per_level": args.runs,

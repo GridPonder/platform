@@ -169,8 +169,10 @@ def filter_completed(
         key = (item.mode, item.anon, item.input_mode)
         if key not in cache:
             cache[key] = load_completed(
-                RESULTS_BASE, item.mode, item.anon,
-                scan_dir=scan_dir, input_mode=item.input_mode,
+                RESULTS_BASE,
+                {"inference_mode": item.mode, "anon": item.anon,
+                 "input_mode": item.input_mode},
+                scan_dir=scan_dir,
             )
         done = cache[key]
         if (item.full_variant_id, item.pack_id, item.level_id) not in done:
