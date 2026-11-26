@@ -51,6 +51,7 @@ class BoardStyleDef {
   final int borderRadius;
   final String gridLineColor;
   final bool showGridLines;
+  final bool columnGuides;
 
   const BoardStyleDef({
     this.cellSize = 64,
@@ -58,6 +59,7 @@ class BoardStyleDef {
     this.borderRadius = 4,
     this.gridLineColor = '#333333',
     this.showGridLines = true,
+    this.columnGuides = false,
   });
 
   factory BoardStyleDef.fromJson(Map<String, dynamic> j) => BoardStyleDef(
@@ -66,6 +68,7 @@ class BoardStyleDef {
         borderRadius: (j['borderRadius'] as int?) ?? 4,
         gridLineColor: (j['gridLineColor'] as String?) ?? '#333333',
         showGridLines: (j['showGridLines'] as bool?) ?? true,
+        columnGuides: (j['columnGuides'] as bool?) ?? false,
       );
 }
 

@@ -2089,10 +2089,14 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
             '_motionDirection': m.direction,
             '_motionFrame': motionFrame,
           });
+    // Move along the from→to line in proportion. Stepping each axis by the
+    // full distance overshot any move that changes both x and y (a piece
+    // deflected sideways mid-fall flew distance-many cells sideways).
+    final f = m.distance > 0 ? travelled / m.distance : 1.0;
     return MovingSprite(
       entity: entity,
-      x: m.from.x + (m.to.x - m.from.x).sign * travelled,
-      y: m.from.y + (m.to.y - m.from.y).sign * travelled,
+      x: m.from.x + (m.to.x - m.from.x) * f,
+      y: m.from.y + (m.to.y - m.from.y) * f,
       squash: squash,
     );
   }
@@ -4023,14 +4027,14 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
                   ),
                 ),
               ),
-              if (!controlsAbove)
+              if (!controlsAbove && !_useColumnGuides)
                 Positioned(top: 0, right: 0, child: _buildZoomButtons()),
             ],
           );
         },
       ),
     );
-    return controlsAbove
+    return controlsAbove && !_useColumnGuides
         ? Column(children: [
             Align(alignment: Alignment.centerRight, child: _buildZoomButtons(horizontal: true)),
             Expanded(child: boardView),
@@ -4086,7 +4090,10 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildZoomButtons({bool horizontal = false}) {
+  bool get _useColumnGuides =>
+      widget.packService.theme?.boardStyle?.columnGuides == true;
+
+  Widget _buildZoomButtons({bool horizontal = false, bool inline = false}) {
     Widget button(IconData icon, String tooltip, VoidCallback? onPressed) {
       return IconButton(
         icon: Icon(icon, size: 20),
@@ -4097,28 +4104,37 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
       );
     }
 
+    final buttons = [
+      button(
+        Icons.zoom_in,
+        'Zoom in (+)',
+        _boardZoom < _maxBoardZoom
+            ? () => _setBoardZoom(_boardZoom * 1.25)
+            : null,
+      ),
+      button(
+        Icons.zoom_out,
+        'Zoom out (-)',
+        _boardZoom > _minBoardZoom
+            ? () => _setBoardZoom(_boardZoom / 1.25)
+            : null,
+      ),
+      if (inline)
+        button(
+          Icons.fit_screen,
+          'Fit board (0)',
+          _boardZoom > _minBoardZoom
+              ? () => _setBoardZoom(_minBoardZoom)
+              : null,
+        ),
+    ];
     return Material(
       color: Colors.white.withValues(alpha: 0.75),
       borderRadius: BorderRadius.circular(8),
       child: Flex(
-        direction: horizontal ? Axis.horizontal : Axis.vertical,
+        direction: horizontal || inline ? Axis.horizontal : Axis.vertical,
         mainAxisSize: MainAxisSize.min,
-        children: [
-          button(
-            Icons.zoom_in,
-            'Zoom in (+)',
-            _boardZoom < _maxBoardZoom
-                ? () => _setBoardZoom(_boardZoom * 1.25)
-                : null,
-          ),
-          button(
-            Icons.zoom_out,
-            'Zoom out (-)',
-            _boardZoom > _minBoardZoom
-                ? () => _setBoardZoom(_boardZoom / 1.25)
-                : null,
-          ),
-        ],
+        children: buttons,
       ),
     );
   }
@@ -5022,6 +5038,10 @@ class _PlayScreenState extends State<PlayScreen> with TickerProviderStateMixin {
             '${_levelIndex + 1}/${_levelIds.length}',
             style: TextStyle(color: Colors.grey.shade600, fontSize: 13),
           ),
+          if (_useColumnGuides) ...[
+            const SizedBox(width: 8),
+            _buildZoomButtons(inline: true),
+          ],
           const Spacer(),
           if (_aiRunning) ...[
             Text(

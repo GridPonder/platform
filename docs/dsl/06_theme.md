@@ -136,7 +136,8 @@ Each gesture mapping:
   "cellSpacing": 2,
   "borderRadius": 4,
   "gridLineColor": "#333333",
-  "showGridLines": true
+  "showGridLines": true,
+  "columnGuides": false
 }
 ```
 
@@ -147,6 +148,7 @@ Each gesture mapping:
 | `borderRadius` | integer | `4` | Cell corner radius. |
 | `gridLineColor` | string | `"#333333"` | Grid line color (hex). |
 | `showGridLines` | boolean | `true` | Whether to show grid lines. |
+| `columnGuides` | boolean | `false` | Gives the play board a rounded frame and a backdrop using the `board` palette color. Vertical guides are stronger than horizontal guides. Use `display.type: "none"` for any ground kind that should reveal the backdrop. |
 
 ---
 
