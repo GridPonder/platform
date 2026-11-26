@@ -28,7 +28,11 @@ void main() {
 
   setUp(() => SharedPreferences.setMockInitialValues({}));
 
-  Future<RecordingTracker> open(WidgetTester tester, String? levelId) async {
+  Future<RecordingTracker> open(
+    WidgetTester tester,
+    String? levelId, {
+    bool showIntroductionOnStart = false,
+  }) async {
     await tester.runAsync(() async {
       settings = await SettingsService.create();
       pack = await PackService.load(_pack);
@@ -40,6 +44,7 @@ void main() {
           packService: pack,
           settings: settings,
           startLevelId: levelId,
+          showIntroductionOnStart: showIntroductionOnStart,
           tracker: tracker,
         ),
       ),
@@ -64,6 +69,27 @@ void main() {
 
     await tester.pumpWidget(const SizedBox());
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('resume and back navigation show the arc introduction', (
+    tester,
+  ) async {
+    final tracker = await open(
+      tester,
+      _levelAfterStory,
+      showIntroductionOnStart: true,
+    );
+    expect(find.text('A Frosty Frontier'), findsOneWidget);
+    expect(tracker.events, isEmpty);
+
+    await tester.tap(find.byIcon(Icons.navigate_next));
+    await tester.pump();
+    expect(tracker.named('level_start').single['level'], _levelAfterStory);
+
+    await tester.tap(find.byIcon(Icons.navigate_before));
+    await tester.pump();
+    expect(find.text('A Frosty Frontier'), findsOneWidget);
+    expect(tracker.names, ['level_start', 'level_exit']);
   });
 
   testWidgets('leaving a level for a story page logs the exit at once', (

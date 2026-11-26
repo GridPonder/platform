@@ -15,6 +15,10 @@ class LevelDefinition {
   /// `ui.showGuide: true`.
   final String? guide;
 
+  /// Optional overrides for the game's play-screen presentation.
+  final bool? showGoal;
+  final Set<String> hiddenReadouts;
+
   final Board _boardTemplate;
   final Map<String, dynamic> _stateJson;
   final List<GoalDef> goals;
@@ -28,6 +32,8 @@ class LevelDefinition {
     required this.id,
     this.title,
     this.guide,
+    this.showGoal,
+    this.hiddenReadouts = const {},
     required Board boardTemplate,
     required Map<String, dynamic> stateJson,
     required this.goals,
@@ -43,10 +49,14 @@ class LevelDefinition {
       Map<String, dynamic> j, List<LayerDef> layerDefs) {
     final board =
         Board.fromJson(j['board'] as Map<String, dynamic>, layerDefs);
+    final ui = j['ui'] as Map<String, dynamic>?;
     return LevelDefinition(
       id: j['id'] as String,
       title: j['title'] as String?,
       guide: j['guide'] as String?,
+      showGoal: ui?['showGoal'] as bool?,
+      hiddenReadouts:
+          (ui?['hideReadouts'] as List? ?? const []).whereType<String>().toSet(),
       boardTemplate: board,
       stateJson: Map<String, dynamic>.from(j['state'] as Map? ?? {}),
       goals: (j['goals'] as List? ?? [])

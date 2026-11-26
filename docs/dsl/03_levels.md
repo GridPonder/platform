@@ -40,6 +40,7 @@ Each level file defines one puzzle instance: its board layout, initial state, go
 | `loseConditions` | array | no | Lose conditions. Empty by default. |
 | `rules` | array | no | Level-local rules. Appended to game-level rules. |
 | `systemOverrides` | object | no | Per-system config overrides for this level. |
+| `ui` | object | no | Per-level play-screen presentation. `showGoal` overrides the game setting. `hideReadouts` lists variable names whose readout chips should be hidden. |
 | `solution` | object | **yes** | Gold path and hint stops. |
 | `metadata` | object | no | Description, difficulty, author notes. |
 
