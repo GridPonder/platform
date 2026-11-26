@@ -104,6 +104,12 @@ def claude_agent(*, model: str | None = None, prompt: str = PROMPT,
     ]
     if model:
         argv += ["--model", model]
+    # Reasoning effort (low, medium, high, xhigh, max). Read from the
+    # environment so a sweep can set it without a new flag on every layer;
+    # unset leaves the CLI default.
+    effort = os.environ.get("HARNESS_CLAUDE_EFFORT")
+    if effort:
+        argv += ["--effort", effort]
 
     env = {}
     for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"):

@@ -6,6 +6,7 @@ used by runner.py.
 """
 from __future__ import annotations
 import json
+import re
 from typing import Any
 
 from .text_renderer import render as render_board
@@ -52,6 +53,47 @@ def _image_marks_sentence(marks) -> str:
     return ("Image marks: " + "; ".join(parts) + ".") if parts else ""
 
 
+# ── No-rules mode ───────────────────────────────────────────────────────────
+# The real board, symbols, kind names and action names, but none of the
+# pack's rule text: no manifest description, no kind descriptions, no
+# goalDescriptions prose, and no explanatory prose in system status headers.
+# Sits between named mode (everything) and anonymous mode (aliases, nothing).
+
+_NO_RULES_DESCRIPTION = (
+    "\nThe rules of this game are not given. The board, its symbols and "
+    "names, and the actions are shown; discover what they do by observation "
+    "and experimentation.\n"
+)
+
+# A system status block is a "Header (rule prose):" line followed by
+# unindented "(x,y): ..." rows; the prose states a rule. Prompt-format
+# headers ("CURRENT BOARD (...)", "ACTION FORMATS (...)", the indented
+# "Stacked cells" rows) never match the lookahead and are kept.
+_STATUS_HEADER_RE = re.compile(
+    r"^([A-Z][^()\n:]*?) \([^\n]*\):$(?=\n\(-?\d+,-?\d+\))", re.MULTILINE)
+
+
+def rules_free_game_def(game_def):
+    """A shallow copy of `game_def` with every piece of rule prose removed.
+
+    Only the prompt sees the copy; the engine keeps the real definition.
+    """
+    stripped = object.__new__(type(game_def))
+    stripped.__dict__ = game_def.__dict__.copy()
+    stripped.description = ""
+    stripped.goal_descriptions = {}
+    stripped.entity_kinds = {
+        kind_id: {k: v for k, v in kind.items() if k != "description"}
+        for kind_id, kind in game_def.entity_kinds.items()
+    }
+    return stripped
+
+
+def strip_status_prose(text: str) -> str:
+    """`Switches (a plate is pressed while ...):` -> `Switches:`."""
+    return _STATUS_HEADER_RE.sub(lambda m: f"{m.group(1)}:", text)
+
+
 def build_prompt(
     game_def,
     level_def: dict,
@@ -77,6 +119,7 @@ def build_prompt(
     rejection_detail: str | None = None,
     image_marks: list[str] | None = None,
     last_action_label: str | None = None,
+    no_rules: bool = False,
 ) -> str:
     """Build the full LLM prompt string matching the Dart runner output.
 
@@ -104,6 +147,12 @@ def build_prompt(
     """
     if valid_actions is None:
         valid_actions = enumerate_actions(game_def, state)
+    if no_rules:
+        if anonymize:
+            raise ValueError("no_rules and anonymize are separate modes")
+        # Python-only mode: the Dart runner has no equivalent, so prompt
+        # parity is only defined for the other modes.
+        game_def = rules_free_game_def(game_def)
 
     # ── Anon maps ────────────────────────────────────────────────────────────
     kind_to_label: dict[str, str] = {}
@@ -255,7 +304,7 @@ def build_prompt(
     # ── Header ────────────────────────────────────────────────────────────────
     title_line = (
         "You are playing a grid puzzle."
-        if anonymize
+        if anonymize or no_rules
         else f'You are playing a grid puzzle called "{game_def.title}".'
     )
     if anonymize:
@@ -263,6 +312,8 @@ def build_prompt(
             "\n2D grid game. Entities and rules unknown — "
             "discover by observation and experimentation.\n"
         )
+    elif no_rules:
+        description_section = _NO_RULES_DESCRIPTION
     elif game_def.description:
         description_section = f"\n{game_def.description}\n"
     else:
@@ -291,6 +342,7 @@ def build_prompt(
         f"GOAL: {goal_descriptions}\n"
         f"{last_action_section}{image_note}\n"
         f"\n"
+        f"{_action_formats(game_def, anonymize)}"
         f"AVAILABLE ACTIONS:\n"
         f"{actions_desc}\n"
         f'{{"action": "give_up"}} — reset and start a fresh attempt'
@@ -302,13 +354,71 @@ def build_prompt(
         ex1 = '{"action": "a1"}'
         ex2 = f'{{"action": "a{n}"}}' if n > 1 else ex1
     else:
-        ex1 = json.dumps(valid_actions[0], sort_keys=True) if valid_actions else '{"action": "..."}'
-        ex2 = json.dumps(valid_actions[-1], sort_keys=True) if len(valid_actions) > 1 else ex1
+        ex1, ex2 = _format_examples(game_def)
 
     tail = _prompt_tail(inference_mode, step_size, max_n, ex1=ex1, ex2=ex2)
     coordinates = f"{_COORDINATES_NOTE}\n" if text_board else ""
 
-    return f"{header}\n\n{coordinates}{tail}"
+    prompt = f"{header}\n\n{coordinates}{tail}"
+    return strip_status_prose(prompt) if no_rules else prompt
+
+
+def _action_formats(game_def, anonymize: bool) -> str:
+    """Every action type the game declares, with its JSON shape.
+
+    AVAILABLE ACTIONS lists only what is legal and effectful right now, so an
+    action that needs a precondition (e.g. standing next to its target) would
+    otherwise be invisible until that moment, and a full-mode plan could never
+    name it. Omitted in anonymous mode, where action names are hidden.
+    """
+    if anonymize:
+        return ""
+    lines = []
+    for action_def in game_def.actions:
+        parts = [f'"action": {json.dumps(action_def["id"])}']
+        for name, param in (action_def.get("params") or {}).items():
+            if param.get("values"):
+                shape = " | ".join(json.dumps(v) for v in param["values"])
+            elif param.get("type") == "position":
+                shape = "[x, y]"
+            else:
+                shape = f"<{param.get('type')}>"
+            parts.append(f"{json.dumps(name)}: {shape}")
+        lines.append("{" + ", ".join(parts) + "}")
+    return ("ACTION FORMATS (every action type in this game; one not under "
+            "AVAILABLE ACTIONS would have no effect in the current state):\n"
+            + "\n".join(lines) + "\n\n")
+
+
+def _example_action(action_def: dict, last_value: bool = False) -> dict:
+    action = {"action": action_def["id"]}
+    for name, param in (action_def.get("params") or {}).items():
+        if param.get("values"):
+            action[name] = param["values"][-1 if last_value else 0]
+        elif param.get("type") == "position":
+            action[name] = [0, 0]
+        else:
+            action[name] = 0
+    return action
+
+
+def _format_examples(game_def) -> tuple[str, str]:
+    """Two format examples built from the declared action types only.
+
+    They used to be the first and last *currently valid* actions, which made
+    the examples a state-dependent hint (with a single legal cut, the prompt
+    printed that very cut as an "example"). Built from the game definition,
+    they are identical on every turn: the first action type with its first
+    value, and the last action type (or the first type with its last value
+    when the game declares only one).
+    """
+    actions = list(game_def.actions)
+    if not actions:
+        return '{"action": "..."}', '{"action": "..."}'
+    first = _example_action(actions[0])
+    second = (_example_action(actions[-1]) if len(actions) > 1
+              else _example_action(actions[0], last_value=True))
+    return json.dumps(first, sort_keys=True), json.dumps(second, sort_keys=True)
 
 
 def _max_actions_limit(level_def: dict) -> int | None:

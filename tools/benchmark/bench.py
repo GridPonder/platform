@@ -42,7 +42,14 @@ import yaml
 from dotenv import load_dotenv
 from tqdm import tqdm
 
-from agent_client import call_llm, extract_action, extract_actions_list
+from agent_client import call_llm, extract_action, extract_action_lenient, extract_actions_list
+
+# Opt-in parse tolerance (default off so existing scores are unchanged):
+#   GRIDPONDER_LENIENT_PARSE=1  last action object wins, missing closing braces repaired
+#   GRIDPONDER_PARSE_RETRIES=N  re-ask up to N times on an unparseable single-mode reply
+#                               instead of sending give_up (which resets the level)
+LENIENT_PARSE = os.environ.get("GRIDPONDER_LENIENT_PARSE", "") not in ("", "0")
+PARSE_RETRIES = int(os.environ.get("GRIDPONDER_PARSE_RETRIES", "0") or 0)
 from connector_api import estimate_cost
 from instructions import (
     InstructionPayload,
@@ -128,6 +135,30 @@ def expand_model_variants(
 
 # ── Level runner ───────────────────────────────────────────────────────────────
 
+# Opt-in per-call log (GRIDPONDER_CALL_LOG_DIR=<dir>): one JSON line per model
+# call, written as soon as the call returns (prompt, full reasoning, reply), so
+# levels cut off by a job time limit keep their traces for analysis.
+_CALL_LOG_DIR = os.environ.get("GRIDPONDER_CALL_LOG_DIR", "")
+_CALL_LOG_LOCK = threading.Lock()
+
+
+def _append_call_log(pack_id: str, level_id: str, model: dict, variant: dict,
+                     mode: str, record: dict) -> None:
+    if not _CALL_LOG_DIR:
+        return
+    try:
+        d = Path(_CALL_LOG_DIR)
+        d.mkdir(parents=True, exist_ok=True)
+        mid = f"{model.get('id', '')}{variant.get('suffix', '')}"
+        rec = {"ts": datetime.now(timezone.utc).isoformat(), "pack_id": pack_id,
+               "level_id": level_id, "model_id": mid, "mode": mode, **record}
+        line = json.dumps(rec, ensure_ascii=False) + "\n"
+        with _CALL_LOG_LOCK, open(d / f"{mid}_{mode}__{pack_id}__{level_id}.jsonl", "a") as f:
+            f.write(line)
+    except Exception as exc:  # never let logging break a run
+        print(f"call log write failed: {exc}", file=sys.stderr)
+
+
 def run_level(
     pack_id: str,
     level_id: str,
@@ -141,6 +172,10 @@ def run_level(
     max_n: int = 5,
     flex_penalty: float = 0.5,
     anon: bool = False,
+    single_attempt: bool = False,
+    no_rules: bool = False,
+    max_attempts: int | None = None,
+    full_attempts: bool = False,
     runner: str = "auto",
     input_mode: str = "text",
     packs_dir: Path = PACKS_DIR,
@@ -169,8 +204,8 @@ def run_level(
         raise ValueError("Authored curriculum instructions do not support anon mode")
     # Image input requires the PIL renderer which only exists in the Python
     # runner — force python regardless of the requested runner choice.
-    if input_mode != "text":
-        use_python = True
+    if input_mode != "text" or no_rules:
+        use_python = True  # image input and no-rules mode are Python-only
     else:
         use_python = runner == "python" or (runner == "auto" and not RUNNER_BIN.exists())
         if not use_python and not RUNNER_BIN.exists():
@@ -211,6 +246,14 @@ def run_level(
         cmd += ["--max-n", str(max_n)]
     if anon:
         cmd += ["--anon"]
+    if single_attempt:
+        cmd += ["--single-attempt"]
+    if no_rules:
+        cmd += ["--no-rules"]
+    if max_attempts is not None:
+        cmd += ["--max-attempts", str(max_attempts)]
+    if full_attempts:
+        cmd += ["--full-attempts"]
     if input_mode != "text":
         cmd += ["--input", input_mode]
 
@@ -232,6 +275,7 @@ def run_level(
     cost_sources: set[str] = set()
     resets = 0
     voluntary_resets = 0
+    parse_retries_total = 0
     llm_calls = 0
     total_rejections = 0
     consecutive_rejections = 0
@@ -296,6 +340,7 @@ def run_level(
             "llm_attempts": llm_attempts,
             "resets": resets,
             "voluntary_resets": voluntary_resets,
+            "parse_retries": parse_retries_total,
             "rejections": total_rejections,
             "latency_ms_total": sum(latencies),
             "last_call_latency_ms": last_call_latency_ms,
@@ -366,109 +411,133 @@ def run_level(
                     initial_base_prompt_digest = sha256_text(base_prompt)
                     initial_prompt_digest = sha256_text(prompt)
                 image_b64: str | None = event.get("image_b64")
-                llm_ok = False
-                for _retry in range(3):
-                    llm_attempts += 1
-                    report_progress(
-                        "waiting_for_model" if _retry == 0 else "retrying_model",
-                        event=event,
-                        request_attempt=_retry + 1,
-                    )
-                    try:
-                        (
-                            response_text,
-                            latency_ms,
-                            in_tok,
-                            think_tok,
-                            out_tok,
-                            call_cost,
-                            reasoning_text,
-                        ) = call_llm(
-                            prompt, connector_model, extra_params,
-                            max_tokens=max_tokens,
-                            request_timeout=action_timeout,
-                            image_b64=image_b64,
-                            connector=connector,
+                parse_tries_left = PARSE_RETRIES
+                stop_run = False
+                while True:
+                    llm_ok = False
+                    for _retry in range(3):
+                        llm_attempts += 1
+                        report_progress(
+                            "waiting_for_model" if _retry == 0 else "retrying_model",
+                            event=event,
+                            request_attempt=_retry + 1,
                         )
-                        llm_ok = True
-                        break
-                    except Exception as exc:
-                        last_exc = exc
-                        last_model_error_type = type(exc).__name__
-                        if getattr(exc, "status_code", None) in (400, 401, 403, 404, 422):
+                        try:
+                            (
+                                response_text,
+                                latency_ms,
+                                in_tok,
+                                think_tok,
+                                out_tok,
+                                call_cost,
+                                reasoning_text,
+                            ) = call_llm(
+                                prompt, connector_model, extra_params,
+                                max_tokens=max_tokens,
+                                request_timeout=action_timeout,
+                                image_b64=image_b64,
+                                connector=connector,
+                            )
+                            llm_ok = True
                             break
-                        if _retry < 2:
-                            time.sleep(2 ** _retry)
-                if not llm_ok:
-                    message = str(last_exc)
-                    for name, value in os.environ.items():
-                        if len(value) >= 8 and any(word in name.upper() for word in ("KEY", "TOKEN", "SECRET")):
-                            message = message.replace(value, "[REDACTED]")
-                    model_error = f"LLM request failed ({last_model_error_type}): {message[:2000]}"
-                    cost_complete = False
-                    # Transport failures are not gameplay decisions. Do not
-                    # turn them into give_up/reset actions and failed puzzles.
-                    report_progress("error", status="error", error=model_error)
-                    break
+                        except Exception as exc:
+                            last_exc = exc
+                            last_model_error_type = type(exc).__name__
+                            if getattr(exc, "status_code", None) in (400, 401, 403, 404, 422):
+                                break
+                            if _retry < 2:
+                                time.sleep(2 ** _retry)
+                    if not llm_ok:
+                        message = str(last_exc)
+                        for name, value in os.environ.items():
+                            if len(value) >= 8 and any(word in name.upper() for word in ("KEY", "TOKEN", "SECRET")):
+                                message = message.replace(value, "[REDACTED]")
+                        model_error = f"LLM request failed ({last_model_error_type}): {message[:2000]}"
+                        cost_complete = False
+                        # Transport failures are not gameplay decisions. Do not
+                        # turn them into give_up/reset actions and failed puzzles.
+                        report_progress("error", status="error", error=model_error)
+                        stop_run = True
+                        break
 
-                consecutive_timeouts = 0
-                last_model_error_type = None
-                latencies.append(latency_ms)
-                last_call_latency_ms = latency_ms
-                input_tokens_total += in_tok
-                thinking_tokens_total += think_tok
-                output_tokens_total += out_tok
-                cost_source = "connector"
-                if call_cost is None:
-                    call_cost = estimate_cost(
-                        in_tok,
-                        out_tok,
-                        model.get("pricing"),
-                    )
-                    cost_source = (
-                        "configured_estimate"
-                        if call_cost is not None
-                        else "unavailable"
-                    )
-                if call_cost is None:
-                    cost_complete = False
-                else:
-                    cost_total += call_cost
-                cost_sources.add(cost_source)
-                llm_calls += 1
-                llm_entry: dict[str, Any] = {
-                    "latency_ms": round(latency_ms),
-                    "input_tokens": in_tok,
-                    "output_tokens": out_tok,
-                    "thinking_tokens": think_tok,
-                    "cost_usd": (
-                        round(call_cost, 6) if call_cost is not None else None
-                    ),
-                    "cost_source": cost_source,
-                    "response": response_text,
-                }
-                if reasoning_text:
-                    llm_entry["reasoning"] = reasoning_text
-                llm_log.append(llm_entry)
-
-                if mode == "single":
-                    action = extract_action(response_text)
-                    if action is None:
-                        action = {
-                            "action": "give_up",
-                            "memory": "Could not parse a valid action from response.",
-                        }
-                    send(action)
-                else:
-                    cap = step_size if mode == "fixed-n" else (max_n if mode == "flex-n" else None)
-                    actions, memory = extract_actions_list(response_text, max_n=cap)
-                    if not actions:
-                        _send_give_up(send, mode, "Could not parse valid actions from response.")
+                    consecutive_timeouts = 0
+                    last_model_error_type = None
+                    latencies.append(latency_ms)
+                    last_call_latency_ms = latency_ms
+                    input_tokens_total += in_tok
+                    thinking_tokens_total += think_tok
+                    output_tokens_total += out_tok
+                    cost_source = "connector"
+                    if call_cost is None:
+                        call_cost = estimate_cost(
+                            in_tok,
+                            out_tok,
+                            model.get("pricing"),
+                        )
+                        cost_source = (
+                            "configured_estimate"
+                            if call_cost is not None
+                            else "unavailable"
+                        )
+                    if call_cost is None:
+                        cost_complete = False
                     else:
-                        payload: dict[str, Any] = {"actions": actions}
-                        if memory:
-                            payload["memory"] = memory
-                        send(payload)
+                        cost_total += call_cost
+                    cost_sources.add(cost_source)
+                    llm_calls += 1
+                    llm_entry: dict[str, Any] = {
+                        "latency_ms": round(latency_ms),
+                        "input_tokens": in_tok,
+                        "output_tokens": out_tok,
+                        "thinking_tokens": think_tok,
+                        "cost_usd": (
+                            round(call_cost, 6) if call_cost is not None else None
+                        ),
+                        "cost_source": cost_source,
+                        "response": response_text,
+                    }
+                    if reasoning_text:
+                        llm_entry["reasoning"] = reasoning_text
+                    llm_log.append(llm_entry)
+                    _append_call_log(pack_id, level_id, model, variant, mode, {
+                        "call": llm_calls,
+                        "attempt": event.get("attempt"),
+                        "actions_total": event.get("actions_total"),
+                        "prompt": prompt,
+                        **llm_entry,
+                    })
+
+                    if mode == "single":
+                        action = (
+                            extract_action_lenient(response_text)
+                            if LENIENT_PARSE
+                            else extract_action(response_text)
+                        )
+                        if action is None and parse_tries_left > 0:
+                            parse_tries_left -= 1
+                            parse_retries_total += 1
+                            llm_entry["parse_failed_retry"] = True
+                            continue
+                        if action is None:
+                            action = {
+                                "action": "give_up",
+                                "memory": "Could not parse a valid action from response.",
+                            }
+                        send(action)
+                    else:
+                        cap = step_size if mode == "fixed-n" else (max_n if mode == "flex-n" else None)
+                        actions, memory = extract_actions_list(response_text, max_n=cap)
+                        if not actions:
+                            _send_give_up(send, mode, "Could not parse valid actions from response.")
+                        else:
+                            payload: dict[str, Any] = {"actions": actions}
+                            if memory:
+                                payload["memory"] = memory
+                            send(payload)
+
+                    break
+                if stop_run:
+                    break
 
                 consecutive_rejections = 0
 
@@ -548,6 +617,7 @@ def run_level(
         "reasoning": variant.get("reasoning", False),
         "inference_mode": mode,
         "anon": anon,
+        **({"no_rules": True} if no_rules else {}),
         "input_mode": input_mode,
         "runner": "python" if use_python else "dart",
         "success": success,
@@ -558,6 +628,7 @@ def run_level(
         "attempts": attempts,
         "resets": resets,
         "voluntary_resets": voluntary_resets,
+        "parse_retries": parse_retries_total,
         "repeated_states": repeated_states,
         "llm_calls": llm_calls,
         "rejections": total_rejections,
@@ -628,7 +699,7 @@ def _send_give_up(send: Any, mode: str, memory: str) -> None:
 
 def load_completed(
     results_base: Path, mode: str, anon: bool, scan_dir: Path | None = None,
-    input_mode: str = "text",
+    input_mode: str = "text", no_rules: bool = False,
 ) -> set[tuple[str, str, str]]:
     """Scan JSONL runs and return (model_id, pack_id, level_id) triples
     that already have a successful (non-error) result for the given
@@ -646,6 +717,7 @@ def load_completed(
         file_mode: str | None = None
         file_anon: bool = False
         file_input: str = "text"
+        file_no_rules: bool = False
         with open(jsonl_file) as f:
             for line in f:
                 line = line.strip()
@@ -659,9 +731,11 @@ def load_completed(
                     file_mode = rec.get("inference_mode", "single")
                     file_anon = rec.get("anon", False)
                     file_input = rec.get("input_mode", "text")
+                    file_no_rules = rec.get("no_rules", False)
                 elif (rec.get("type") == "level"
                       and file_mode == mode
                       and file_anon == anon
+                      and file_no_rules == no_rules
                       and file_input == input_mode):
                     if "error" not in rec:
                         done.add((rec["model_id"], rec["pack_id"], rec["level_id"]))
@@ -761,8 +835,23 @@ def main() -> None:
                         help="Max actions per LLM call for flex-n mode (default: unlimited)")
     parser.add_argument("--flex-penalty", type=float, default=0.5,
                         help="Efficiency penalty per extra step beyond first in flex-n (default: 0.5)")
+    parser.add_argument("--single-attempt", action="store_true",
+                        help="Exactly one attempt: give_up ends the run as a loss instead of "
+                             "resetting, and the prompt says so (Python runner only)")
     parser.add_argument("--anon", action="store_true",
                         help="Anonymise entity kinds and action IDs (ARC-AGI style)")
+    parser.add_argument("--max-attempts", type=int, default=None,
+                        help="Attempts per run: a loss resets the board until this many "
+                             "attempts are used (runner default when omitted: 1, a loss "
+                             "ends the run)")
+    parser.add_argument("--full-attempts", action="store_true",
+                        help="Each attempt gets the level's own move limit and the run's "
+                             "total is their sum (instead of gold-path multipliers)")
+    parser.add_argument("--no-rules", action="store_true",
+                        help="Real board, symbols, kind names and actions, but no rule "
+                             "text (game description, kind descriptions, goal prose, "
+                             "status-header prose). Not combinable with --anon; text "
+                             "input and Python runner only")
     parser.add_argument("--input", choices=["text", "image", "text+image"],
                         default="text",
                         help="What the model sees: text grid, board image, or both. "
@@ -831,9 +920,14 @@ def main() -> None:
     # Anon + image is silently downgraded to text by the runner; mirror that here.
     if args.anon and args.input != "text":
         args.input = "text"
+    if args.no_rules and args.anon:
+        sys.exit("--no-rules and --anon are separate modes; pick one")
+    if args.no_rules and args.input != "text":
+        sys.exit("--no-rules supports text input only (an image would show the pack's sprites)")
 
     if args.resume:
-        completed = load_completed(RESULTS_BASE, args.mode, args.anon, input_mode=args.input)
+        completed = load_completed(RESULTS_BASE, args.mode, args.anon, input_mode=args.input,
+                                   no_rules=args.no_rules)
         if completed:
             before = len(work)
             work = [
@@ -849,7 +943,7 @@ def main() -> None:
         mode_label = f"fixed-{args.step_size}"
     elif args.mode == "flex-n":
         mode_label = f"flex-{args.max_n}(f={args.flex_penalty})"
-    anon_label = " [anon]" if args.anon else ""
+    anon_label = " [anon]" if args.anon else (" [no-rules]" if args.no_rules else "")
     input_label = "" if args.input == "text" else f" [{args.input}]"
     print(f"Benchmark [{mode_label}]{anon_label}{input_label}: {total} run(s) — "
           f"{len(model_variants)} model variant(s) × "
@@ -896,7 +990,7 @@ def main() -> None:
         _mode_tag = args.mode
         if args.mode == "flex-n":
             _mode_tag = f"flex-{args.max_n}" if args.max_n else "flex-n"
-        _anon_tag = "_anon" if args.anon else ""
+        _anon_tag = "_anon" if args.anon else ("_norules" if args.no_rules else "")
         _model_tag = (args.models[0] if args.models else "all")
         meta_file = RESULTS_DIR / f"meta_{_model_tag}_{_mode_tag}{_anon_tag}{_input_tag}.json"
     else:
@@ -923,7 +1017,7 @@ def main() -> None:
     mode_tag = args.mode
     if args.mode == "flex-n":
         mode_tag = f"flex-{args.max_n}" if args.max_n else "flex-n"
-    anon_tag = "_anon" if args.anon else ""
+    anon_tag = "_anon" if args.anon else ("_norules" if args.no_rules else "")
     input_tag = "" if args.input == "text" else f"_{args.input.replace('+', '-')}"
 
     for full_id, items in by_variant.items():
@@ -945,6 +1039,10 @@ def main() -> None:
             "reasoning": variant_cfg.get("reasoning", False),
             "inference_mode": args.mode,
             "anon": args.anon,
+            **({"no_rules": True} if args.no_rules else {}),
+            **({"max_attempts": args.max_attempts} if args.max_attempts is not None else {}),
+            **({"full_attempts": True} if args.full_attempts else {}),
+            "single_attempt": args.single_attempt,
             "input_mode": args.input,
             "attempt_multiplier": args.attempt_multiplier,
             "total_multiplier": args.total_multiplier,
@@ -976,6 +1074,10 @@ def main() -> None:
                         max_n=args.max_n,
                         flex_penalty=args.flex_penalty,
                         anon=args.anon,
+                        single_attempt=args.single_attempt,
+                        no_rules=args.no_rules,
+                        max_attempts=args.max_attempts,
+                        full_attempts=args.full_attempts,
                         runner=args.runner,
                         input_mode=args.input,
                         packs_dir=args.packs_dir,

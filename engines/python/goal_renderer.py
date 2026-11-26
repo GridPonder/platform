@@ -545,7 +545,10 @@ def _describe_param_match(
     return f"Place a {check_name} on every {marker_name} where {check_param} = {check_value}"
 
 
-def describe_loss(level_def: dict, lose_reason: str | None, *, anonymize: bool = False) -> str:
+def describe_loss(
+    level_def: dict, lose_reason: str | None, *, anonymize: bool = False,
+    no_rules: bool = False,
+) -> str:
     """Player-facing reason for an engine loss.
 
     `lose_reason` is the engine's reason code (`max_actions`,
@@ -555,7 +558,8 @@ def describe_loss(level_def: dict, lose_reason: str | None, *, anonymize: bool =
     where the code carries one). Named mode prefers that condition's optional
     `description`; otherwise, and always in anonymous mode, a generic sentence
     is built from its type, with variable and goal names replaced by `#<i>`
-    (the condition's 1-based index) in anonymous mode.
+    (the condition's 1-based index) in anonymous mode. No-rules mode also
+    skips the authored description (it may state a rule) but keeps names.
     """
     code = lose_reason or ""
     ctype, _, key = code.partition(":")
@@ -573,7 +577,7 @@ def describe_loss(level_def: dict, lose_reason: str | None, *, anonymize: bool =
         index, cond = i, candidate
         break
 
-    if cond is not None and not anonymize:
+    if cond is not None and not anonymize and not no_rules:
         description = cond.get("description")
         if isinstance(description, str) and description:
             return description

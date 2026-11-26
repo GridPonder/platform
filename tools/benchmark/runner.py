@@ -70,6 +70,30 @@ _REASON_GIVE_UP = "given up"
 _REASON_PLAN_ENDED = "plan ended without solving the level"
 
 
+_SINGLE_ATTEMPT_EDITS = (
+    ("Minimize total actions — give up early if stuck rather than wasting moves.\n",
+     "Minimize total actions. You have exactly ONE attempt: there are no resets, "
+     "and a loss ends the run.\n", 1),
+    ('{"action": "give_up"} — reset and start a fresh attempt',
+     '{"action": "give_up"} — stop playing; this ends the run as a loss (there is no second attempt)', 1),
+    ('"Dead end. Must try a different approach."', '"Dead end; stopping."', None),
+)
+
+
+def _single_attempt_prompt(prompt: str) -> str:
+    """Rewrite the shared prompt's retry wording for --single-attempt runs.
+
+    The prompt builder (kept byte-identical with the Dart runner) promises a
+    give_up resets the board. Under --single-attempt it ends the run, so the
+    agent must be told that instead. Each required phrase must be present:
+    a silent miss would leave the agent believing it can retry."""
+    for old, new, required in _SINGLE_ATTEMPT_EDITS:
+        if required is not None and prompt.count(old) != required:
+            _die(f"--single-attempt: prompt wording changed; expected {required}x {old!r}")
+        prompt = prompt.replace(old, new)
+    return prompt
+
+
 def _out(obj: dict) -> None:
     print(json.dumps(obj), flush=True)
 
@@ -147,6 +171,11 @@ def main() -> None:
     parser.add_argument("--attempt-multiplier", type=int, default=2)
     parser.add_argument("--total-multiplier", type=int, default=3)
     parser.add_argument(
+        "--single-attempt", action="store_true",
+        help="One attempt only: give_up ends the run as a loss instead of "
+             "resetting the board, and the prompt tells the agent so.",
+    )
+    parser.add_argument(
         "--max-attempts",
         type=int,
         default=1,
@@ -178,6 +207,16 @@ def main() -> None:
     parser.add_argument("--max-n", type=int, default=None)
     parser.add_argument("--anon", action="store_true", default=False)
     parser.add_argument(
+        "--no-rules",
+        action="store_true",
+        default=False,
+        help="Show the real board, symbols, kind names and actions but none "
+             "of the pack's rule text (no game description, no kind "
+             "descriptions, no goal prose, no rule prose in status headers, "
+             "no authored loss or veto reasons). Not combinable with --anon "
+             "or --observation harness.",
+    )
+    parser.add_argument(
         "--observation",
         choices=["full", "harness"],
         default="full",
@@ -200,10 +239,17 @@ def main() -> None:
     attempt_mul: int = args.attempt_multiplier
     total_mul: int = args.total_multiplier
     max_attempts: int = max(1, args.max_attempts)
+    single_attempt: bool = bool(args.single_attempt)
+    if single_attempt:
+        max_attempts = 1
     mode: str = args.mode
     step_size: int = args.step_size
     max_n: int | None = args.max_n
     anon: bool = args.anon
+    no_rules: bool = args.no_rules
+    if no_rules and (anon or args.observation == "harness"):
+        _die("--no-rules cannot be combined with --anon or --observation harness")
+        return
     observation_mode: str = args.observation
     input_mode: str = args.input
     # Anon mode would defeat itself if we shipped a sprite-rendered board, so
@@ -349,6 +395,7 @@ def main() -> None:
             previous_inventory=prev_inventory,
             previous_status=prev_status,
             anonymize=anon,
+            no_rules=no_rules,
             kind_symbol_overrides=kind_symbol_overrides,
             inference_mode=mode,
             step_size=step_size,
@@ -363,6 +410,8 @@ def main() -> None:
             image_marks=image_marks,
             last_action_label=last_action_label if anon else None,
         )
+        if single_attempt:
+            prompt = _single_attempt_prompt(prompt)
         previous_attempt = None
 
         event: dict = {
@@ -442,7 +491,8 @@ def main() -> None:
         return {**_terminal("lost"), "loss_reason": loss_reason}
 
     def engine_loss_reason(result) -> str:
-        return describe_loss(level_def, result.lose_reason, anonymize=anon)
+        return describe_loss(level_def, result.lose_reason, anonymize=anon,
+                             no_rules=no_rules)
 
     def end_attempt(reason: str, loss_reason: str | None = None) -> bool:
         """Close the current attempt. True when that ends the whole run.
@@ -502,7 +552,7 @@ def main() -> None:
              and e.get("reason")),
             None,
         )
-        if veto_reason is not None and not anon:
+        if veto_reason is not None and not anon and not no_rules:
             return veto_reason, veto_reason
         if anon:
             return f"{submitted.get('action')} is not legal in this state", "not legal in this state"
@@ -562,6 +612,9 @@ def main() -> None:
 
             if action_id == "give_up":
                 consecutive_schema = consecutive_illegal = 0
+                if single_attempt:
+                    _out(lost_event(_REASON_GIVE_UP))
+                    break
                 give_up_count += 1
                 total_now = total_game_actions + give_up_count
                 do_reset(reason="voluntary")
@@ -646,7 +699,7 @@ def main() -> None:
 
             if action_id == "give_up":
                 consecutive_schema = consecutive_illegal = 0
-                if mode == "full":
+                if mode == "full" or single_attempt:
                     _out(lost_event(_REASON_GIVE_UP))
                     outer_break = True
                 else:
